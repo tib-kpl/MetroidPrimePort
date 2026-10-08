@@ -4,14 +4,12 @@ name: CI
 # and Linux packages, builds the Android APK, and publishes all of them as a
 # GitHub release on tib-kpl/MetroidPrimePort, tagged build-<run number>.
 #
-# The APK is signed with the project's key when these repository secrets are
-# set, and with the shared debug key otherwise (fine for sideloading, but
+# The APK is signed with the project's key when these two repository secrets
+# are set, and with the shared debug key otherwise (fine for sideloading, but
 # Android will not update a debug-signed install with a properly signed one):
 #   MP_APK_KEYSTORE_BASE64     the keystore file, base64-encoded
-#   MP_APK_KEYSTORE_PASSWORD   its password
-#   MP_APK_KEY_ALIAS           the key's alias
-#   MP_APK_KEY_PASSWORD        the key's password
-# (tools/make_android_keystore.sh makes a key; `base64 -w0 <file>` encodes it.)
+#   MP_APK_KEYSTORE_PASSWORD   its password, which is also the key's
+# The key's alias is metroid-prime-port, as tools/make_android_keystore.sh makes it.
 on:
   push:
     branches: [port]
@@ -304,16 +302,14 @@ jobs:
         env:
           KEYSTORE_BASE64: ${{ secrets.MP_APK_KEYSTORE_BASE64 }}
           KEYSTORE_PASSWORD: ${{ secrets.MP_APK_KEYSTORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.MP_APK_KEY_ALIAS }}
-          KEY_PASSWORD: ${{ secrets.MP_APK_KEY_PASSWORD }}
         run: |
           if [ -n "$KEYSTORE_BASE64" ]; then
             echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.keystore"
             {
               echo "MP_APK_KEYSTORE=$RUNNER_TEMP/release.keystore"
               echo "MP_APK_KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD"
-              echo "MP_APK_KEY_ALIAS=$KEY_ALIAS"
-              echo "MP_APK_KEY_PASSWORD=$KEY_PASSWORD"
+              echo "MP_APK_KEY_ALIAS=metroid-prime-port"
+              echo "MP_APK_KEY_PASSWORD=$KEYSTORE_PASSWORD"
             } >> "$GITHUB_ENV"
           else
             echo "::warning::No MP_APK_KEYSTORE_BASE64 secret: the APK is signed with the debug key."
