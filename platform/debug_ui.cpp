@@ -76,6 +76,7 @@
 #include <SDL3/SDL_filesystem.h>
 #include <SDL3/SDL_iostream.h>
 #include <SDL3/SDL_misc.h>
+#include <SDL3/SDL_locale.h>
 #include <SDL3/SDL_keyboard.h>
 #include <SDL3/SDL_mouse.h>
 #include <SDL3/SDL_gamepad.h>
@@ -184,6 +185,8 @@ int sApSuitDamage = 1;
 bool sCheats = false;
 bool sSkippableCutscenes = false;
 std::string sTextLanguage;
+// Whether the settings file named a language (English is saved as an empty one).
+bool sTextLanguageSaved = false;
 int sElevatorRide = PortDebug::kElevatorRide_Original;
 bool sSaveStateHotkeys = true;
 bool sMouseAim = false;
@@ -594,6 +597,7 @@ void ApplySetting(const std::string& key, const std::string& value) {
     sCheats = ParseBool(value);
   } else if (key == "text_language") {
     sTextLanguage = value;
+    sTextLanguageSaved = true;
   } else if (key == "skippable_cutscenes") {
     sSkippableCutscenes = ParseBool(value);
   } else if (key == "elevator_ride") {
@@ -846,6 +850,33 @@ void ApplySetting(const std::string& key, const std::string& value) {
       }
     }
   }
+}
+
+// The text language code (kTextLanguages) for the system's preferred language,
+// or "" for English and the languages the game has no text in.
+std::string SystemTextLanguage() {
+  int count = 0;
+  SDL_Locale** locales = SDL_GetPreferredLocales(&count);
+  std::string code;
+  for (int i = 0; locales != nullptr && i < count && code.empty(); ++i) {
+    const std::string language = locales[i]->language != nullptr ? locales[i]->language : "";
+    const std::string country = locales[i]->country != nullptr ? locales[i]->country : "";
+    if (language == "en") {
+      break;
+    } else if (language == "fr") {
+      code = country == "CA" ? "USFR" : "EUFR";
+    } else if (language == "es") {
+      code = country.empty() || country == "ES" ? "EUSP" : "USSP";
+    } else if (language == "de") {
+      code = "EUGE";
+    } else if (language == "it") {
+      code = "EUIT";
+    } else if (language == "nl") {
+      code = "EUDU";
+    }
+  }
+  SDL_free(locales);
+  return code;
 }
 
 void LoadSettings() {
@@ -1103,6 +1134,11 @@ void EnsureInitialized() {
   }
   sInitialized = true;
   LoadSettings();
+  // Until a language is chosen, the system's: the European disc has French,
+  // German, Spanish and Italian text, and a Remastered import adds more.
+  if (!sTextLanguageSaved) {
+    sTextLanguage = SystemTextLanguage();
+  }
 
   // Environment variables are explicit per-run overrides and win over the file.
   if (port::EnvFlag("MP_TRACE_TIMING")) {
