@@ -307,7 +307,9 @@ jobs:
           KEYSTORE_PASSWORD: ${{ secrets.MP_APK_KEYSTORE_PASSWORD }}
         run: |
           if [ -n "$KEYSTORE_BASE64" ]; then
-            echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+            # A secret pasted from Windows can end in CR LF: drop whitespace, then decode.
+            printf '%s' "$KEYSTORE_BASE64" | tr -d ' \r\n' | base64 -d > "$RUNNER_TEMP/release.keystore"
+            KEYSTORE_PASSWORD=$(printf '%s' "$KEYSTORE_PASSWORD" | tr -d '\r\n')
             {
               echo "MP_APK_KEYSTORE=$RUNNER_TEMP/release.keystore"
               echo "MP_APK_KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD"
