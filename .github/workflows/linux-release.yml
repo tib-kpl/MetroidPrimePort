@@ -10,6 +10,8 @@ name: linux-release
 # nothing past the system's GLIBCXX_3.4.29. The last step checks that.
 on:
   workflow_dispatch:
+  # release.yml runs it too, to attach its package to a GitHub release.
+  workflow_call:
 
 jobs:
   build:

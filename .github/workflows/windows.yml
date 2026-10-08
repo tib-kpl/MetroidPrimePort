@@ -6,6 +6,8 @@ name: windows
 # zip is wanted. Restore the push/pull_request triggers to run it on every push.
 on:
   workflow_dispatch:
+  # release.yml runs it too, to attach its package to a GitHub release.
+  workflow_call:
 
 jobs:
   build:
