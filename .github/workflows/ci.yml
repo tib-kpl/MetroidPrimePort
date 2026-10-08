@@ -1,16 +1,29 @@
-name: windows
+name: CI
 
-# Manual only while the port is in alpha: a clang-cl build is the slowest job
-# by far, and running it on every push held up each release. Start it from the
-# Actions tab or with `gh workflow run windows.yml --ref port` when a Windows
-# zip is wanted. Restore the push/pull_request triggers to run it on every push.
+# One workflow for every push to the port branch: builds and tests the Windows
+# and Linux packages, builds the Android APK, and publishes all of them as a
+# GitHub release on tib-kpl/MetroidPrimePort, tagged build-<run number>.
+#
+# The APK is signed with the project's key when these repository secrets are
+# set, and with the shared debug key otherwise (fine for sideloading, but
+# Android will not update a debug-signed install with a properly signed one):
+#   MP_APK_KEYSTORE_BASE64     the keystore file, base64-encoded
+#   MP_APK_KEYSTORE_PASSWORD   its password
+#   MP_APK_KEY_ALIAS           the key's alias
+#   MP_APK_KEY_PASSWORD        the key's password
+# (tools/make_android_keystore.sh makes a key; `base64 -w0 <file>` encodes it.)
 on:
+  push:
+    branches: [port]
   workflow_dispatch:
-  # release.yml runs it too, to attach its package to a GitHub release.
-  workflow_call:
+
+# Pushes often arrive a few minutes apart; only the newest one is released.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  build:
+  windows:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -170,3 +183,177 @@ jobs:
         with:
           name: metroid_prime_port-windows
           path: dist
+
+  linux:
+    runs-on: ubuntu-24.04
+    container: almalinux:9
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 2G
+      MAX_GLIBC: "2.34"
+      MAX_GLIBCXX: "3.4.29"
+    steps:
+      - name: Dependencies
+        run: |
+          dnf install -y epel-release dnf-plugins-core
+          dnf config-manager --set-enabled crb
+          dnf install -y --allowerasing gcc-toolset-14-gcc gcc-toolset-14-gcc-c++ \
+            cmake ninja-build git curl file findutils binutils python3 \
+            alsa-lib-devel pulseaudio-libs-devel libX11-devel libXext-devel \
+            libXrandr-devel libXcursor-devel libXi-devel libXfixes-devel \
+            libXScrnSaver-devel libXtst-devel wayland-devel wayland-protocols-devel \
+            libxkbcommon-devel mesa-libEGL-devel mesa-libGL-devel \
+            freetype-devel libpng-devel zlib-devel bzip2-devel brotli-devel \
+            libzstd-devel openssl-devel ccache
+      - uses: actions/checkout@v4
+        with:
+          # The version string is `git describe`; it needs the tags.
+          fetch-depth: 0
+      # ccache keeps the objects between runs, and the unpacked dependency
+      # sources skip the downloads in Configure, as in the windows job.
+      - uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ccache-linux-${{ github.sha }}
+          restore-keys: ccache-linux-
+      - uses: actions/cache@v4
+        with:
+          path: |
+            build/port-gcc/_deps/*-src
+            build/port-gcc/_deps/*-subbuild
+          key: deps-linux-${{ hashFiles('CMakeLists.txt', 'extern/aurora/**/CMakeLists.txt', 'extern/aurora/**/*.cmake') }}
+      - name: Configure
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          source /opt/rh/gcc-toolset-14/enable
+          cmake -S . -B build/port-gcc -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DAURORA_ENABLE_TESTS=OFF -DMP_BUILD_TESTS=ON
+      - name: Build
+        run: |
+          source /opt/rh/gcc-toolset-14/enable
+          cmake --build build/port-gcc -j 4
+          ccache -s
+      - name: Test
+        run: ctest --test-dir build/port-gcc -L port --output-on-failure
+      - name: Check the glibc and libstdc++ floor
+        run: |
+          bin=build/port-gcc/metroid_prime_port
+          "$bin" --version
+          too_new() {  # $1 = prefix, $2 = highest allowed version
+            objdump -T "$bin" | grep -oE "\($1_[0-9.]+\)" | tr -d '()' | sort -Vu |
+              awk -F_ '{ print $NF }' |
+              while read -r v; do
+                [ "$(printf '%s\n%s\n' "$v" "$2" | sort -V | tail -1)" = "$2" ] || echo "$1_$v"
+              done
+          }
+          bad="$(too_new GLIBC "$MAX_GLIBC")$(too_new GLIBCXX "$MAX_GLIBCXX")$(too_new CXXABI 1.3.13)"
+          if [ -n "$bad" ]; then
+            echo "symbol versions newer than the floor:" >&2
+            echo "$bad" >&2
+            objdump -T "$bin" | grep -E "$(echo $bad | tr ' ' '|')" >&2
+            exit 1
+          fi
+          echo "needs at most glibc $MAX_GLIBC, GLIBCXX $MAX_GLIBCXX"
+      - name: Package
+        run: |
+          export APPIMAGE_EXTRACT_AND_RUN=1
+          bash tools/make_appimage.sh build/port-gcc build/appimage
+          d=build/release/metroid-prime-port-linux-x86_64
+          mkdir -p "$d/share/licenses/metroid-prime-port"
+          cp build/port-gcc/metroid_prime_port "$d/"
+          cp LICENSE NOTICE "$d/share/licenses/metroid-prime-port/"
+          tar -C build/release -czf build/release/metroid-prime-port-linux-x86_64.tar.gz \
+            metroid-prime-port-linux-x86_64
+          mv build/appimage/MetroidPrime-x86_64.AppImage build/release/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: metroid_prime_port-linux
+          path: |
+            build/release/MetroidPrime-x86_64.AppImage
+            build/release/metroid-prime-port-linux-x86_64.tar.gz
+
+  android:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+      # The disc layer is nod, in Rust, cross-compiled for the device.
+      - name: Rust for Android
+        run: rustup target add aarch64-linux-android
+      # The NDK and CMake versions android/app/build.gradle asks for.
+      - name: Android NDK and CMake
+        run: |
+          yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --install \
+            "ndk;29.0.14206865" "cmake;3.31.5" "platforms;android-34" > /dev/null
+          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/29.0.14206865" >> "$GITHUB_ENV"
+      - uses: actions/cache@v4
+        with:
+          path: android/app/.cxx
+          key: cxx-android-${{ github.sha }}
+          restore-keys: cxx-android-
+      - name: Signing key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.MP_APK_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.MP_APK_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.MP_APK_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.MP_APK_KEY_PASSWORD }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+            {
+              echo "MP_APK_KEYSTORE=$RUNNER_TEMP/release.keystore"
+              echo "MP_APK_KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD"
+              echo "MP_APK_KEY_ALIAS=$KEY_ALIAS"
+              echo "MP_APK_KEY_PASSWORD=$KEY_PASSWORD"
+            } >> "$GITHUB_ENV"
+          else
+            echo "::warning::No MP_APK_KEYSTORE_BASE64 secret: the APK is signed with the debug key."
+          fi
+      - name: Build
+        run: GRADLE="$(command -v gradle)" sh tools/android_apk.sh :app:assembleRelease
+      - name: Package
+        run: |
+          mkdir -p build/release
+          cp android/app/build/outputs/apk/release/app-release.apk \
+            build/release/metroid-prime-port-android-arm64.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: metroid_prime_port-android
+          path: build/release/metroid-prime-port-android-arm64.apk
+
+  release:
+    needs: [windows, linux, android]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: tib-kpl/MetroidPrimePort
+      TAG: build-${{ github.run_number }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Package
+        run: |
+          mkdir release
+          (cd artifacts/metroid_prime_port-windows && zip -qr "$GITHUB_WORKSPACE/release/metroid-prime-port-windows-x86_64.zip" .)
+          cp artifacts/metroid_prime_port-linux/* artifacts/metroid_prime_port-android/* release/
+          ls -l release
+      - name: Publish
+        env:
+          MESSAGE: ${{ github.event.head_commit.message }}
+        run: |
+          short=$(echo "$GITHUB_SHA" | cut -c1-7)
+          printf 'Built from %s.\n\n%s\n' "$GITHUB_SHA" "$MESSAGE" > notes.md
+          gh release create "$TAG" release/* --repo "$REPO" --target "$GITHUB_SHA" \
+            --title "Build ${{ github.run_number }} ($short)" --notes-file notes.md --latest

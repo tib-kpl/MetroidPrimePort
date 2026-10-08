@@ -56,7 +56,7 @@ self-contained — and it is why `MP_USER_PATH` cannot be used to move saves.
 - **All four do.** Each ships the port's own `LICENSE` and `NOTICE` alongside
   the third-party terms, because a grant nobody can read inside the package is
   not much of a grant.
-- **Windows**: `windows.yml` copies the port's grant and notice, Aurora's and
+- **Windows**: the `windows` job of `ci.yml` copies the port's grant and notice, Aurora's and
   MusyX's licences, and every `LICENSE*`/`COPYING*`/`NOTICE*` from the fetched
   packages into `dist/licenses/`, preserving the dependency path, and puts
   `docs/NATIVE_PORT.md` in as the `README`. It also packages `textures/` (the
@@ -129,9 +129,9 @@ version Flatpak reports; `tools/make_flatpak.sh` stops if the two differ.
 | Platform | Builds from | Produces | State |
 |---|---|---|---|
 | Linux | `cmake -S . -B build/port-gcc` | executable | works; tests green. `cmake --install` also produces a complete tree, verified by running it |
-| Linux | `.github/workflows/linux-release.yml` | AppImage + tarball | manual trigger; builds on AlmaLinux 9 and runs `tools/make_appimage.sh`. Use these for releases, not a desktop build |
+| Linux | `.github/workflows/ci.yml` (`linux` job) | AppImage + tarball | every push to `port`; builds on AlmaLinux 9 and runs `tools/make_appimage.sh`. Use these for releases, not a desktop build |
 | Linux | `tools/make_flatpak.sh` | Flatpak | manifest installs a working tree and collects notices; builds (`tools/make_flatpak.sh` writes `build/flatpak/MetroidPrimePort.flatpak`). The app id is `io.github.odrannnn.metroidprimeport`, with AppStream metainfo shipped |
-| Windows | `.github/workflows/windows.yml` | zipped `dist/` | manual trigger only for now; green when run, artifact uploaded, packaged startup checked |
+| Windows | `.github/workflows/ci.yml` (`windows` job) | zipped `dist/` | every push to `port`; packaged startup checked |
 | Android | `tools/android_apk.sh :app:assembleRelease` | APK | builds, signed with this project's own key; runs on-device (POCO F8 Ultra, 60 FPS), touch/Continue-load still unverified |
 
 The Linux binary is the only one with a test suite attached: 54 `port`-labelled
@@ -150,12 +150,12 @@ A Linux binary only runs where glibc and libstdc++ are at least as new as the
 ones it was linked against, so a desktop build is only as portable as the
 desktop. The 0.12.0 AppImage needed glibc 2.43 and GLIBCXX_3.4.34 and would not
 start on LMDE (issue #3). The release artefacts therefore come from
-`.github/workflows/linux-release.yml`, which builds in `almalinux:9` with
+the `linux` job of `.github/workflows/ci.yml`, which builds in `almalinux:9` with
 gcc-toolset-14 and fails unless the binary needs at most **glibc 2.34** and
 **GLIBCXX_3.4.29** (Debian 12, Ubuntu 22.04, RHEL 9 and newer). The AppImage
 bundles nothing, so freetype, libpng, zstd and OpenSSL 3 come from the system.
-`gh workflow run linux-release.yml --ref port -R Odrannnn/MetroidPrimePort`, then
-`gh run download <id> -n metroid_prime_port-linux`.
+Every push to `port` runs it and publishes the packages, with the Windows zip
+and the APK, as a release `build-<run number>` on tib-kpl/MetroidPrimePort.
 
 A Vulkan driver, X11 or Wayland, and DBus for the file dialog come from the
 host. A session that reaches `show_window` over SDL's Wayland backend will hang

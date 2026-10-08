@@ -45,7 +45,7 @@ install -m644 "$ICON" "$APPDIR/metroid-prime.png"
 ln -s metroid-prime.png "$APPDIR/.DirIcon"
 
 # No shared libraries are bundled. The release binary is built on an old base
-# (.github/workflows/linux-release.yml), so the system's own freetype, libpng,
+# (the linux job of .github/workflows/ci.yml), so the system's own freetype, libpng,
 # zstd and OpenSSL are at least as new as the ones it was linked against, while
 # a bundled copy drags in its build host's sonames (AlmaLinux's freetype wants
 # libbz2.so.1 and harfbuzz, which Debian doesn't provide under those names).
