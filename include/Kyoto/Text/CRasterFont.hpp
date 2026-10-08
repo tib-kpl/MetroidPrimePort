@@ -61,7 +61,11 @@ class CGlyph {
 public:
   CGlyph(const int a, const int b, const int c, const float startU, const float startV,
          const float endU, const float endV, const int cellWidth, const int cellHeight,
-         const int baseline, const int kernStart)
+         const int baseline, const int kernStart
+#ifdef TARGET_PC
+         , const int layer = 0
+#endif
+         )
   : x0_a(a)
   , x2_b(b)
   , x4_c(c)
@@ -72,7 +76,12 @@ public:
   , x18_cellWidth(cellWidth)
   , x1a_cellHeight(cellHeight)
   , x1c_baseline(baseline)
-  , x1e_kernStart(kernStart) {}
+  , x1e_kernStart(kernStart)
+#ifdef TARGET_PC
+  , x20_layer(layer)
+#endif
+  {
+  }
 
   short GetA() const { return x0_a; }
   short GetB() const { return x2_b; }
@@ -85,6 +94,11 @@ public:
   short GetCellHeight() const { return x1a_cellHeight; }
   short GetBaseLine() const { return x1c_baseline; }
   int GetKernStart() const { return x1e_kernStart; }
+#ifdef TARGET_PC
+  // Which bits of the font texture's texels hold this glyph, in a font of
+  // several layers (version 4 fonts, the European release's).
+  int GetLayer() const { return x20_layer; }
+#endif
 
 private:
   short x0_a;
@@ -98,6 +112,9 @@ private:
   short x1a_cellHeight;
   short x1c_baseline;
   short x1e_kernStart;
+#ifdef TARGET_PC
+  uchar x20_layer;
+#endif
 };
 
 CHECK_SIZEOF(CGlyph, 0x20)
@@ -110,6 +127,23 @@ enum EFontMode {
   kFM_TwoLayersOutline,
   kFM_TwoLayers,
 };
+
+#ifdef TARGET_PC
+// The palette value a texel holds for one glyph layer: in a font of layers,
+// several glyphs share each texel, each in its own bits. 0 is clear, 1 the
+// main colour, 2 the outline, as in a font of one layer.
+inline int PortFontLayerValue(EFontMode mode, int layer, int texel) {
+  switch (mode) {
+  case kFM_FourLayers:
+    return (texel >> layer) & 1;
+  case kFM_TwoLayersOutline:
+  case kFM_TwoLayers:
+    return (texel >> (layer * 2)) & 3;
+  default:
+    return texel;
+  }
+}
+#endif
 
 class CRasterFont {
 public:

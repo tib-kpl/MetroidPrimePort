@@ -36,6 +36,7 @@
 #include "port_textures.h"
 #include "port_build_info.h"
 #include "port_gpu_driver.h"
+#include "port_release.h"
 #if defined(__ANDROID__)
 #include "touch_pad.h"
 #endif
@@ -4162,8 +4163,8 @@ std::string CardImportDolphin() {
   }
   const PortGci::DolphinCard dolphin = PortGci::FindDolphinCard();
   if (!dolphin.Found()) {
-    return "No Dolphin memory card found (GC/USA/Card A or GC/MemoryCardA.USA.raw in "
-           "Dolphin's user folder).";
+    return std::string("No Dolphin memory card found (GC/") + PortRelease::kDolphinRegion +
+           "/Card A or GC/MemoryCardA." + PortRelease::kDolphinRegion + ".raw in Dolphin's user folder).";
   }
   // Dolphin uses one or the other, per its settings: try the one written last.
   std::error_code ec;
@@ -4199,8 +4200,9 @@ std::string CardExportDolphin() {
   }
   const PortGci::DolphinCard dolphin = PortGci::FindDolphinCard();
   if (!dolphin.Found()) {
-    return "No Dolphin memory card found (GC/USA/Card A or GC/MemoryCardA.USA.raw in "
-           "Dolphin's user folder); start a GameCube game in Dolphin once to create it.";
+    return std::string("No Dolphin memory card found (GC/") + PortRelease::kDolphinRegion +
+           "/Card A or GC/MemoryCardA." + PortRelease::kDolphinRegion +
+           ".raw in Dolphin's user folder); start a GameCube game in Dolphin once to create it.";
   }
   std::string text;
   if (!dolphin.gciFolder.empty()) {
@@ -4332,7 +4334,9 @@ void DrawMemoryCard() {
   if (ImGui::Button("Import from Dolphin")) {
     sCardStatus = CardImportDolphin();
   }
-  ItemHelp("Dolphin's card is looked for in its user folder (GC/USA/Card A, GC/MemoryCardA.USA.raw).");
+  ItemHelp((std::string("Dolphin's card is looked for in its user folder (GC/") + PortRelease::kDolphinRegion +
+            "/Card A, GC/MemoryCardA." + PortRelease::kDolphinRegion + ".raw).")
+               .c_str());
 #endif
   ImGui::EndDisabled();
   ImGui::BeginDisabled(busy || saves == 0);
@@ -4341,8 +4345,9 @@ void DrawMemoryCard() {
     sCardExportQueue = PortGci::GameFiles(folder);
     OpenCardDialog(kCardPick_ExportFile);
   }
-  ItemHelp("Saves each file in turn; keep Dolphin's names (01-GM8E-MetroidPrime A.gci) for its GCI "
-           "folder.");
+  ItemHelp((std::string("Saves each file in turn; keep Dolphin's names (01-") + PortRelease::kGameCode +
+            "-MetroidPrime A.gci) for its GCI folder.")
+               .c_str());
 #else
   if (ImGui::Button("Export to folder...")) {
     OpenCardDialog(kCardPick_ExportFolder);

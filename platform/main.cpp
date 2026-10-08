@@ -31,11 +31,13 @@
 #include "port_importers.h"
 #include "port_remastered_import.h"
 #include "port_gpu_driver.h"
+#include "port_release.h"
 
 #include <SDL3/SDL_dialog.h>
 #include <SDL3/SDL_events.h>
 #include <SDL3/SDL_filesystem.h>
 #include <SDL3/SDL_hints.h>
+#include <SDL3/SDL_init.h>
 #include <SDL3/SDL_iostream.h>
 #include <SDL3/SDL_messagebox.h>
 #include <SDL3/SDL_properties.h>
@@ -47,6 +49,14 @@
 #endif
 #if defined(__linux__) && !defined(__ANDROID__)
 #include <sys/utsname.h>
+#endif
+#if defined(__ANDROID__)
+#include <jni.h>
+#include <SDL3/SDL_system.h>
+#elif defined(_WIN32)
+#include <process.h>
+#else
+#include <unistd.h>
 #endif
 
 #include <algorithm>
@@ -125,6 +135,9 @@ bool IsDiscImage(const std::filesystem::path& path) {
 // it elsewhere and are taken on trust, after any plain image that matched.
 enum class DiscMatch { No, Maybe, Yes };
 
+bool IsSupportedId(const char* id6, unsigned diskNumber, unsigned version);
+bool IsOtherReleaseId(const char* id6, unsigned diskNumber, unsigned version);
+
 DiscMatch MatchDiscImage(const std::filesystem::path& path) {
     if (!IsDiscImage(path)) {
         return DiscMatch::No;
@@ -142,8 +155,9 @@ DiscMatch MatchDiscImage(const std::filesystem::path& path) {
     Uint8 header[8] = {};
     const size_t got = SDL_ReadIO(file, header, sizeof(header));
     SDL_CloseIO(file);
-    // Game id, maker, disc number, revision: GM8E01, disc 0, v1.00.
-    return got == sizeof(header) && std::memcmp(header, "GM8E01", 6) == 0 && header[6] == 0 && header[7] == 0
+    // Game id, maker, disc number, revision: the release this was built for, disc 0.
+    return got == sizeof(header) && (IsSupportedId(reinterpret_cast<const char*>(header), header[6], header[7]) ||
+                                      IsOtherReleaseId(reinterpret_cast<const char*>(header), header[6], header[7]))
                ? DiscMatch::Yes
                : DiscMatch::No;
 }
@@ -293,6 +307,11 @@ void ReportDiscOpenFailure(const char* path) {
 // Whether the disc was named on the command line or by MP_DISC, as opposed to
 // remembered, found or picked: a wrong one there is the caller's to fix.
 bool ResolveDiscFromArgs(int argc, char** argv) {
+    // The other release's executable passed its disc on: the user picked it, so
+    // a refused one is asked for again as usual.
+    if (port::EnvFlag("MP_HANDED_OVER")) {
+        return false;
+    }
     for (int i = 1; i < argc; ++i) {
         if (argv[i][0] != '-' && argv[i][0] != '\0') {
             return true;
@@ -303,7 +322,7 @@ bool ResolveDiscFromArgs(int argc, char** argv) {
 }
 
 bool IsSupportedId(const char* id6, unsigned diskNumber, unsigned version) {
-    return std::memcmp(id6, "GM8E01", 6) == 0 && diskNumber == 0 && version == 0;
+    return std::memcmp(id6, PortRelease::kDiscId, 6) == 0 && diskNumber == 0 && version == PortRelease::kDiscVersion;
 }
 
 // The disc id's game name and maker as one six-character id.
@@ -317,6 +336,117 @@ std::array<char, 6> DiscId6(const DVDDiskID& id) {
 bool IsSupportedDisc(const DVDDiskID* id) {
     return id != nullptr && IsSupportedId(DiscId6(*id).data(), id->diskNumber, id->gameVersion);
 }
+
+// The other disc release, which the package's other executable plays (USA v1.00
+// and Europe differ in the game's own code: see port_release.h). Not when this
+// run was handed over already, so two executables never pass a disc back and forth.
+bool IsOtherReleaseId(const char* id6, unsigned diskNumber, unsigned version) {
+#if defined(MP_OTHER_RELEASE_BUILT)
+    return !port::EnvFlag("MP_HANDED_OVER") && std::memcmp(id6, PortRelease::kOtherDiscId, 6) == 0 &&
+           diskNumber == 0 && version == PortRelease::kDiscVersion;
+#else
+    (void)id6;
+    (void)diskNumber;
+    (void)version;
+    return false;
+#endif
+}
+
+bool IsOtherReleaseDisc(const DVDDiskID* id) {
+    return id != nullptr && IsOtherReleaseId(DiscId6(*id).data(), id->diskNumber, id->gameVersion);
+}
+
+#if defined(__ANDROID__)
+// Android loads the game library MetroidPrimeActivity.getLibraries names, read
+// from game_library.txt in the app's files folder. Name the other release's
+// there and start the app again.
+bool HandOverToOtherRelease(const std::string&, int, char**) {
+    const char* root = SDL_GetAndroidInternalStoragePath();
+    if (root == nullptr) {
+        return false;
+    }
+    {
+        std::ofstream out(std::string(root) + "/game_library.txt", std::ios::trunc);
+        out << PortRelease::kOtherExe;
+        if (!out) {
+            return false;
+        }
+    }
+    JNIEnv* env = static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
+    jobject activity = static_cast<jobject>(SDL_GetAndroidActivity());
+    if (env == nullptr || activity == nullptr) {
+        return false;
+    }
+    jclass cls = env->GetObjectClass(activity);
+    const jmethodID restart = env->GetMethodID(cls, "restartApp", "()V");
+    bool ok = restart != nullptr;
+    if (ok) {
+        env->CallVoidMethod(activity, restart);
+    }
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        ok = false;
+    }
+    env->DeleteLocalRef(cls);
+    env->DeleteLocalRef(activity);
+    return ok;
+}
+#else
+// Starts the other release's executable, which sits beside this one (inside the
+// AppImage's mount for an AppImage), on the same disc and options. False when it
+// is not there; otherwise this process is done (POSIX replaces it). Aurora is
+// shut down first, so the window closes before the other one opens.
+bool HandOverToOtherRelease(const std::string& disc, int argc, char** argv) {
+    const char* base = SDL_GetBasePath();
+    if (base == nullptr) {
+        return false;
+    }
+#if defined(_WIN32)
+    const std::string exe = std::string(base) + PortRelease::kOtherExe + ".exe";
+#else
+    const std::string exe = std::string(base) + PortRelease::kOtherExe;
+#endif
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(PortPaths::detail::FromUtf8(exe.c_str()), ec)) {
+        PortLog::Write("metroid_prime_port: %s is not beside this executable\n", PortRelease::kOtherExe);
+        return false;
+    }
+    std::vector<std::string> args{exe, disc};
+    for (int i = 1; i < argc; ++i) {
+        if (argv[i][0] == '-') {
+            args.emplace_back(argv[i]);
+        }
+    }
+    PortLog::Write("metroid_prime_port: this is the %s disc: starting %s\n", PortRelease::kOtherDiscId,
+                   PortRelease::kOtherExe);
+    aurora_shutdown();
+#if defined(_WIN32)
+    _putenv("MP_HANDED_OVER=1");
+    // _spawnv joins its arguments with spaces: quote them. The process code page
+    // is UTF-8 (packaging/metroid_prime_port.manifest), so narrow paths work.
+    std::vector<std::string> quoted;
+    for (const std::string& arg : args) {
+        quoted.push_back("\"" + arg + "\"");
+    }
+    std::vector<const char*> list;
+    for (const std::string& arg : quoted) {
+        list.push_back(arg.c_str());
+    }
+    list.push_back(nullptr);
+    return _spawnv(_P_NOWAIT, exe.c_str(), list.data()) != -1;
+#else
+    setenv("MP_HANDED_OVER", "1", 1);
+    std::vector<char*> list;
+    for (std::string& arg : args) {
+        list.push_back(arg.data());
+    }
+    list.push_back(nullptr);
+    execv(exe.c_str(), list.data());
+    std::fprintf(stderr, "metroid_prime_port: could not start %s\n", exe.c_str());
+    return false;
+#endif
+}
+#endif
 
 // A compressed image (RVZ, WIA, GCZ) cut short by an interrupted download or
 // copy still opens, since the header is at the front, and the game only finds
@@ -359,7 +489,8 @@ std::string FindUnreadableDiscFile() {
     return {};
 }
 
-constexpr const char* kSupportedDisc = "Only Metroid Prime for the GameCube, USA version 1.00\n(GM8E01, revision 0), is supported.";
+const std::string kSupportedDisc = std::string("This build plays Metroid Prime for the GameCube, ") + PortRelease::kName +
+                                   "\n(" + PortRelease::kDiscId + ", revision 0).";
 
 // What the user picked instead, in words: the usual mistakes are another
 // region or a later revision of the same game.
@@ -533,9 +664,10 @@ std::string CopyDiscFromContentUri(const std::string& uri) {
     if (SDL_ReadIO(in, header, sizeof(header)) == sizeof(header)) {
         const bool container = std::memcmp(header, "RVZ", 3) == 0 || std::memcmp(header, "WIA", 3) == 0 ||
                                std::memcmp(header, "WBFS", 4) == 0 || std::memcmp(header, "CISO", 4) == 0;
-        if (!container && !IsSupportedId(reinterpret_cast<const char*>(header), header[6], header[7])) {
-            PortLog::Write("metroid_prime_port: not copying the picked image: %s Expected GM8E01 revision 0.\n",
-                           DescribeDisc(reinterpret_cast<const char*>(header), header[7]).c_str());
+        if (!container && !IsSupportedId(reinterpret_cast<const char*>(header), header[6], header[7]) &&
+            !IsOtherReleaseId(reinterpret_cast<const char*>(header), header[6], header[7])) {
+            PortLog::Write("metroid_prime_port: not copying the picked image: %s Expected %s revision 0.\n",
+                           DescribeDisc(reinterpret_cast<const char*>(header), header[7]).c_str(), PortRelease::kDiscId);
             SDL_CloseIO(in);
             return {};
         }
@@ -687,7 +819,7 @@ std::string AskForDiscImage(bool* cancelled = nullptr) {
     SDL_SetNumberProperty(props, SDL_PROP_FILE_DIALOG_NFILTERS_NUMBER, 2);
     SDL_SetPointerProperty(props, SDL_PROP_FILE_DIALOG_WINDOW_POINTER, window);
     SDL_SetStringProperty(props, SDL_PROP_FILE_DIALOG_TITLE_STRING,
-                          "Select your Metroid Prime disc image (GameCube, USA, v1.00)");
+                          (std::string("Select your Metroid Prime disc image (GameCube, ") + PortRelease::kName + ")").c_str());
     SDL_ShowFileDialogWithProperties(
         SDL_FILEDIALOG_OPENFILE,
         [](void*, const char* const* files, int) {
@@ -840,9 +972,8 @@ int main(int argc, char** argv) {
         }
         const DVDDiskID* id = DVDGetCurrentDiskID();
         int result = 1;
-        if (id == nullptr || std::memcmp(id->gameName, "GM8E", 4) != 0 || std::memcmp(id->company, "01", 2) != 0 ||
-            id->diskNumber != 0 || id->gameVersion != 0) {
-            std::fprintf(stderr, "unsupported disc; expected GM8E01 USA revision 0\n");
+        if (!IsSupportedDisc(id)) {
+            std::fprintf(stderr, "unsupported disc; expected %s revision 0\n", PortRelease::kDiscId);
         } else {
             result = PortRemastered::RunImportFromCommandLine(argv[2], argc >= 4 ? argv[3] : "", importMovies);
         }
@@ -1194,8 +1325,8 @@ int main(int argc, char** argv) {
     if (discImage.empty()) {
         PortLog::Write(
                      "metroid_prime_port: no disc image given.\n"
-                     "  usage: %s <path to Metroid Prime (USA) (v1.00).iso>\n"
-                     "  or set MP_DISC, or place the image next to the executable.\n", argv[0]);
+                     "  usage: %s <path to %s.iso>\n"
+                     "  or set MP_DISC, or place the image next to the executable.\n", argv[0], PortRelease::kImageName);
         aurora_shutdown();
         return 1;
     }
@@ -1212,9 +1343,23 @@ int main(int argc, char** argv) {
         if (!aurora_dvd_open(discPath)) {
             ReportDiscOpenFailure(discPath);
             problem = "This file could not be read as a GameCube disc image.";
+        } else if (IsOtherReleaseDisc(DVDGetCurrentDiskID())) {
+            aurora_dvd_close();
+            const bool canStart = HandOverToOtherRelease(discImage, argc, argv);
+#if !defined(__ANDROID__)
+            // Aurora is down once the other executable was found: nothing to show.
+            if (canStart || !SDL_WasInit(0)) {
+                return canStart ? 0 : 1;
+            }
+#else
+            if (canStart) {
+                return 0;
+            }
+#endif
+            problem = DescribeUnsupportedDisc(DVDGetCurrentDiskID());
         } else if (!IsSupportedDisc(DVDGetCurrentDiskID())) {
             problem = DescribeUnsupportedDisc(DVDGetCurrentDiskID());
-            PortLog::Write("metroid_prime_port: unsupported disc: %s Expected GM8E01 revision 0.\n", problem.c_str());
+            PortLog::Write("metroid_prime_port: unsupported disc: %s Expected %s revision 0.\n", problem.c_str(), PortRelease::kDiscId);
             aurora_dvd_close();
         } else if (DiscReadFailedLastTime(discImage)) {
             PortLog::Write("metroid_prime_port: refused the disc image: a read of it failed last session\n");

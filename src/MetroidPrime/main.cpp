@@ -13,6 +13,7 @@
 #include "port_debug.h"
 #include "port_log.h"
 #include "port_disc.h"
+#include "port_release.h"
 #include "port_mods.h"
 #include "port_textures.h"
 #include "port_prompts.h"
@@ -376,9 +377,11 @@ CGameGlobalObjects::CGameGlobalObjects(COsContext& osContext, CMemorySys& memory
 
 CRasterFont* CGameGlobalObjects::LoadDefaultFont() {
 #ifdef TARGET_PC
-  // Verified GM8E01_00 symbols; see config/GM8E01_00/symbols.txt.
-  const auto fontData = PortReadDolResource(0x803cb3a0, 0x650);
-  const auto fontTexture = PortReadDolResource(0x803cb9f0, 0x45c);
+  // Where the release's DOL keeps them; see port_release.h.
+  const auto fontData =
+      PortReadDolResource(PortRelease::kDefaultFontData, PortRelease::kDefaultFontDataSize);
+  const auto fontTexture =
+      PortReadDolResource(PortRelease::kDefaultFontTexture, PortRelease::kDefaultFontTextureSize);
   CZipInputStream fontDataStream(rs_new CMemoryInStream(fontData.data(), fontData.size()));
   rstl::single_ptr<CRasterFont> font(rs_new CRasterFont(fontDataStream, nullptr));
   CZipInputStream fontTextureStream(rs_new CMemoryInStream(fontTexture.data(), fontTexture.size()));

@@ -144,7 +144,7 @@ android {
                 arguments(*cmakeArguments)
                 // The rest are libadrenotools' hooks and the Vulkan shim, loaded by
                 // path for custom GPU drivers (platform/port_gpu_driver.cpp).
-                targets "metroid_prime_port", "mport_vkshim", "hook_impl", "main_hook",
+                targets "metroid_prime_port", "metroid_prime_port_eur", "mport_vkshim", "hook_impl", "main_hook",
                         "file_redirect_hook", "gsl_alloc_hook"
             }
         }

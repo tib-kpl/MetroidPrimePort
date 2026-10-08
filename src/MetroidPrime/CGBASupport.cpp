@@ -15,7 +15,13 @@ const uint MAGIC = 0x414d5445;
 
 CGBASupport* g_GBA;
 
+#ifdef TARGET_PC
+// The OS font encoding names the console's region: Shift-JIS on a Japanese one.
+// The PC has none, and the game is a western release.
+inline bool GetFontEncoding() { return false; }
+#else
 inline bool GetFontEncoding() { return OSGetFontEncode() == 1; }
+#endif
 
 CGBASupport::CGBASupport()
 #if VERSION >= VERSION_GM8E_48
@@ -34,7 +40,7 @@ CGBASupport::CGBASupport()
 , x45_fusionBeat(false) {
   GBAInit();
   g_GBA = this;
-#if VERSION >= VERSION_GM8E_48
+#if VERSION >= VERSION_GM8E_48 && !defined(TARGET_PC)
   OSGetFontEncode();
 #endif
 }

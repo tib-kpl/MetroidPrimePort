@@ -48,9 +48,25 @@ public final class MetroidPrimeActivity extends SDLActivity {
     private static native void nativeTexturePackReady();
     private static native void nativeRemasteredPicked(int which, String uri);
 
+    // The APK carries one game library per disc release: metroid_prime_port for
+    // USA v1.00 and metroid_prime_port_eur for the European disc. The game names
+    // the one its disc needs in game_library.txt and restarts the app
+    // (platform/main.cpp, HandOverToOtherRelease).
     @Override
     protected String[] getLibraries() {
-        return new String[]{"metroid_prime_port"};
+        String library = "metroid_prime_port";
+        java.io.File choice = new java.io.File(getFilesDir(), "game_library.txt");
+        if (choice.isFile()) {
+            try (java.io.BufferedReader in = new java.io.BufferedReader(new java.io.FileReader(choice))) {
+                String line = in.readLine();
+                if ("metroid_prime_port_eur".equals(line != null ? line.trim() : null)) {
+                    library = "metroid_prime_port_eur";
+                }
+            } catch (java.io.IOException ignored) {
+                // The USA library, as before the choice existed.
+            }
+        }
+        return new String[]{library};
     }
 
     @Override

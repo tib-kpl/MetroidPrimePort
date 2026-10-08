@@ -162,6 +162,23 @@ const rstl::vector< rstl::vector< wchar_t > >& CStringTable::PortStrings() const
         return mPortSections[i].strings;
       }
     }
+    // The European disc's own sections, for the language codes the setting
+    // takes (Remastered's).
+    FourCC disc = 0;
+    if (language == 'EUFR' || language == 'USFR') {
+      disc = 'FREN';
+    } else if (language == 'EUSP' || language == 'USSP') {
+      disc = 'SPAN';
+    } else if (language == 'EUGE') {
+      disc = 'GERM';
+    } else if (language == 'EUIT') {
+      disc = 'ITAL';
+    }
+    for (size_t i = 0; disc != 0 && i < mPortSections.size(); ++i) {
+      if (mPortSections[i].language == disc) {
+        return mPortSections[i].strings;
+      }
+    }
   }
   return mNativeStrings;
 }

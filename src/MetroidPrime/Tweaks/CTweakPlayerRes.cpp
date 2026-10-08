@@ -29,6 +29,10 @@ CTweakPlayerRes::CTweakPlayerRes(CInputStream& in)
 , x14_minesBreakFirstBottomIcon(get_asset_id_from_name(rstl::string(in).c_str()))
 , x18_minesBreakSecondTopIcon(get_asset_id_from_name(rstl::string(in).c_str()))
 , x1c_minesBreakSecondBottomIcon(get_asset_id_from_name(rstl::string(in).c_str()))
+#if VERSION >= VERSION_GM8P_00 && VERSION != VERSION_GM8E_02
+, xPAL_mapArrowUp(get_asset_id_from_name(rstl::string(in).c_str()))
+, xPAL_mapArrowDown(get_asset_id_from_name(rstl::string(in).c_str()))
+#endif
 , x20_lStick(read_asset_ids< 9 >(in))
 , x48_cStick(read_asset_ids< 9 >(in))
 , x70_lTrigger(read_asset_ids< 2 >(in))

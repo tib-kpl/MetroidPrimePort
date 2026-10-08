@@ -32,7 +32,13 @@ CRasterFont::CRasterFont(CInputStream& in, IObjectStore* store)
 , x90_lineMargin(0) {
   if (in.ReadInt32() == 'FONT') {
     int version = in.ReadInt32();
+#ifdef TARGET_PC
+    // Version 4 (the European release's fonts) adds the glyph layer and packs
+    // the glyph metrics into bytes.
+    if (version >= 0 && (version <= 2 || version == 4)) {
+#else
     if (version >= 0 && version <= 2) {
+#endif
       x4_monoWidth = in.ReadInt32();
       x8_monoHeight = in.ReadInt32();
       if (version >= 1) {
@@ -67,6 +73,17 @@ CRasterFont::CRasterFont(CInputStream& in, IObjectStore* store)
       case 1:
         x2c_mode = kFM_OneLayerOutline;
         break;
+#ifdef TARGET_PC
+      case 2:
+        x2c_mode = kFM_FourLayers;
+        break;
+      case 3:
+        x2c_mode = kFM_TwoLayersOutline;
+        break;
+      case 4:
+        x2c_mode = kFM_TwoLayers;
+        break;
+#endif
       }
 
       int glyphCount = in.ReadInt32();
@@ -78,6 +95,31 @@ CRasterFont::CRasterFont(CInputStream& in, IObjectStore* store)
         float startV = in.ReadFloat();
         float endU = in.ReadFloat();
         float endV = in.ReadFloat();
+#ifdef TARGET_PC
+        int layer = 0;
+        int a, b, c, cellWidth, cellHeight, baseline, kernStart;
+        if (version >= 4) {
+          layer = in.Get< uchar >();
+          a = in.Get< schar >();
+          b = in.Get< schar >();
+          c = in.Get< schar >();
+          cellWidth = in.Get< uchar >();
+          cellHeight = in.Get< uchar >();
+          baseline = in.Get< schar >();
+          kernStart = in.Get< short >();
+        } else {
+          a = in.ReadInt32();
+          b = in.ReadInt32();
+          c = in.ReadInt32();
+          cellWidth = in.ReadInt32();
+          cellHeight = in.ReadInt32();
+          baseline = in.ReadInt32();
+          kernStart = in.ReadInt32();
+        }
+        xc_glyphs.push_back(rstl::pair< wchar_t, CGlyph >(
+            chr, CGlyph(a, b, c, startU, startV, endU, endV, cellWidth, cellHeight, baseline,
+                        kernStart, layer)));
+#else
         int a = in.ReadInt32();
         int b = in.ReadInt32();
         int c = in.ReadInt32();
@@ -88,6 +130,7 @@ CRasterFont::CRasterFont(CInputStream& in, IObjectStore* store)
         xc_glyphs.push_back(
             rstl::pair< wchar_t, CGlyph >(chr, CGlyph(a, b, c, startU, startV, endU, endV,
                                                       cellWidth, cellHeight, baseline, kernStart)));
+#endif
       }
       rstl::sort_by_key(xc_glyphs);
 #ifdef TARGET_PC
@@ -116,6 +159,11 @@ CRasterFont::CRasterFont(CInputStream& in, IObjectStore* store)
 // of its ASCII stand-in's cell (PortHdFont::StandIns), widened as the distance
 // field's character is wider. Only the typeface the distance field holds.
 void CRasterFont::PortAddStandIns() {
+  // A font of layers shares its texels between glyphs, so a cell cannot be
+  // drawn into; those fonts (the European release's) carry the accents anyway.
+  if (x2c_mode != kFM_OneLayer && x2c_mode != kFM_OneLayerOutline) {
+    return;
+  }
   if (!PortHdFont::SameTypeface(*this)) {
     return;
   }

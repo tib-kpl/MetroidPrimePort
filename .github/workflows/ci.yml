@@ -108,8 +108,11 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           Copy-Item build-win/metroid_prime_port.exe dist/
+          # The European disc's executable: the first hands that disc over to it.
+          Copy-Item build-win/metroid_prime_port_eur.exe dist/
           Get-ChildItem build-win/*.dll | Copy-Item -Destination dist/
           if (Test-Path build-win/metroid_prime_port.pdb) { Copy-Item build-win/metroid_prime_port.pdb dist/ }
+          if (Test-Path build-win/metroid_prime_port_eur.pdb) { Copy-Item build-win/metroid_prime_port_eur.pdb dist/ }
           # SDL3, zlib, libpng, nod and the runner's OpenSSL are linked into the
           # exe (see Configure); only Dawn's DLLs, which it loads itself, ship.
           $include = (Select-String -Path build-win/CMakeCache.txt -Pattern '^OPENSSL_INCLUDE_DIR:[A-Z]+=(.+)$').Matches[0].Groups[1].Value
@@ -259,7 +262,7 @@ jobs:
           bash tools/make_appimage.sh build/port-gcc build/appimage
           d=build/release/metroid-prime-port-linux-x86_64
           mkdir -p "$d/share/licenses/metroid-prime-port"
-          cp build/port-gcc/metroid_prime_port "$d/"
+          cp build/port-gcc/metroid_prime_port build/port-gcc/metroid_prime_port_eur "$d/"
           cp LICENSE NOTICE "$d/share/licenses/metroid-prime-port/"
           tar -C build/release -czf build/release/metroid-prime-port-linux-x86_64.tar.gz \
             metroid-prime-port-linux-x86_64

@@ -72,14 +72,27 @@ path. Preserve the accompanying dependency licenses/notices.
 Alternatively set `MP_DISC`, keep the image beside the executable (or in a
 folder beside it; for an AppImage, beside the `.AppImage` file), which starts
 the game with no prompt, or let the port ask for it. A plain `.iso`/`.gcm` there
-is only taken when its header says GM8E01 v1.00, so another game's image next to
+is only taken when its header says GM8E01 or GM8P01 revision 0, so another game's image next to
 it is skipped; compressed formats are taken as found, after a matching plain
 image. Otherwise, when no disc is found it opens the platform's file dialog and
 remembers the answer as `disc_path` in the settings file. There is no prompt
 when the port has no window to show one on, or with `MP_NO_DISC_DIALOG=1`
 (for scripted runs that do have a window, as on a build runner). The disc must
-identify as **GM8E01, disc 0, revision 0**; other revisions/regions are
-rejected. Nod/Aurora supports additional image
+identify as **GM8E01 (USA) or GM8P01 (Europe), disc 0, revision 0**; other
+revisions/regions are rejected.
+
+### USA and European discs
+
+The decompiled game differs between the two releases (font, save and tweak
+layouts, entity casts, the language select), chosen at compile time, so one
+configure builds two executables: `metroid_prime_port` for the USA v1.00 disc and
+`metroid_prime_port_eur` for the European one (`MP_GAME_RELEASES`, both by
+default; set it to one release to build only that one). Started on the other
+release's disc, either executable starts the other one with the same disc and
+options (`MP_HANDED_OVER` keeps them from passing it back). Android's APK carries
+both libraries and restarts into the other one, named in `game_library.txt` in
+the app's files folder. The European disc's text is in English, French, German,
+Spanish and Italian: F1 > Language picks it (`MP_LANGUAGE=EUFR` etc.). Nod/Aurora supports additional image
 containers, but the same retail content is required.
 
 `metroid_prime_port --version` prints the source revision without initializing

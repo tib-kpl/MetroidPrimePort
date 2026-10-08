@@ -28,6 +28,16 @@ void CFontRenderState::RefreshColor(const EColorType col) {
         }
         break;
       }
+#ifdef TARGET_PC
+      // The European release's fonts of layers take the same colours.
+      case kFM_FourLayers:
+      case kFM_TwoLayersOutline:
+      case kFM_TwoLayers:
+        if (!GetOverride()[0]) {
+          GetOptions().SetPaletteEntry(0, ConvertToTextureSpace(GetColors()[0]));
+        }
+        break;
+#endif
       default:
         break;
       }
@@ -41,7 +51,12 @@ void CFontRenderState::RefreshColor(const EColorType col) {
   } break;
   case kCT_Outline: {
     if (IsFinishedLoading() && GetFont().IsLoaded() && !GetOverride()[1]) {
+#ifdef TARGET_PC
+      if (GetFont()->GetMode() == kFM_OneLayerOutline ||
+          GetFont()->GetMode() == kFM_TwoLayersOutline) {
+#else
       if (GetFont()->GetMode() == kFM_OneLayerOutline) {
+#endif
         GetOptions().SetPaletteEntry(1, ConvertToTextureSpace(GetColors()[1]));
       }
     }

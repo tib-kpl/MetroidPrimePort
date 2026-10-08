@@ -10,8 +10,21 @@
 #include "rstl/pair.hpp"
 #include <rstl/reserved_vector.hpp>
 #include <rstl/vector.hpp>
+#ifdef TARGET_PC
+#include <memory>
+#include <vector>
+#endif
 class CColor;
 class CRasterFont;
+
+// The European release's buffer keeps four palettes per font change, in code
+// that is not decompiled for it; the PC build of it uses the USA buffer.
+#if VERSION >= VERSION_GM8P_00 && VERSION != VERSION_GM8E_02 && !defined(TARGET_PC)
+#define TEXT_RENDER_BUFFER_PAL 1
+#else
+#define TEXT_RENDER_BUFFER_PAL 0
+#endif
+
 class CTextRenderBuffer {
 public:
   enum ECmd {
@@ -38,7 +51,7 @@ public:
     schar xe_index;
   };
 
-#if VERSION >= VERSION_GM8P_00 && VERSION != VERSION_GM8E_02
+#if TEXT_RENDER_BUFFER_PAL
   struct SFontPalette {
     int x0_;
     uint x4_;
@@ -71,6 +84,9 @@ public:
 
 private:
   void VerifyBuffer();
+#ifdef TARGET_PC
+  const CGraphicsPalette& PortLayerPalette(int palette, int layer, int mode) const;
+#endif
 
   EMode x0_mode;
   rstl::vector< TToken< CRasterFont > > x4_fonts;
@@ -83,22 +99,28 @@ private:
   mutable char x4d_activePalette;
   mutable char x4e_queuedFont;
   mutable char x4f_queuedPalette;
-#if VERSION >= VERSION_GM8P_00 && VERSION != VERSION_GM8E_02
+#if TEXT_RENDER_BUFFER_PAL
   mutable rstl::reserved_vector< SFontPalette, 64 > x50_palettes;
 #else
   mutable rstl::reserved_vector< rstl::auto_ptr< CGraphicsPalette >, 64 > x50_palettes;
 #endif
   mutable int x254_nextPalette;
-#if VERSION >= VERSION_GM8P_00 && VERSION != VERSION_GM8E_02
+#ifdef TARGET_PC
+  // A font of layers (the European release's) keeps several glyphs in each
+  // texel; per palette, the copy that reads each layer's bits, made on first
+  // use. Four per palette, shared so the buffer stays copyable.
+  mutable std::vector< std::shared_ptr< CGraphicsPalette > > xPortLayerPalettes;
+#endif
+#if TEXT_RENDER_BUFFER_PAL
   CVector2i xb58_;
   CVector2i xb60_;
   bool xb68_;
 #endif
 };
 
-CHECK_SIZEOF(CTextRenderBuffer, (VERSION >= VERSION_GM8P_00 && VERSION != VERSION_GM8E_02 ? 0xb6c : 0x258))
+CHECK_SIZEOF(CTextRenderBuffer, (TEXT_RENDER_BUFFER_PAL ? 0xb6c : 0x258))
 NESTED_CHECK_SIZEOF(CTextRenderBuffer, Primitive, 0x10)
-#if VERSION >= VERSION_GM8P_00 && VERSION != VERSION_GM8E_02
+#if TEXT_RENDER_BUFFER_PAL
 NESTED_CHECK_SIZEOF(CTextRenderBuffer, SFontPalette, 0x2c)
 #endif
 

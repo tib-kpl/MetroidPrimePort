@@ -36,6 +36,10 @@ rm -rf "$APPDIR"
 mkdir -p "$APPDIR/usr/bin"
 
 install -m755 "$BIN" "$APPDIR/usr/bin/metroid_prime_port"
+# The European disc's executable, which the first hands that disc over to.
+if [[ -x "$BUILD/metroid_prime_port_eur" ]]; then
+    install -m755 "$BUILD/metroid_prime_port_eur" "$APPDIR/usr/bin/metroid_prime_port_eur"
+fi
 # Otherwise the port looks for replacements next to the executable.
 if [[ $EMBEDDED = 0 ]]; then
     cp -r "$TEXTURES" "$APPDIR/usr/bin/textures"

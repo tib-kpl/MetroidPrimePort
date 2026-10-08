@@ -18,6 +18,11 @@ public:
   CAssetId x14_minesBreakFirstBottomIcon;
   CAssetId x18_minesBreakSecondTopIcon;
   CAssetId x1c_minesBreakSecondBottomIcon;
+#if VERSION >= VERSION_GM8P_00 && VERSION != VERSION_GM8E_02
+  // The European release lists two more icons after these: the map's arrows.
+  CAssetId xPAL_mapArrowUp;
+  CAssetId xPAL_mapArrowDown;
+#endif
   rstl::reserved_vector< CAssetId, 9 > x20_lStick;
   rstl::reserved_vector< CAssetId, 9 > x48_cStick;
   rstl::reserved_vector< CAssetId, 2 > x70_lTrigger;

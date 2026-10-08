@@ -47,6 +47,20 @@ CGuiTextSupport::CGuiTextSupport(CAssetId fontId, const CGuiTextProperties& prop
   }
 }
 
+#if VERSION >= VERSION_GM8P_00 && VERSION != VERSION_GM8E_02
+// The European release's text panes build theirs with the extents first; its
+// own body is not decompiled. The spacing it adds starts at none.
+CGuiTextSupport::CGuiTextSupport(CAssetId fontId, int extX, int extY,
+                                 const CGuiTextProperties& props, const CColor& fontCol,
+                                 const CColor& outlineCol, const CColor& geomCol,
+                                 CSimplePool* store)
+: CGuiTextSupport(fontId, props, fontCol, outlineCol, geomCol, extX, extY, store) {
+  x34_extraCharacterSpace = 0;
+  x38_extraLineSpace = 0;
+  xbd8_ = false;
+}
+#endif
+
 CGuiTextSupport::~CGuiTextSupport() {}
 
 bool CGuiTextSupport::GetIsTextSupportFinishedLoading() const {

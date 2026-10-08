@@ -45,6 +45,19 @@ endif()
 option(MP_EMBED_RESOURCES "Build the controller glyph textures and the pipeline cache seed into the executable (desktop)" ${_mp_embed_default})
 option(MP_ENABLE_SMOKE_DRIVER "Enable the opt-in real-disc lifecycle test driver" OFF)
 option(MP_ANDROID_NOD_STUB "Use a non-functional nod stub for Android build probes" OFF)
+# The game code has per-release differences (asset formats, the font and save
+# layouts, the language select), chosen at compile time as in the
+# decompilation, so each disc release gets its own executable:
+# metroid_prime_port for USA v1.00 (GM8E01_00) and metroid_prime_port_eur for
+# the European disc (GM8P01_00). Each hands over to the other when it is given
+# the other's disc (platform/main.cpp), so a package carrying both plays both.
+set(MP_GAME_RELEASES "GM8E01_00;GM8P01_00" CACHE STRING "Disc releases to build an executable for: GM8E01_00 (USA v1.00), GM8P01_00 (Europe)")
+foreach(release IN LISTS MP_GAME_RELEASES)
+    if(NOT release MATCHES "^(GM8E01_00|GM8P01_00)$")
+        message(FATAL_ERROR "MP_GAME_RELEASES takes GM8E01_00 and GM8P01_00, not ${release}")
+    endif()
+endforeach()
+message(STATUS "Game releases: ${MP_GAME_RELEASES}")
 
 # The decompiled game/engine sources and the port code around them are written
 # for a *signed* plain `char`: the PowerPC/MWCC original and every host the port
@@ -96,10 +109,14 @@ add_subdirectory(extern/astcenc EXCLUDE_FROM_ALL)
 
 # Decompiled game + engine sources (see files.cmake).
 include(files.cmake)
-# Not portable: raw PowerPC asm (NES emulator wrapper), and decomp-only
-# type-matching scaffolding.
+# Not portable: raw PowerPC asm (NES emulator wrapper).
+list(REMOVE_ITEM MP_GAME_SOURCES src/NESemu/modwrapper.cpp)
+# Entity casts: USA v1.00 asks each entity through a visitor (TCastTo.cpp),
+# the European release through a virtual TypesMatch (TypesMatch.cpp); see
+# include/MetroidPrime/TCastTo.hpp. mp_add_release keeps one of the two.
 list(REMOVE_ITEM MP_GAME_SOURCES
-    src/NESemu/modwrapper.cpp
+    src/MetroidPrime/TCastTo.cpp
+    src/MetroidPrime/Enemies/PatternedCastTo.cpp
     src/MetroidPrime/TypesMatch.cpp)
 # The in-game NES emulator embeds hand-written PowerPC asm; exclude it for now
 # and stub its entry points when wiring gameplay.
@@ -107,31 +124,6 @@ list(FILTER MP_GAME_SOURCES EXCLUDE REGEX "^src/NESemu/")
 # The game entry is included now that it is adapted to Aurora (its `main` is
 # renamed to `metroid_main` and driven by platform/main.cpp).
 list(APPEND MP_GAME_SOURCES src/MetroidPrime/main.cpp)
-# The port has an explicit source manifest, including registration-only and
-# shim-dependent translation units. Link those objects directly on both ELF and
-# COFF rather than relying on archive extraction or suppressing duplicate symbols.
-add_library(mp_game OBJECT ${MP_GAME_SOURCES})
-mp_signed_char(mp_game)
-target_include_directories(mp_game PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/platform/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/extern/aurora/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/extern/musyx/include)
-target_link_libraries(mp_game PUBLIC
-    aurora::core aurora::gx aurora::gd aurora::si aurora::vi aurora::pad
-    aurora::mtx aurora::os aurora::dvd aurora::thp aurora::card
-    musyx astcenc)
-# Keep useful native diagnostics; suppress only known decomp syntax warnings.
-# compat.h restores SDK macros Aurora omits.
-if(MSVC)
-    target_compile_options(mp_game PRIVATE /W3
-        /FI${CMAKE_CURRENT_SOURCE_DIR}/platform/compat.h)
-else()
-    target_compile_options(mp_game PRIVATE
-        -Wformat -Werror=return-type -Wno-narrowing -Wno-multichar -Wno-write-strings
-        -include ${CMAKE_CURRENT_SOURCE_DIR}/platform/compat.h)
-endif()
-
 # Port entry point and platform shims (Aurora owns the real main; see
 # aurora/main.h). Android loads the target through SDL's Java activity.
 set(MP_PORT_SOURCES
@@ -241,27 +233,6 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     set_source_files_properties(${MP_PORT_SOURCES} platform/smoke.cpp PROPERTIES
         COMPILE_OPTIONS "-Wall;-Wextra;-Wno-multichar;-Wno-unused-parameter;-Wno-ignored-qualifiers")
 endif()
-if(ANDROID)
-    add_library(metroid_prime_port SHARED ${MP_PORT_SOURCES})
-    target_link_libraries(metroid_prime_port PRIVATE mediandk)
-    target_link_options(metroid_prime_port PRIVATE "-Wl,-u,SDL_main")
-    # Custom Vulkan drivers (Turnip) through libadrenotools (port_gpu_driver.cpp). Its
-    # hook libraries and the shim Dawn loads as libvulkan.so are separate shared
-    # libraries, loaded by path: android/app/build.gradle lists them as targets.
-    if(ANDROID_ABI STREQUAL "arm64-v8a")
-        add_subdirectory(extern/adrenotools EXCLUDE_FROM_ALL)
-        add_library(mport_vkshim SHARED platform/android/vkshim.c)
-        set_target_properties(mport_vkshim PROPERTIES C_VISIBILITY_PRESET hidden)
-        target_link_libraries(metroid_prime_port PRIVATE adrenotools z)
-    endif()
-else()
-    add_executable(metroid_prime_port ${MP_PORT_SOURCES})
-endif()
-if(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR ANDROID)
-    # port_crash.cpp logs each C++ throw's type and stack.
-    target_link_options(metroid_prime_port PRIVATE "-Wl,--wrap=__cxa_throw")
-    target_compile_definitions(metroid_prime_port PRIVATE MP_WRAP_CXA_THROW)
-endif()
 # Developer tool, not a test (it needs game data): dumps a CHPR's animations for
 # diffing against build/mpr/anim/chpr_anim.py.
 if(NOT ANDROID)
@@ -289,20 +260,6 @@ if(NOT ANDROID)
         tests/port_remastered_anuv_tool.cpp platform/port_remastered_anuv.cpp platform/port_remastered_cmdl.cpp)
     target_include_directories(port_remastered_anuv_tool PRIVATE platform/include)
     set_target_properties(port_remastered_anuv_tool PROPERTIES EXCLUDE_FROM_ALL ON)
-endif()
-if(WIN32)
-    # A GUI program, so Windows opens no console window next to the game
-    # (SDL_main supplies WinMain). PortLogFile::AttachParentConsole prints to
-    # the terminal it was started from, if any.
-    set_target_properties(metroid_prime_port PROPERTIES WIN32_EXECUTABLE ON)
-    # shell32/ole32/advapi32: finding Dolphin's folder (port_gci.cpp).
-    # dbghelp: the crash report's stack and dump (port_crash.cpp).
-    target_link_libraries(metroid_prime_port PRIVATE ws2_32 shell32 ole32 advapi32 dbghelp)
-    # UTF-8 as the ANSI code page, so the UTF-8 paths SDL returns work with the
-    # narrow file APIs; see the manifest. CMake merges it into the linker's own.
-    target_sources(metroid_prime_port PRIVATE packaging/metroid_prime_port.manifest)
-    # The icon Explorer and the window show.
-    target_sources(metroid_prime_port PRIVATE packaging/metroid_prime_port.rc)
 endif()
 # OpenSSL gives the Archipelago WebSocket client wss://. On the desktop it is
 # optional: without it the port still builds and a wss:// server fails with a
@@ -335,15 +292,6 @@ if(OpenSSL_FOUND)
 else()
     message(STATUS "OpenSSL not found: wss:// disabled")
 endif()
-mp_websocket_tls(metroid_prime_port)
-if(ANDROID AND OpenSSL_FOUND)
-    # The OpenSSL linked in is private to the game library. Exporting its
-    # symbols would let them interpose on, or be interposed by, another copy in
-    # the process. Only its archives are named: excluding ALL would also hide
-    # the JNI entry points in the static SDL archive, which Java looks up by name.
-    target_link_options(metroid_prime_port PRIVATE "-Wl,--exclude-libs,libssl.a:libcrypto.a")
-endif()
-mp_signed_char(metroid_prime_port)
 add_custom_target(port_build_info
     COMMAND ${CMAKE_COMMAND}
         "-DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
@@ -351,13 +299,15 @@ add_custom_target(port_build_info
         -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/BuildRevision.cmake"
     BYPRODUCTS "${CMAKE_CURRENT_BINARY_DIR}/generated/port_build_info.h"
     VERBATIM)
-add_dependencies(metroid_prime_port port_build_info)
-target_include_directories(metroid_prime_port PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
+if(ANDROID AND ANDROID_ABI STREQUAL "arm64-v8a")
+    # Custom Vulkan drivers (Turnip) through libadrenotools (port_gpu_driver.cpp). Its
+    # hook libraries and the shim Dawn loads as libvulkan.so are separate shared
+    # libraries, loaded by path: android/app/build.gradle lists them as targets.
+    add_subdirectory(extern/adrenotools EXCLUDE_FROM_ALL)
+    add_library(mport_vkshim SHARED platform/android/vkshim.c)
+    set_target_properties(mport_vkshim PROPERTIES C_VISIBILITY_PRESET hidden)
+endif()
 if(MP_EMBED_RESOURCES)
-    # The glyph textures and the pipeline cache seed live inside the executable, so
-    # a packaged folder needs no loose copies, and a new executable dropped into an
-    # old install ignores the stale files left there. Regenerate the textures with
-    # tools/make_prompt_glyphs.py.
     find_package(Python3 COMPONENTS Interpreter REQUIRED)
     file(GLOB_RECURSE MP_EMBED_INPUTS CONFIGURE_DEPENDS
         "${CMAKE_CURRENT_SOURCE_DIR}/textures/*")
@@ -374,56 +324,154 @@ if(MP_EMBED_RESOURCES)
             "${CMAKE_CURRENT_SOURCE_DIR}/tools/embed_resources.py"
         COMMENT "Embedding textures and the pipeline cache seed"
         VERBATIM)
-    target_sources(metroid_prime_port PRIVATE "${MP_EMBED_SOURCE}")
-    target_compile_definitions(metroid_prime_port PRIVATE MP_EMBED_RESOURCES)
-else()
-    # Keep the HD texture replacements next to the executable, which is where the
-    # port looks for them by default, so a built binary picks them up without a
-    # manual copy. Regenerate them with tools/make_prompt_glyphs.py. The generated
-    # sets are cleared first: copy_directory only adds, and an icon the generator
-    # no longer writes would otherwise keep replacing a texture it no longer claims
-    # (two retired legend hashes kept drawing L/R over the map's [M] and [S] icons).
-    set(PORT_TEXTURE_SETS bindings keyboard playstation switch xbox)
-    list(TRANSFORM PORT_TEXTURE_SETS PREPEND "$<TARGET_FILE_DIR:metroid_prime_port>/textures/")
-    add_custom_command(TARGET metroid_prime_port POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E rm -rf ${PORT_TEXTURE_SETS}
-        COMMAND ${CMAKE_COMMAND} -E copy_directory
-            "${CMAKE_CURRENT_SOURCE_DIR}/textures"
-            "$<TARGET_FILE_DIR:metroid_prime_port>/textures"
-        COMMENT "Copying texture replacements next to the executable")
 endif()
-if(MP_ENABLE_SMOKE_DRIVER)
-    target_sources(metroid_prime_port PRIVATE platform/smoke.cpp)
-    target_compile_definitions(mp_game PRIVATE MP_ENABLE_SMOKE_DRIVER)
-endif()
-# aurora_core (webgpu/gpu.cpp) and aurora_gx reference each other; group them so
-# the linker rescans and resolves the cycle.
-if(MSVC)
-    target_link_libraries(metroid_prime_port PRIVATE
-        mp_game
-        aurora::main aurora::core aurora::gx)
-    target_link_options(metroid_prime_port PRIVATE /INCREMENTAL:NO)
-elseif(CMAKE_LINK_GROUP_USING_RESCAN_SUPPORTED OR CMAKE_CXX_LINK_GROUP_USING_RESCAN_SUPPORTED)
-    target_link_libraries(metroid_prime_port PRIVATE
-        mp_game
-        aurora::main
-        "$<LINK_GROUP:RESCAN,aurora::core,aurora::gx>")
-else()
-    message(FATAL_ERROR "This port currently requires an ELF linker with RESCAN support or an MSVC-compatible COFF linker")
-endif()
-
 include(extern/aurora/cmake/AuroraCopyRuntimeDLLs.cmake)
-aurora_copy_runtime_dlls(metroid_prime_port)
+include(GNUInstallDirs)
+# One disc release's game library and executable (see MP_GAME_RELEASES).
+function(mp_add_release release)
+    if(release STREQUAL "GM8P01_00")
+        set(version 3)
+        set(suffix _eur)
+        set(cast_sources src/MetroidPrime/TypesMatch.cpp)
+    else()
+        set(version 0)
+        set(suffix "")
+        set(cast_sources src/MetroidPrime/TCastTo.cpp src/MetroidPrime/Enemies/PatternedCastTo.cpp)
+    endif()
+    set(game mp_game${suffix})
+    set(exe metroid_prime_port${suffix})
+    # The port has an explicit source manifest, including registration-only and
+    # shim-dependent translation units. Link those objects directly on both ELF and
+    # COFF rather than relying on archive extraction or suppressing duplicate symbols.
+    add_library(${game} OBJECT ${MP_GAME_SOURCES} ${cast_sources})
+    # PUBLIC: the port code includes the game headers, whose layouts depend on it.
+    target_compile_definitions(${game} PUBLIC VERSION=${version})
+    mp_signed_char(${game})
+    target_include_directories(${game} PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/platform/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/extern/aurora/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/extern/musyx/include)
+    target_link_libraries(${game} PUBLIC
+        aurora::core aurora::gx aurora::gd aurora::si aurora::vi aurora::pad
+        aurora::mtx aurora::os aurora::dvd aurora::thp aurora::card
+        musyx astcenc)
+    # Keep useful native diagnostics; suppress only known decomp syntax warnings.
+    # compat.h restores SDK macros Aurora omits.
+    if(MSVC)
+        target_compile_options(${game} PRIVATE /W3
+            /FI${CMAKE_CURRENT_SOURCE_DIR}/platform/compat.h)
+    else()
+        target_compile_options(${game} PRIVATE
+            -Wformat -Werror=return-type -Wno-narrowing -Wno-multichar -Wno-write-strings
+            -include ${CMAKE_CURRENT_SOURCE_DIR}/platform/compat.h)
+    endif()
 
-# Aurora imports this machine-independent pipeline description cache and
-# compiles its entries in the background before first use.
-# Embedded builds carry it inside the executable instead.
-if(NOT MP_EMBED_RESOURCES)
-    add_custom_command(TARGET metroid_prime_port POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            ${CMAKE_CURRENT_SOURCE_DIR}/assets/initial_pipeline_cache.db
-            $<TARGET_FILE_DIR:metroid_prime_port>/initial_pipeline_cache.db)
-endif()
+    if(ANDROID)
+        add_library(${exe} SHARED ${MP_PORT_SOURCES})
+        target_link_libraries(${exe} PRIVATE mediandk)
+        target_link_options(${exe} PRIVATE "-Wl,-u,SDL_main")
+        if(ANDROID_ABI STREQUAL "arm64-v8a")
+            target_link_libraries(${exe} PRIVATE adrenotools z)
+        endif()
+    else()
+        add_executable(${exe} ${MP_PORT_SOURCES})
+    endif()
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR ANDROID)
+        # port_crash.cpp logs each C++ throw's type and stack.
+        target_link_options(${exe} PRIVATE "-Wl,--wrap=__cxa_throw")
+        target_compile_definitions(${exe} PRIVATE MP_WRAP_CXA_THROW)
+    endif()
+    if(WIN32)
+        # A GUI program, so Windows opens no console window next to the game
+        # (SDL_main supplies WinMain). PortLogFile::AttachParentConsole prints to
+        # the terminal it was started from, if any.
+        set_target_properties(${exe} PROPERTIES WIN32_EXECUTABLE ON)
+        # shell32/ole32/advapi32: finding Dolphin's folder (port_gci.cpp).
+        # dbghelp: the crash report's stack and dump (port_crash.cpp).
+        target_link_libraries(${exe} PRIVATE ws2_32 shell32 ole32 advapi32 dbghelp)
+        # UTF-8 as the ANSI code page, so the UTF-8 paths SDL returns work with the
+        # narrow file APIs; see the manifest. CMake merges it into the linker's own.
+        target_sources(${exe} PRIVATE packaging/metroid_prime_port.manifest)
+        # The icon Explorer and the window show.
+        target_sources(${exe} PRIVATE packaging/metroid_prime_port.rc)
+    endif()
+    mp_websocket_tls(${exe})
+    if(ANDROID AND OpenSSL_FOUND)
+        # The OpenSSL linked in is private to the game library. Exporting its
+        # symbols would let them interpose on, or be interposed by, another copy in
+        # the process. Only its archives are named: excluding ALL would also hide
+        # the JNI entry points in the static SDL archive, which Java looks up by name.
+        target_link_options(${exe} PRIVATE "-Wl,--exclude-libs,libssl.a:libcrypto.a")
+    endif()
+    mp_signed_char(${exe})
+    # The other release's executable is built beside this one: hand its disc over.
+    list(LENGTH MP_GAME_RELEASES release_count)
+    if(release_count GREATER 1)
+        target_compile_definitions(${exe} PRIVATE MP_OTHER_RELEASE_BUILT)
+    endif()
+    add_dependencies(${exe} port_build_info)
+    target_include_directories(${exe} PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
+    if(MP_EMBED_RESOURCES)
+        # The glyph textures and the pipeline cache seed live inside the executable, so
+        # a packaged folder needs no loose copies, and a new executable dropped into an
+        # old install ignores the stale files left there. Regenerate the textures with
+        # tools/make_prompt_glyphs.py.
+        target_sources(${exe} PRIVATE "${MP_EMBED_SOURCE}")
+        target_compile_definitions(${exe} PRIVATE MP_EMBED_RESOURCES)
+    else()
+        # Keep the HD texture replacements next to the executable, which is where the
+        # port looks for them by default, so a built binary picks them up without a
+        # manual copy. Regenerate them with tools/make_prompt_glyphs.py. The generated
+        # sets are cleared first: copy_directory only adds, and an icon the generator
+        # no longer writes would otherwise keep replacing a texture it no longer claims
+        # (two retired legend hashes kept drawing L/R over the map's [M] and [S] icons).
+        set(PORT_TEXTURE_SETS bindings keyboard playstation switch xbox)
+        list(TRANSFORM PORT_TEXTURE_SETS PREPEND "$<TARGET_FILE_DIR:${exe}>/textures/")
+        add_custom_command(TARGET ${exe} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E rm -rf ${PORT_TEXTURE_SETS}
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "${CMAKE_CURRENT_SOURCE_DIR}/textures"
+                "$<TARGET_FILE_DIR:${exe}>/textures"
+            COMMENT "Copying texture replacements next to the executable")
+    endif()
+    if(MP_ENABLE_SMOKE_DRIVER)
+        target_sources(${exe} PRIVATE platform/smoke.cpp)
+        target_compile_definitions(${game} PRIVATE MP_ENABLE_SMOKE_DRIVER)
+    endif()
+    # aurora_core (webgpu/gpu.cpp) and aurora_gx reference each other; group them so
+    # the linker rescans and resolves the cycle.
+    if(MSVC)
+        target_link_libraries(${exe} PRIVATE
+            ${game}
+            aurora::main aurora::core aurora::gx)
+        target_link_options(${exe} PRIVATE /INCREMENTAL:NO)
+    elseif(CMAKE_LINK_GROUP_USING_RESCAN_SUPPORTED OR CMAKE_CXX_LINK_GROUP_USING_RESCAN_SUPPORTED)
+        target_link_libraries(${exe} PRIVATE
+            ${game}
+            aurora::main
+            "$<LINK_GROUP:RESCAN,aurora::core,aurora::gx>")
+    else()
+        message(FATAL_ERROR "This port currently requires an ELF linker with RESCAN support or an MSVC-compatible COFF linker")
+    endif()
+
+    aurora_copy_runtime_dlls(${exe})
+
+    # Aurora imports this machine-independent pipeline description cache and
+    # compiles its entries in the background before first use.
+    # Embedded builds carry it inside the executable instead.
+    if(NOT MP_EMBED_RESOURCES)
+        add_custom_command(TARGET ${exe} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                ${CMAKE_CURRENT_SOURCE_DIR}/assets/initial_pipeline_cache.db
+                $<TARGET_FILE_DIR:${exe}>/initial_pipeline_cache.db)
+    endif()
+    install(TARGETS ${exe} RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endfunction()
+
+foreach(release IN LISTS MP_GAME_RELEASES)
+    mp_add_release(${release})
+endforeach()
 
 # Install rules. Without these a `cmake --install` installs nothing at all, which
 # is not a cosmetic problem: flatpak-builder's only install step is the build
@@ -434,8 +482,6 @@ endif()
 # for them (unless MP_EMBED_RESOURCES builds them in): DefaultTexturesPath() in platform/main.cpp resolves
 # <SDL_GetBasePath()> + "textures", and Aurora's pipeline cache is opened by name
 # beside the binary. They are installed to bin/ for that reason, not by accident.
-include(GNUInstallDirs)
-install(TARGETS metroid_prime_port RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 if(NOT MP_EMBED_RESOURCES)
     install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/textures/
         DESTINATION ${CMAKE_INSTALL_BINDIR}/textures)
@@ -466,9 +512,16 @@ install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/LICENSE
 
 if(MP_BUILD_TESTS)
     enable_testing()
-    add_test(NAME port_version COMMAND metroid_prime_port --version)
-    set_tests_properties(port_version PROPERTIES TIMEOUT 15 LABELS port
-        PASS_REGULAR_EXPRESSION "Metroid Prime native port")
+    if(TARGET metroid_prime_port)
+        add_test(NAME port_version COMMAND metroid_prime_port --version)
+        set_tests_properties(port_version PROPERTIES TIMEOUT 15 LABELS port
+            PASS_REGULAR_EXPRESSION "Metroid Prime native port")
+    endif()
+    if(TARGET metroid_prime_port_eur)
+        add_test(NAME port_version_eur COMMAND metroid_prime_port_eur --version)
+        set_tests_properties(port_version_eur PROPERTIES TIMEOUT 15 LABELS port
+            PASS_REGULAR_EXPRESSION "Metroid Prime native port")
+    endif()
     add_executable(port_buffer_tests
         tests/port_buffers.cpp
         tests/port_forward_owner.cpp
@@ -672,7 +725,7 @@ if(MP_BUILD_TESTS)
     set_tests_properties(port_card_tests PROPERTIES TIMEOUT 15 LABELS port)
     aurora_copy_runtime_dlls(port_card_tests)
     add_executable(port_gci_tests tests/port_gci.cpp platform/port_gci.cpp)
-    target_include_directories(port_gci_tests PRIVATE platform/include)
+    target_include_directories(port_gci_tests PRIVATE platform/include include)
     target_link_libraries(port_gci_tests PRIVATE aurora::card)
     if(WIN32)
         target_link_libraries(port_gci_tests PRIVATE shell32 ole32 advapi32)

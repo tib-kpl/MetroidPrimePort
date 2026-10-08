@@ -30,6 +30,9 @@ uint CSystemState::GetBitCount(uint value) {
 CSystemState::CSystemState() : x0_nesState(static_cast< uchar >(0))
 , x68_(static_cast< uchar >(0))
 , xbc_autoMapperKeyState(0)
+#if SYSTEM_STATE_HAS_LANGUAGE
+, x6c_language(0)
+#endif
 , xc0_frozenFpsCount(0)
 , xc4_frozenBallCount(0)
 , xc8_powerBombAmmoCount(0)
@@ -44,6 +47,9 @@ CSystemState::CSystemState() : x0_nesState(static_cast< uchar >(0))
 CSystemState::CSystemState(CInputStream& in) : x0_nesState(static_cast< uchar >(0))
 , x68_(static_cast< uchar >(0))
 , xbc_autoMapperKeyState(0)
+#if SYSTEM_STATE_HAS_LANGUAGE
+, x6c_language(0)
+#endif
 , xc0_frozenFpsCount(0)
 , xc4_frozenBallCount(0)
 , xc8_powerBombAmmoCount(0)
@@ -54,7 +60,7 @@ CSystemState::CSystemState(CInputStream& in) : x0_nesState(static_cast< uchar >(
 , xd0_27_fusionBeat(false)
 , xd0_28_fusionSuitActive(false)
 , xd0_29_allItemsCollected(false) {
-  for (int i = 0; i < 98; ++i)
+  for (int i = 0; i < SYSTEM_STATE_NES_BYTES; ++i)
     x0_nesState[i] = in.ReadBits(8);
   for (int i = 0; i < 64; ++i)
     x68_[i] = in.ReadBits(8);
@@ -68,6 +74,9 @@ CSystemState::CSystemState(CInputStream& in) : x0_nesState(static_cast< uchar >(
   xd0_27_fusionBeat = in.ReadBits(1) != 0;
   xd0_29_allItemsCollected = in.ReadBits(1) != 0;
   xbc_autoMapperKeyState = in.ReadBits(2);
+#if SYSTEM_STATE_HAS_LANGUAGE
+  x6c_language = in.ReadBits(GetBitCount(7));
+#endif
 
   const rstl::vector< CMemoryCard::MemoryWorld >& worlds = gpMemoryCard->GetMemoryWorlds();
   int cinematicCount = 0;
@@ -95,7 +104,7 @@ CSystemState::CSystemState(CInputStream& in) : x0_nesState(static_cast< uchar >(
 }
 
 void CSystemState::PutTo(COutputStream& out) {
-  for (int i = 0; i < 98; ++i)
+  for (int i = 0; i < SYSTEM_STATE_NES_BYTES; ++i)
     out.WriteBits(x0_nesState[i], 8);
   for (int i = 0; i < 64; ++i)
     out.WriteBits(x68_[i], 8);
@@ -109,6 +118,9 @@ void CSystemState::PutTo(COutputStream& out) {
   out.WriteBits(xd0_27_fusionBeat ? 1 : 0, 1);
   out.WriteBits(xd0_29_allItemsCollected ? 1 : 0, 1);
   out.WriteBits(xbc_autoMapperKeyState, 2);
+#if SYSTEM_STATE_HAS_LANGUAGE
+  out.WriteBits(x6c_language, GetBitCount(7));
+#endif
   const rstl::vector< CMemoryCard::MemoryWorld >& worlds = gpMemoryCard->GetMemoryWorlds();
   int cinematicCount = 0;
   for (AUTO(it, worlds.begin()); it != worlds.end(); ++it) {

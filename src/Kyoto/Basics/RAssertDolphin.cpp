@@ -44,8 +44,8 @@ void ErrorHandler(OSError code, OSContext* context, int dsisr, int dar) {
   VISetBlack(1);
   VIFlush();
 
-#if VERSION >= VERSION_GM8E_01
-  // Pivot to a new context for a clean CPU state
+#if VERSION >= VERSION_GM8E_01 && !defined(TARGET_PC)
+  // Pivot to a new context for a clean CPU state (there are no OS contexts on PC)
   OSClearContext(&newContext);
   OSSetCurrentContext(&newContext);
   OSEnableInterrupts();

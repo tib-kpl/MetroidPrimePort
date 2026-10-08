@@ -115,7 +115,12 @@ private:
   uint x1c_cardFreeFiles;
   uint x20_fileTime;
   long long x28_cardSerial;
+#if VERSION >= VERSION_GM8P_00 && VERSION != VERSION_GM8E_02
+  // CSystemState's European layout is smaller (CSystemState.hpp).
+  rstl::reserved_vector< u8, 114 > x30_systemData;
+#else
   rstl::reserved_vector< u8, 174 > x30_systemData;
+#endif
   rstl::reserved_vector< rstl::auto_ptr< SGameFileSlot >, 3 > xe4_fileSlots;
   rstl::reserved_vector< SFileInfo, 2 > x100_mcFileInfos;
   int x194_fileIdx;
