@@ -77,10 +77,6 @@ public:
   void SetPage(int page);
   int GetPageCounter() const { return x304_pageCounter; }
   void ClearRenderBuffer();
-#if VERSION >= VERSION_GM8P_00 && VERSION != VERSION_GM8E_02
-  // The European release switches the font of a built text (its subtitles').
-  void SetFontId(CAssetId fontId);
-#endif
   void SetImageBaseline(bool baseline);
   void SetTypeWriteEffectOptions(bool enable, float fadeTime, float rate);
   void SetGeometryColor(const CColor& col);

@@ -1,19 +1,18 @@
 # Metroid Prime — native port
 
 > **Ce dépôt est un fork** de [Odrannnn/MetroidPrimePort](https://github.com/Odrannnn/MetroidPrimePort)
-> dont le but est la prise en charge des langues, **en priorité le français** :
-> il accepte aussi le disque européen (`GM8P01`, *Metroid Prime (Europe)
-> (En,Fr,De,Es,It)*), dont les textes existent en français, allemand, espagnol et
-> italien. La langue se choisit dans le menu F1 (Langue / Language). Les releases
-> de ce fork (onglet *Releases*) contiennent un seul paquet par plateforme qui
-> fonctionne avec le disque américain comme avec le disque européen.
+> dont le but est la prise en charge des langues, **en priorité le français**,
+> avec le disque européen (*Metroid Prime (Europe) (En,Fr,De,Es,It)*), dont les
+> textes existent en français, allemand, espagnol et italien. Au premier
+> lancement le jeu prend la langue du système ; le menu F1 (Language) la change.
+> Chaque push publie une release (onglet *Releases*) : APK Android signé, zip
+> Windows, AppImage et archive Linux, qui acceptent le disque américain comme le
+> disque européen.
 >
-> *This repository is a fork focused on language support, French first: it also
-> plays the European disc and its French, German, Spanish and Italian text.*
+> *This repository is a fork focused on language support, French first.*
 
-A native build of **Metroid Prime** (GameCube) for Linux, Windows and Android,
-for the USA v1.00 disc (`GM8E01_00`) and the European disc (`GM8P01_00`). The
-game is compiled natively from the
+A native build of **Metroid Prime** (GameCube, USA v1.00 `GM8E01_00` or PAL `GM8P01`) for Linux,
+Windows and Android. The game is compiled natively from the
 [PrimeDecomp](https://github.com/PrimeDecomp/prime) decompiled source and renders
 through Aurora (SDL3 and WebGPU), with no emulator involved.
 
@@ -135,8 +134,8 @@ succeeds but links a stub that cannot open a disc — see
 
 The disc can also be set with `MP_DISC`, kept beside the executable, or picked
 through a file dialog the first time you launch without one — the choice is
-remembered in the settings. The image must be `GM8E01` (USA) or `GM8P01`
-(Europe), disc 0, revision 0. If a
+remembered in the settings. The image must be `GM8E01`, disc 0, revision 0 (USA 1.00), or
+`GM8P01` (PAL, which also brings its French, German, Spanish and Italian text). If a
 remembered disc stops opening — the file moved, or on Android the system revoked
 its access grant — the port asks again rather than exiting.
 

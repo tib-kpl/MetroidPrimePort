@@ -9,16 +9,6 @@
 #include "rstl/reserved_vector.hpp"
 #include "rstl/vector.hpp"
 
-// The European release keeps 18 bytes of NES state in the card's system data
-// where USA v1.00 keeps 98, and adds the text language (see PutTo).
-#if VERSION >= VERSION_GM8P_00 && VERSION != VERSION_GM8E_02
-#define SYSTEM_STATE_NES_BYTES 18
-#define SYSTEM_STATE_HAS_LANGUAGE 1
-#else
-#define SYSTEM_STATE_NES_BYTES 98
-#define SYSTEM_STATE_HAS_LANGUAGE 0
-#endif
-
 class CSystemState {
   friend class CGameState;
 public:
@@ -53,11 +43,6 @@ public:
   bool GetShowFrozenFpsMessage() const;
 
   uchar* GetNESState() { return x0_nesState.data(); }
-#if SYSTEM_STATE_HAS_LANGUAGE
-  // The index of the text language chosen in the options, as saved.
-  int GetLanguage() const { return x6c_language; }
-  void SetLanguage(int language) { x6c_language = language; }
-#endif
 
   bool GetAllItemsCollected() const { return xd0_29_allItemsCollected; }
   void SetAllItemsCollected(bool);
@@ -74,9 +59,6 @@ private:
   rstl::reserved_vector< uchar, 64 > x68_;
   rstl::vector< rstl::pair< CAssetId, TEditorId > > xac_cinematicStates;
   int xbc_autoMapperKeyState;
-#if SYSTEM_STATE_HAS_LANGUAGE
-  int x6c_language;
-#endif
   int xc0_frozenFpsCount;
   int xc4_frozenBallCount;
   int xc8_powerBombAmmoCount;

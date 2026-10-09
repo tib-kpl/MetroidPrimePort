@@ -72,27 +72,18 @@ path. Preserve the accompanying dependency licenses/notices.
 Alternatively set `MP_DISC`, keep the image beside the executable (or in a
 folder beside it; for an AppImage, beside the `.AppImage` file), which starts
 the game with no prompt, or let the port ask for it. A plain `.iso`/`.gcm` there
-is only taken when its header says GM8E01 or GM8P01 revision 0, so another game's image next to
+is only taken when its header says a supported version, so another game's image next to
 it is skipped; compressed formats are taken as found, after a matching plain
 image. Otherwise, when no disc is found it opens the platform's file dialog and
 remembers the answer as `disc_path` in the settings file. There is no prompt
 when the port has no window to show one on, or with `MP_NO_DISC_DIALOG=1`
 (for scripted runs that do have a window, as on a build runner). The disc must
-identify as **GM8E01 (USA) or GM8P01 (Europe), disc 0, revision 0**; other
-revisions/regions are rejected.
-
-### USA and European discs
-
-The decompiled game differs between the two releases (font, save and tweak
-layouts, entity casts, the language select), chosen at compile time, so one
-configure builds two executables: `metroid_prime_port` for the USA v1.00 disc and
-`metroid_prime_port_eur` for the European one (`MP_GAME_RELEASES`, both by
-default; set it to one release to build only that one). Started on the other
-release's disc, either executable starts the other one with the same disc and
-options (`MP_HANDED_OVER` keeps them from passing it back). Android's APK carries
-both libraries and restarts into the other one, named in `game_library.txt` in
-the app's files folder. The European disc's text is in English, French, German,
-Spanish and Italian: F1 > Language picks it (`MP_LANGUAGE=EUFR` etc.). Nod/Aurora supports additional image
+identify as **GM8E01, disc 0, revision 0** (USA 1.00) or **GM8P01** (PAL).
+A PAL disc runs the same 1.00 code on its own data, at 60 Hz, with every port
+feature (Remastered import, randomizer, Archipelago, cutscene skips) and its
+languages; its saves are kept apart from USA ones. USA 1.01 and 1.02 are only
+taken with `MP_DISC_ANY_VERSION=1` (untested); Japanese, Korean and Wii discs
+are rejected. Nod/Aurora supports additional image
 containers, but the same retail content is required.
 
 `metroid_prime_port --version` prints the source revision without initializing
@@ -312,13 +303,10 @@ the driver the GPU reports, e.g. `Mesa Turnip ...`, since adrenotools quietly fa
 back to the system driver when its hooks fail. The OpenGL ES backend always uses
 the system driver.
 
-A driver can start and still draw garbage (Turnip builds for another GPU did), so
-the first run on a newly chosen driver shows "Keep this Vulkan driver?" for 30 s.
-Without "Keep" the game closes and the next start uses System. While that prompt is
-up, `gpu_driver_starting` stays in the user folder, so a crash (or a closed game)
-also reverts at the next start, like the OpenGL ES toggle does. A kept driver is
-saved as `gpu_driver_ok=<id>` and isn't asked about again; `MP_GPU_DRIVER` runs
-skip the prompt.
+While the GPU starts, `gpu_driver_starting` stays in the user folder, so a crash
+there reverts to System at the next start, like the OpenGL ES toggle does. A driver
+that starts but draws garbage (Turnip builds for another GPU did) has to be switched
+back by hand.
 
 If Vulkan doesn't start at all with the chosen driver (Qualcomm's own driver
 packs for the Adreno 840 failed this way), the game retries Vulkan with the
@@ -636,8 +624,11 @@ game back.
 
 The port can build a model mod from your own copy of Metroid Prime Remastered;
 nothing of it ships. F1 > Remastered > Import > "Metroid Prime Remastered models"
-takes the game's `.nsp` and your console's key file (`~/.switch/prod.keys` is
-filled in when it exists). The panel remembers both files once they are picked
+takes the game's `.nsp` or gamecard dump (`.xci`) and your console's key file
+(`prod.keys`, not `title.keys`; `~/.switch/prod.keys` is filled in when it
+exists). An `.xci`, or an `.nsp` converted from one, needs the key file's
+`key_area_key_application_XX` keys; compressed `.nsz`/`.xcz` must be
+decompressed first. The panel remembers both files once they are picked
 or used, as `remastered_nsp` and `remastered_keys` in the settings file (on
 Android, the picked documents). Import converts in the background while the game
 runs, on all but two cores. The result is staged in `mods/.remastered-models.importing`
@@ -646,7 +637,7 @@ import ends (a mod reload then loads it; the pending install also applies at
 the next start). A cancelled or interrupted import leaves nothing behind.
 Once it has ended, "Load it again" in the same panel reloads the mods by hand.
 From a terminal,
-`metroid_prime_port --import-remastered <image.nsp> [key file]` does the same
+`metroid_prime_port --import-remastered <image.nsp|image.xci> [key file]` does the same
 on every core without starting the game and installs at once (the disc comes
 from `MP_DISC`, the remembered path, or a copy beside the executable).
 
@@ -703,10 +694,12 @@ Remastered's French, Spanish, German, Italian and Dutch text comes along too
 (about 1,900 strings each), as extra language sections in the same tables,
 named by Remastered's language codes (`EUFR`, `EUSP`, `EUGE`, `EUIT`, `EUDU`).
 A string Remastered doesn't translate, or one whose buttons don't line up with
-the disc's, stays in English. Pick the language in F1 > Game > Language (ini key
+the disc's, keeps the disc's wording: a PAL disc's own translation where it has
+one, else English. A PAL disc's French, German, Spanish and Italian work without
+the mod too. Pick the language in F1 > Game > Language (ini key
 `text_language`, or `MP_LANGUAGE=EUFR` for one run). It changes while the game
 runs (console: `language EUGE`, `language en`): text already on screen
-switches the next time its menu or screen opens. Without the mod the game stays in English. The disc's fonts are
+switches the next time its menu or screen opens. Without the mod a USA disc stays in English. The disc's fonts are
 ASCII only, so each accented letter is drawn as its base letter, unless the
 mod's typeface (`font/deface.sdfont`) is loaded, which draws the real one.
 
@@ -769,7 +762,7 @@ seconds on 16 threads, 2.3 GB of memory at the peak, 1.1 GB on disk (half of it
 the room environments).
 
 On Android the panel has two buttons that open the system's file picker, one
-for the `.nsp` and one for the key file. Neither file is copied: the import
+for the `.nsp`/`.xci` and one for the key file. Neither file is copied: the import
 reads them where they are. It runs on two threads there to keep its memory
 down. Not yet run on a device.
 
@@ -867,8 +860,11 @@ unpacks to a temporary directory instead of mounting.
 - `MP_TWIN_STICK=1` (Controls > Options, persisted as `twin_stick`): twin-stick aiming. The
   right stick feeds the first-person aim through the same path as the mouse (so
   the same sensitivity/invert apply, tuned by `stick_aim_rate`, default 900 px/s)
-  and is consumed, so it no longer drives the game's free-look. Fire stays on
-  whatever is bound to A; remap it on the Controls page.
+  and is consumed, so it no longer drives the game's free-look. Under mouse aim
+  a C-stick held from the keyboard is not consumed, so keyboard beam keys still
+  pick beams, and an L from a key or mouse button stays lock-on (not a beam
+  modifier). Fire
+  stays on whatever is bound to A; remap it on the Controls page.
 - Spring Ball (Controls > Options, persisted as `spring_ball`, off by default): C-stick
   up in morph ball jumps, as in Metroid Prime Trilogy and the randomprime discs
   the Archipelago world makes, once the Morph Ball Bombs are held. It is a bomb
@@ -945,8 +941,7 @@ unpacks to a temporary directory instead of mounting.
   and **Mouse & keyboard** (WASD, E fire, Space jump, left ctrl/C morph, F
   missile, Q lock on, left alt free look, Tab/M map, 1-4 beams and 5-8 visors
   through whichever C-stick direction or D-pad button the disc's tweak gives
-  each, arrows on the D-pad too; turns mouse aim on and twin stick off, since
-  twin stick takes the C-stick). Both also reset the mouse buttons and the beam
+  each, arrows on the D-pad too; turns mouse aim and twin stick on). Both also reset the mouse buttons and the beam
   shift keys. Controller: **GameCube** (Aurora's default), **Remastered**
   (Remastered's Dual Sticks: RT or right face button fire, LT lock on, bottom
   face button or LB jump, left
@@ -1190,6 +1185,9 @@ other `X:\Users\<name>`: `X:\Users\<user>`); the
   up by default; `MP_MOUSE_INVERT_X=1` and `MP_MOUSE_INVERT_Y=1` invert either axis.
   SDL and the compositor own pointer locking; capture is released outside
   playable first person (menus, cinematics, morph ball, and scripted input locks).
+  Mouse aim replaces the R-button free look, so switching it on in F1 also
+  switches on twin stick (still its own setting): the mouse and a pad's right
+  stick then add into the same aim.
 - In mouse mode the five mouse buttons act as pad buttons, set in the Controls > Keyboard & mouse
   sub-tab's "Mouse buttons" list (`mouse_left`, `mouse_middle`, `mouse_right`,
   `mouse_x1`, `mouse_x2`: none, a pad button, a D-pad direction or the beam
@@ -1286,7 +1284,7 @@ other `X:\Users\<name>`: `X:\Users\<user>`); the
   gyro rates in rad/s), `shot` (prints the bmp path), `present
   <0..1|cycle|tick|off>`, `hold <0|1>` (stop ticking), `step [ticks]` (run
   that many ticks while held), `interp [actor|pose|particle|all <0|1>]`,
-  `aspect <4:3|16:9|window>`, `original [on|off]`, `fov <45..90>`, `window [<w> <h>]` (resizes the window, leaving fullscreen, e.g. for square screenshots; prints the size), `msaa <1|4>`, `aniso <1..16>`, `hudscale <50..100>`, `helmet <0|1>`, `visorfx <0|1>`, `crosshair <25..100>`, `reveal <0|1>`, `pickups <0|1>`, `tracker`, `state list | last | save [n] | load [n] | undo | slot <n>`, `viewmodel <cmdl> [dist] [yaw] [pitch] | off | status | light <0|1>` (draws any model, retail or a mod's, in front of the camera with the arm cannon hidden; dist 0 fits its bounds; `light 1` swaps the flat white ambient for a key light, which PBR mod materials need to shade), `probe [off|on|mirror|window]` (the PBR reflection probe, live: `mirror` and `window` show the probe itself on PBR materials, as a reflection and looked straight through; no argument prints the mode), `remastered [start <image.nsp> [key file] | cancel]` (the Remastered model import and its progress), `mods [reload]` (what is loaded; `reload` reads the mods folder again), `roomgeo [on|off|overlay | at <x> <y> <z> [margin] | hide <cmdl> | show [cmdl]]` (a mod's room geometry: in place of the retail area, off, or drawn over it; `at` lists the instances whose box holds a point and `hide` stops drawing a model, for finding which one a surface belongs to; no argument prints what is loaded and drawn), `roomgeo lights on|off` (light room geometry with the area's lights even where the room has baked light), `roomgeo script` (Remastered's own visibility scripts in each loaded area: the camera in area space, each camera zone, counter and relay, and how much of each geometry group is shown), `roomgeo group <n> show|hide` (sets that group in every loaded area until its script next changes it), `roomgeo minpx <n>` (skip room geometry instances smaller than n pixels; see `MP_ROOM_GEO_MIN_PX`), `roomgeo lod <scale>` (see `MP_ROOM_GEO_LOD`), `roomgeo pick` (the instances the middle of the view looks through, nearest first, with each model's materials), `roomgeo mats <cmdl>` (a model's materials: flags, PBR or TEV, the PBR record; any CMDL drawn since `drawlog on` or `view drawid`, not just room geometry), `roomgeo mat <cmdl> <material> <field> <value...> | mat clear` (changes a value of a material's PBR record as drawn, until cleared or the next start; fields `emissive`, `backlight`, `height`, `mode`, `kind`, `strength`, `p0`-`p3`, or an index 0 to 18; emissive multiplies the emissive map, so it shows only on a material that has one), `roomliquid [on|off]` (a mod's liquid surfaces in place of the retail fluid planes; no argument prints what is loaded and drawn), `collision [off|overlay|only]` (draws what Samus collides with: the areas' static collision shaded by facing, walls grey, floors blue, ceilings red, lava orange, phazon cyan, grates yellow, with each triangle's edges, and active solid actors such as gates and platforms as orange boxes; `only` hides the world but Samus, so walls with no surface on them show), `colldump <x0> <y0> <z0> <x1> <y1> <z1> <file.obj>` (the current area's collision triangles touching a box, as an OBJ with each face's material bits in a comment), `roomenv [on|off|exposure on|off|bloom on|off|grade on|off|volume on|off|ambient <scale>|show off|coords|light|info [<x> <y> <z>]|balllight on|off|<scale>]` (room environments: `volume` is the baked light per pixel, `ambient` scales the baked ambient, `show` draws the grid's coordinates or light in place of the surface, `info` prints exposure, tone curve, probe and baked ambient at the view or a point), `view [off|albedo|normal|rough|metal|ao|ambient|reflection|glow|exposure|kind|sun|drawid]` (what PBR surfaces show: one input of the shading in place of the result), `drawlog [on|off|dump <file>]` (numbers every model surface drawn and records it; `dump` writes the last frame as TSV: serial, CMDL, material, owner, record, PBR or TEV, shader hash), `pick <x> <y>` (the draw at a window pixel, top-left origin, by way of `view drawid`), `shader dump <dir>|override <dir>|off|reload` (the generated WGSL as `<hash>.wgsl` plus `index.tsv`, also `MP_WGSL_DUMP`; compile edited copies in place of the generated ones, also `MP_WGSL_OVERRIDE`; see `docs/DEBUGGING.md` "Shaders"), `gpuselftest` (GPU self-test: known patterns rendered offscreen through the game's GX path, read back and logged as `gpu selftest: <case>: PASS|FAIL`; also F1 > Video > Compatibility "GPU self-test" and `MP_GPU_SELFTEST=1` once after the first frames; see `docs/DEBUGGING.md` "GPU self-test"), `gputimes on|off|show` (per-render-pass GPU times from timestamp queries, 60-frame averages: ms and passes per frame for each pass name, plus the total and first-begin-to-last-end span; also F1 > Debug > Remastered "GPU pass times"; free while off), `stats` (the last frame's draws and buffers, the heap, room geometry and environments), `hdfont [on|off]`, `touchpad [attach|detach|stick <x> <y>]` (a virtual gamepad of the kind Android's touch overlay uses, to test controller hotplug against it on any platform), `minimap` (the minimap's screen rect as 0..1 fractions of the window, top-left origin, or `invalid` when it is not drawn: morph ball, map screen, hidden HUD), `maptap` (queues one Z press, as a tap on the minimap does on Android), `mappan <dx> <dy> [hold s]` (drags the open map screen by dx,dy dp, as a finger would), `mapzoom <ratio>` (pinch zoom of the open map screen; above 1 zooms in), `maprotate <degrees>` (twist of the open map screen's yaw; positive is clockwise), `freecam [on|off|freeze on|off|player on|off|speed <n>|pos <x> <y> <z>|look <yaw> <pitch>]` (see below), `timer <0|1>`, `igt <seconds>`, `livesplit <0|1> | addr <host:port> | send <command> | status`, `discord <0|1> | status`, `gci list | import <path> | export <dir or .raw> | dolphin import|export`, `ap [connect <server> <slot> [password] | disconnect | recent | resume <n> | say <text> | chat]`, `rando [gen [seedtext] | play <name> | delete <name> | list]` (the built-in randomizer: `gen` makes a seed from the F1 Randomizer page's saved options and plays it, or only saves it while a game is loaded, an empty seed text picks one at random; `play` replays a saved seed, from the title screen or file select once a game is loaded; `delete` removes a seed with its progress and save card, not the one being played; `list` names the saved seeds), `wait <frames>`, `quit`, `title` (quits the game to the title screen, through the attract sequence as after a game over); `help` lists them. Ids are hex editor ids, `u<n>`
+  `aspect <4:3|16:9|window>`, `original [on|off]`, `keypreset classic|mouse` (applies and saves a keyboard preset, as the Controls page's buttons), `fov <45..90>`, `window [<w> <h>]` (resizes the window, leaving fullscreen, e.g. for square screenshots; prints the size), `msaa <1|4>`, `aniso <1..16>`, `hudscale <50..100>`, `helmet <0|1>`, `visorfx <0|1>`, `crosshair <25..100>`, `reveal <0|1>`, `pickups <0|1>`, `tracker`, `state list | last | save [n] | load [n] | undo | slot <n>`, `viewmodel <cmdl> [dist] [yaw] [pitch] | off | status | light <0|1>` (draws any model, retail or a mod's, in front of the camera with the arm cannon hidden; dist 0 fits its bounds; `light 1` swaps the flat white ambient for a key light, which PBR mod materials need to shade), `probe [off|on|mirror|window]` (the PBR reflection probe, live: `mirror` and `window` show the probe itself on PBR materials, as a reflection and looked straight through; no argument prints the mode), `remastered [start <image.nsp> [key file] | cancel]` (the Remastered model import and its progress), `mods [reload]` (what is loaded; `reload` reads the mods folder again), `roomgeo [on|off|overlay | at <x> <y> <z> [margin] | hide <cmdl> | show [cmdl]]` (a mod's room geometry: in place of the retail area, off, or drawn over it; `at` lists the instances whose box holds a point and `hide` stops drawing a model, for finding which one a surface belongs to; no argument prints what is loaded and drawn), `roomgeo lights on|off` (light room geometry with the area's lights even where the room has baked light), `roomgeo script` (Remastered's own visibility scripts in each loaded area: the camera in area space, each camera zone, counter and relay, and how much of each geometry group is shown), `roomgeo group <n> show|hide` (sets that group in every loaded area until its script next changes it), `roomgeo minpx <n>` (skip room geometry instances smaller than n pixels; see `MP_ROOM_GEO_MIN_PX`), `roomgeo lod <scale>` (see `MP_ROOM_GEO_LOD`), `roomgeo pick` (the instances the middle of the view looks through, nearest first, with each model's materials), `roomgeo mats <cmdl>` (a model's materials: flags, PBR or TEV, the PBR record; any CMDL drawn since `drawlog on` or `view drawid`, not just room geometry), `roomgeo mat <cmdl> <material> <field> <value...> | mat clear` (changes a value of a material's PBR record as drawn, until cleared or the next start; fields `emissive`, `backlight`, `height`, `mode`, `kind`, `strength`, `p0`-`p3`, or an index 0 to 18; emissive multiplies the emissive map, so it shows only on a material that has one), `roomliquid [on|off]` (a mod's liquid surfaces in place of the retail fluid planes; no argument prints what is loaded and drawn), `collision [off|overlay|only]` (draws what Samus collides with: the areas' static collision shaded by facing, walls grey, floors blue, ceilings red, lava orange, phazon cyan, grates yellow, with each triangle's edges, and active solid actors such as gates and platforms as orange boxes; `only` hides the world but Samus, so walls with no surface on them show), `colldump <x0> <y0> <z0> <x1> <y1> <z1> <file.obj>` (the current area's collision triangles touching a box, as an OBJ with each face's material bits in a comment), `roomenv [on|off|exposure on|off|bloom on|off|grade on|off|volume on|off|ambient <scale>|show off|coords|light|info [<x> <y> <z>]|balllight on|off|<scale>]` (room environments: `volume` is the baked light per pixel, `ambient` scales the baked ambient, `show` draws the grid's coordinates or light in place of the surface, `info` prints exposure, tone curve, probe and baked ambient at the view or a point), `view [off|albedo|normal|rough|metal|ao|ambient|reflection|glow|exposure|kind|sun|drawid]` (what PBR surfaces show: one input of the shading in place of the result), `drawlog [on|off|dump <file>]` (numbers every model surface drawn and records it; `dump` writes the last frame as TSV: serial, CMDL, material, owner, record, PBR or TEV, shader hash), `pick <x> <y>` (the draw at a window pixel, top-left origin, by way of `view drawid`), `shader dump <dir>|override <dir>|off|reload` (the generated WGSL as `<hash>.wgsl` plus `index.tsv`, also `MP_WGSL_DUMP`; compile edited copies in place of the generated ones, also `MP_WGSL_OVERRIDE`; see `docs/DEBUGGING.md` "Shaders"), `gpuselftest` (GPU self-test: known patterns rendered offscreen through the game's GX path, read back and logged as `gpu selftest: <case>: PASS|FAIL`; also F1 > Video > Compatibility "GPU self-test" and `MP_GPU_SELFTEST=1` once after the first frames; see `docs/DEBUGGING.md` "GPU self-test"), `gputimes on|off|show` (per-render-pass GPU times from timestamp queries, 60-frame averages: ms and passes per frame for each pass name, plus the total and first-begin-to-last-end span; also F1 > Debug > Remastered "GPU pass times"; free while off), `stats` (the last frame's draws and buffers, the heap, room geometry and environments), `hdfont [on|off]`, `touchpad [attach|detach|stick <x> <y>]` (a virtual gamepad of the kind Android's touch overlay uses, to test controller hotplug against it on any platform), `minimap` (the minimap's screen rect as 0..1 fractions of the window, top-left origin, or `invalid` when it is not drawn: morph ball, map screen, hidden HUD), `maptap` (queues one Z press, as a tap on the minimap does on Android), `mappan <dx> <dy> [hold s]` (drags the open map screen by dx,dy dp, as a finger would), `mapzoom <ratio>` (pinch zoom of the open map screen; above 1 zooms in), `maprotate <degrees>` (twist of the open map screen's yaw; positive is clockwise), `freecam [on|off|freeze on|off|player on|off|speed <n>|pos <x> <y> <z>|look <yaw> <pitch>]` (see below), `timer <0|1>`, `igt <seconds>`, `livesplit <0|1> | addr <host:port> | send <command> | status`, `discord <0|1> | status`, `gci list | import <path> | export <dir or .raw> | dolphin import|export`, `ap [connect <server> <slot> [password] | disconnect | recent | resume <n> | say <text> | chat]`, `rando [gen [seedtext] | play <name> | delete <name> | list]` (the built-in randomizer: `gen` makes a seed from the F1 Randomizer page's saved options and plays it, or only saves it while a game is loaded, an empty seed text picks one at random; `play` replays a saved seed, from the title screen or file select once a game is loaded; `delete` removes a seed with its progress and save card, not the one being played; `list` names the saved seeds), `wait <frames>`, `quit`, `title` (quits the game to the title screen, through the attract sequence as after a game over); `help` lists them. Ids are hex editor ids, `u<n>`
   unique ids or exact debug names. Every reply ends with `=> ok` or
   `=> err: <why>`, and the client exits 1 if any command failed. Game commands
   run inside the state manager tick, so they fail with "not ticking" on the

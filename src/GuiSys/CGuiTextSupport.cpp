@@ -1,7 +1,6 @@
 #include "GuiSys/CGuiTextSupport.hpp"
 
 #include "Kyoto/Basics/CBasics.hpp"
-#include "Kyoto/CSimplePool.hpp"
 #include "Kyoto/Graphics/CGraphics.hpp"
 #include "Kyoto/Text/CRasterFont.hpp"
 #include "Kyoto/Text/CTextExecuteBuffer.hpp"
@@ -48,35 +47,7 @@ CGuiTextSupport::CGuiTextSupport(CAssetId fontId, const CGuiTextProperties& prop
   }
 }
 
-#if VERSION >= VERSION_GM8P_00 && VERSION != VERSION_GM8E_02
-// The European release's text panes build theirs with the extents first; its
-// own body is not decompiled. The spacing it adds starts at none.
-CGuiTextSupport::CGuiTextSupport(CAssetId fontId, int extX, int extY,
-                                 const CGuiTextProperties& props, const CColor& fontCol,
-                                 const CColor& outlineCol, const CColor& geomCol,
-                                 CSimplePool* store)
-: CGuiTextSupport(fontId, props, fontCol, outlineCol, geomCol, extX, extY, store) {
-  x34_extraCharacterSpace = 0;
-  x38_extraLineSpace = 0;
-  xbd8_ = false;
-}
-#endif
-
 CGuiTextSupport::~CGuiTextSupport() {}
-
-#if VERSION >= VERSION_GM8P_00 && VERSION != VERSION_GM8E_02
-void CGuiTextSupport::SetFontId(CAssetId fontId) {
-  if (fontId == x5c_fontId) {
-    return;
-  }
-  x5c_fontId = fontId;
-  x2cc_font = rstl::optional_object_null();
-  if (x5c_fontId != kInvalidAssetId) {
-    x2cc_font = TLockedToken< CRasterFont >(gpSimplePool->GetObj(SObjectTag('FONT', x5c_fontId)));
-  }
-  ClearRenderBuffer();
-}
-#endif
 
 bool CGuiTextSupport::GetIsTextSupportFinishedLoading() const {
   CheckAndRebuildRenderBuffer();

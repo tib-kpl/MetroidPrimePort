@@ -15,7 +15,7 @@
 #include "port_hd_font.h"
 #endif
 
-#if !TEXT_RENDER_BUFFER_PAL
+#if VERSION < VERSION_GM8P_00 || VERSION == VERSION_GM8E_02
 
 CTextRenderBuffer::CTextRenderBuffer(EMode mode)
 : x0_mode(mode)
@@ -79,7 +79,7 @@ void CTextRenderBuffer::AddFontChange(const TToken< CRasterFont >& font) {
   }
 }
 
-#if !TEXT_RENDER_BUFFER_PAL
+#if VERSION < VERSION_GM8P_00 || VERSION == VERSION_GM8E_02
 
 void CTextRenderBuffer::AddPaletteChange(const CGraphicsPalette& palette) {
   if (x0_mode == kM_BufferFill) {
@@ -146,29 +146,7 @@ void CTextRenderBuffer::AddImage(const CVector2i& offset, const CFontImageDef& i
   }
 }
 
-#ifdef TARGET_PC
-const CGraphicsPalette& CTextRenderBuffer::PortLayerPalette(int palette, int layer,
-                                                            int mode) const {
-  const size_t slot = static_cast< size_t >(palette) * 4 + static_cast< size_t >(layer & 3);
-  if (xPortLayerPalettes.size() <= slot) {
-    xPortLayerPalettes.resize(static_cast< size_t >(x50_palettes.size()) * 4);
-  }
-  std::shared_ptr< CGraphicsPalette >& out = xPortLayerPalettes[slot];
-  if (!out) {
-    // The four colours (clear, main, outline, clear) for each 4-bit texel.
-    const ushort* base = x50_palettes[palette]->GetPaletteData();
-    out = std::make_shared< CGraphicsPalette >(kPF_RGB5A3, 16);
-    ushort* data = reinterpret_cast< ushort* >(out->Lock());
-    for (int texel = 0; texel < 16; ++texel) {
-      data[texel] = base[PortFontLayerValue(static_cast< EFontMode >(mode), layer & 3, texel)];
-    }
-    out->UnLock();
-  }
-  return *out;
-}
-#endif
-
-#if !TEXT_RENDER_BUFFER_PAL
+#if VERSION < VERSION_GM8P_00 || VERSION == VERSION_GM8E_02
 
 void CTextRenderBuffer::Render(const CColor& color, float time) const {
   x4c_activeFont = -1;
@@ -182,9 +160,6 @@ void CTextRenderBuffer::Render(const CColor& color, float time) const {
 #ifdef TARGET_PC
   // Whether the active font is being drawn from a mod's distance field.
   bool hdFont = false;
-  // The layer palette loaded last (palette * 4 + layer), -1 when another one
-  // has been loaded since.
-  int layerPalette = -1;
 #endif
   CMemoryInStream in(x34_bytecode.data(), x44_blobSize, CMemoryInStream::kOS_NotOwned);
   while (in.GetReadPosition() < x44_blobSize) {
@@ -200,9 +175,7 @@ void CTextRenderBuffer::Render(const CColor& color, float time) const {
 #endif
           font->SetupRenderState();
 #ifdef TARGET_PC
-          // The distance field is drawn from a font of one layer.
-          const EFontMode mode = font->GetMode();
-          hdFont = (mode == kFM_OneLayer || mode == kFM_OneLayerOutline) && PortHdFont::Begin(**font);
+          hdFont = PortHdFont::Begin(**font);
 #endif
           x4e_queuedFont = -1;
         }
@@ -210,9 +183,6 @@ void CTextRenderBuffer::Render(const CColor& color, float time) const {
       if (x4f_queuedPalette >= 0 && x4f_queuedPalette < static_cast< int >(x50_palettes.size())) {
         x50_palettes[x4f_queuedPalette]->Load();
         x4f_queuedPalette = -1;
-#ifdef TARGET_PC
-        layerPalette = -1;
-#endif
       }
       short x = in.Get< short >();
       short y = in.Get< short >();
@@ -223,15 +193,6 @@ void CTextRenderBuffer::Render(const CColor& color, float time) const {
         if (font.IsLoaded() && font->HasGlyph(chr)) {
           const CGlyph* glyph = font->GetGlyph(chr);
 #ifdef TARGET_PC
-          const EFontMode mode = font->GetMode();
-          if (mode != kFM_OneLayer && mode != kFM_OneLayerOutline && x4d_activePalette >= 0 &&
-              x4d_activePalette < static_cast< int >(x50_palettes.size())) {
-            const int key = x4d_activePalette * 4 + glyph->GetLayer();
-            if (key != layerPalette) {
-              PortLayerPalette(x4d_activePalette, glyph->GetLayer(), mode).Load();
-              layerPalette = key;
-            }
-          }
           if (hdFont) {
             const CGraphicsPalette* const palette =
                 x4d_activePalette >= 0 && x4d_activePalette < static_cast< int >(x50_palettes.size())

@@ -19,6 +19,7 @@
 #include "port_room_geo.h"
 #include "port_room_liquid.h"
 #include "port_console.h"
+#include "port_controls.h"
 #include "port_mods.h"
 #include "port_savestate.h"
 #include "port_tracker.h"
@@ -558,6 +559,7 @@ void CmdHelp() {
   Out("                           fly the view away from the player (HUD hidden; freeze holds the game still)");
   Out("aspect <4:3|16:9|window>   switch the rendering aspect, as the Options row does");
   Out("original [on|off]   Original experience (retail settings over the saved ones)");
+  Out("keypreset classic|mouse   apply a keyboard preset (Controls page), as its button");
   Out("fov <45..90>               first-person vertical FOV, as the Options row does");
   Out("window [<w> <h>]           resize the window (leaves fullscreen); prints the size");
   Out("msaa <1|4>, aniso <1..16>  anti-aliasing and anisotropic filtering, applied next frame");
@@ -1858,6 +1860,12 @@ void RunFrame() {
     }
     Out(PortDebug::OriginalExperience() ? "original experience on" : "original experience off");
     Finish();
+  } else if (name == "keypreset") {
+    const std::string preset = sCmd.args.size() > 1 ? Lower(sCmd.args[1]) : "";
+    if (!PortControls::ApplyKeyPresetNamed(preset)) {
+      return Finish("usage: keypreset classic|mouse");
+    }
+    Finish();
   } else if (name == "fov") {
     const float fov =
         sCmd.args.size() > 1 ? static_cast< float >(std::atof(sCmd.args[1].c_str())) : 0.f;
@@ -1958,7 +1966,7 @@ void RunFrame() {
     Out("%s", PortSaveState::LastMessage().c_str());
     Finish();
   } else if (name == "remastered") {
-    // remastered [start <image.nsp> [key file] | cancel]: the import of
+    // remastered [start <image.nsp|xci> [key file] | cancel]: the import of
     // port_remastered_import.h, and how far it is.
     const std::string verb = sCmd.args.size() > 1 ? Lower(sCmd.args[1]) : "";
     if (verb == "start" && sCmd.args.size() > 2) {
@@ -1969,7 +1977,7 @@ void RunFrame() {
     } else if (verb == "cancel") {
       PortRemastered::CancelImport();
     } else if (!verb.empty()) {
-      return Finish("usage: remastered [start <image.nsp> [key file] | cancel]");
+      return Finish("usage: remastered [start <image.nsp|xci> [key file] | cancel]");
     }
     const PortRemastered::ImportState state = PortRemastered::ImportStatus();
     Out("%s %d/%d failed %d: %s",

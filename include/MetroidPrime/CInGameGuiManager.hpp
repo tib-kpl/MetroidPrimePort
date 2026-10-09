@@ -7,10 +7,6 @@
 #include "MetroidPrime/Cameras/CCameraFilterPass.hpp"
 #include "MetroidPrime/Player/CFaceplateDecoration.hpp"
 #include "MetroidPrime/SOnScreenTex.hpp"
-#if VERSION >= VERSION_GM8P_00 && VERSION != VERSION_GM8E_02
-#include "GuiSys/CGuiTextSupport.hpp"
-#include "Kyoto/Text/CStringTable.hpp"
-#endif
 #include "MetroidPrime/Tweaks/CTweakGui.hpp"
 
 #include "Kyoto/CRandom16.hpp"
@@ -134,12 +130,6 @@ private:
   SOnScreenTex x1c4_onScreenTex;
   float x1d8_onScreenTexAlpha;
   rstl::single_ptr< TCachedToken< CTexture > > x1dc_onScreenTexTok;
-#if VERSION >= VERSION_GM8P_00 && VERSION != VERSION_GM8E_02
-  // The European release shows a string table where USA v1.00 shows a texture
-  // (the intro's subtitles, translated): its first string, in FONT_Deface18O.
-  rstl::single_ptr< TCachedToken< CStringTable > > xPAL_onScreenStrg;
-  CGuiTextSupport xPAL_onScreenText;
-#endif
   CTweakGui::EHelmetVisMode x1e0_helmetVisMode;
   uint x1e4_enableTargetingManager;
   uint x1e8_enableAutoMapper;

@@ -27,12 +27,28 @@ uint CSystemState::GetBitCount(uint value) {
   return count;
 }
 
+#ifdef TARGET_PC
+// The system options live in CMemoryCardDriver's 174-byte x30_systemData.
+// 1.00's worlds have few enough skippable cinematics for their bits to fit
+// after the fixed fields, but other discs (PAL) have more, and reading past the
+// buffer threw on file create. Cinematics past the cap are not remembered.
+static int CapCinematicBits(int count) {
+  // NES state, x68_, frozen fps/ball counts (2 + 2), power bomb ammo (1),
+  // log scan percent (7), five flags, auto-mapper key state (2).
+  const int fixedBits = 98 * 8 + 64 * 8 + 2 + 2 + 1 + 7 + 5 + 2;
+  const int maxBits = 174 * 8 - fixedBits;
+  static bool sReported = false;
+  if (count > maxBits && !sReported) {
+    sReported = true;
+    OSReport("CSystemState: %d cinematic bits, %d fit in the system options\n", count, maxBits);
+  }
+  return count > maxBits ? maxBits : count;
+}
+#endif
+
 CSystemState::CSystemState() : x0_nesState(static_cast< uchar >(0))
 , x68_(static_cast< uchar >(0))
 , xbc_autoMapperKeyState(0)
-#if SYSTEM_STATE_HAS_LANGUAGE
-, x6c_language(0)
-#endif
 , xc0_frozenFpsCount(0)
 , xc4_frozenBallCount(0)
 , xc8_powerBombAmmoCount(0)
@@ -47,9 +63,6 @@ CSystemState::CSystemState() : x0_nesState(static_cast< uchar >(0))
 CSystemState::CSystemState(CInputStream& in) : x0_nesState(static_cast< uchar >(0))
 , x68_(static_cast< uchar >(0))
 , xbc_autoMapperKeyState(0)
-#if SYSTEM_STATE_HAS_LANGUAGE
-, x6c_language(0)
-#endif
 , xc0_frozenFpsCount(0)
 , xc4_frozenBallCount(0)
 , xc8_powerBombAmmoCount(0)
@@ -60,7 +73,7 @@ CSystemState::CSystemState(CInputStream& in) : x0_nesState(static_cast< uchar >(
 , xd0_27_fusionBeat(false)
 , xd0_28_fusionSuitActive(false)
 , xd0_29_allItemsCollected(false) {
-  for (int i = 0; i < SYSTEM_STATE_NES_BYTES; ++i)
+  for (int i = 0; i < 98; ++i)
     x0_nesState[i] = in.ReadBits(8);
   for (int i = 0; i < 64; ++i)
     x68_[i] = in.ReadBits(8);
@@ -74,9 +87,6 @@ CSystemState::CSystemState(CInputStream& in) : x0_nesState(static_cast< uchar >(
   xd0_27_fusionBeat = in.ReadBits(1) != 0;
   xd0_29_allItemsCollected = in.ReadBits(1) != 0;
   xbc_autoMapperKeyState = in.ReadBits(2);
-#if SYSTEM_STATE_HAS_LANGUAGE
-  x6c_language = in.ReadBits(GetBitCount(7));
-#endif
 
   const rstl::vector< CMemoryCard::MemoryWorld >& worlds = gpMemoryCard->GetMemoryWorlds();
   int cinematicCount = 0;
@@ -86,7 +96,12 @@ CSystemState::CSystemState(CInputStream& in) : x0_nesState(static_cast< uchar >(
     cinematicCount += saveWorld->GetCinematicCount();
   }
   rstl::vector< bool > cinematicStates(cinematicCount, false);
-  for (int i = 0; i < cinematicCount; ++i)
+#ifdef TARGET_PC
+  const int storedCount = CapCinematicBits(cinematicCount);
+#else
+  const int storedCount = cinematicCount;
+#endif
+  for (int i = 0; i < storedCount; ++i)
     cinematicStates[i] = in.ReadBits(1) != 0;
   int stateIdx = 0;
   for (AUTO(it, worlds.begin()); it != worlds.end(); ++it) {
@@ -104,7 +119,7 @@ CSystemState::CSystemState(CInputStream& in) : x0_nesState(static_cast< uchar >(
 }
 
 void CSystemState::PutTo(COutputStream& out) {
-  for (int i = 0; i < SYSTEM_STATE_NES_BYTES; ++i)
+  for (int i = 0; i < 98; ++i)
     out.WriteBits(x0_nesState[i], 8);
   for (int i = 0; i < 64; ++i)
     out.WriteBits(x68_[i], 8);
@@ -118,9 +133,6 @@ void CSystemState::PutTo(COutputStream& out) {
   out.WriteBits(xd0_27_fusionBeat ? 1 : 0, 1);
   out.WriteBits(xd0_29_allItemsCollected ? 1 : 0, 1);
   out.WriteBits(xbc_autoMapperKeyState, 2);
-#if SYSTEM_STATE_HAS_LANGUAGE
-  out.WriteBits(x6c_language, GetBitCount(7));
-#endif
   const rstl::vector< CMemoryCard::MemoryWorld >& worlds = gpMemoryCard->GetMemoryWorlds();
   int cinematicCount = 0;
   for (AUTO(it, worlds.begin()); it != worlds.end(); ++it) {
@@ -139,6 +151,9 @@ void CSystemState::PutTo(COutputStream& out) {
       cinematicStates.push_back(GetCinematicState(
           rstl::pair< CAssetId, TEditorId >(worldId, world.GetCinematics()[i])));
   }
+#ifdef TARGET_PC
+  cinematicCount = CapCinematicBits(cinematicCount);
+#endif
   for (int i = 0; i < cinematicCount; ++i)
     out.WriteBits(cinematicStates[i] ? 1 : 0, 1);
 }

@@ -83,14 +83,6 @@ void Record(int points, Clock::time_point start) {
 CSkinnedModel::TPointGenFunc CSkinnedModel::sPointGen;
 void* CSkinnedModel::sPointGenData;
 
-// The European release skins into a buffer the game hands over later
-// (SetSkinningBuffer); the PC build of it keeps the port's own, as USA v1.00's.
-#if VERSION >= VERSION_GM8P_00 && VERSION != VERSION_GM8E_02 && !defined(TARGET_PC)
-#define SKINNING_PAL_BUFFER 1
-#else
-#define SKINNING_PAL_BUFFER 0
-#endif
-
 struct SSkinnedAllocation {
   SSkinnedAllocation(void* ptr, int w1, ushort w2) : x0_ptr(ptr), x4_unk1(w1), x8_unk2(w2) {}
 
@@ -100,14 +92,14 @@ struct SSkinnedAllocation {
 };
 
 namespace Skinning {
-#if SKINNING_PAL_BUFFER
+#if VERSION >= VERSION_GM8P_00 && VERSION != VERSION_GM8E_02
 static void* sStaticSkinningData = nullptr;
 static int sStaticSkinningDataSize = 0x80000;
 #endif
 static ushort skCurrentToken = 0;
 static int sNumSkinnedObjects = 0;
 static bool sSkinningInitialized = false;
-#if !SKINNING_PAL_BUFFER
+#if VERSION < VERSION_GM8P_00 || VERSION == VERSION_GM8E_02
 #ifdef TARGET_PC
 // Port: every skinned draw takes its vertices from this ring until the GPU
 // command stream has consumed them. Retail's 512 KB caps a model at ~21k
@@ -123,12 +115,12 @@ static bool sbDumpedSpinLockMessage = false;
 
 void AddSkinnedRef();
 void DelSkinnedRef();
-#if SKINNING_PAL_BUFFER
+#if VERSION >= VERSION_GM8P_00 && VERSION != VERSION_GM8E_02
 void SetSkinningBuffer(void* buffer, int size);
 #endif
 } // namespace Skinning
 
-#if SKINNING_PAL_BUFFER
+#if VERSION >= VERSION_GM8P_00 && VERSION != VERSION_GM8E_02
 void Skinning::SetSkinningBuffer(void* buffer, int size) {
   sStaticSkinningDataSize = size;
   sAllocations.clear();
@@ -148,7 +140,7 @@ void Skinning::AddSkinnedRef() {
     sSkinningInitialized = true;
   }
 
-#if SKINNING_PAL_BUFFER
+#if VERSION >= VERSION_GM8P_00 && VERSION != VERSION_GM8E_02
   if (sNumSkinnedObjects++ == 0) {
     sSkinningBuffer = CCircularBuffer(sStaticSkinningData, sStaticSkinningDataSize);
   }
@@ -170,9 +162,7 @@ void Skinning::DelSkinnedRef() {
 
 #if VERSION >= VERSION_GM8P_00 && VERSION != VERSION_GM8E_02
 void CSkinnedModel::SetSkinningBuffer(void* buffer, int size) {
-#if SKINNING_PAL_BUFFER
   Skinning::SetSkinningBuffer(buffer, size);
-#endif
 }
 #endif
 

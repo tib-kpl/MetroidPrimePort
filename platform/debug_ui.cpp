@@ -36,7 +36,6 @@
 #include "port_textures.h"
 #include "port_build_info.h"
 #include "port_gpu_driver.h"
-#include "port_release.h"
 #if defined(__ANDROID__)
 #include "touch_pad.h"
 #endif
@@ -227,10 +226,6 @@ bool sOpenGlesAtStart = false;
 // Setting `gpu_driver`: an installed custom Vulkan driver's id (port_gpu_driver.h), "" = the system's.
 std::string sGpuDriver;
 std::string sGpuDriverAtStart;
-// Setting `gpu_driver_ok`: the driver last kept after its trial run (DrawGpuDriverTrial).
-std::string sGpuDriverKept;
-// This run is a driver's trial: the marker main() left, removed once the user keeps it.
-std::string sGpuDriverTrialMarker;
 bool sUnlockHardMode = false;
 // Setting `storage_clamp`: -1 auto (aurora decides), 0 off, 1 on; read once when shaders are first made.
 int sStorageClamp = -1;
@@ -621,8 +616,6 @@ void ApplySetting(const std::string& key, const std::string& value) {
   } else if (key == "gpu_driver") {
     sGpuDriver = value;
     sGpuDriverAtStart = value;
-  } else if (key == "gpu_driver_ok") {
-    sGpuDriverKept = value;
   } else if (key == "storage_clamp") {
     const int v = std::atoi(value.c_str());
     sStorageClamp = v < 0 ? -1 : (v > 0 ? 1 : 0);
@@ -943,7 +936,6 @@ void SaveSettings() {
   file << "msaa=" << sMsaa << '\n';
   file << "opengles=" << (sOpenGles ? 1 : 0) << '\n';
   file << "gpu_driver=" << sGpuDriver << '\n';
-  file << "gpu_driver_ok=" << sGpuDriverKept << '\n';
   file << "anisotropy=" << sAnisotropy << '\n';
   file << "unlock_hard_mode=" << (sUnlockHardMode ? 1 : 0) << '\n';
   file << "unlock_fusion_suit=" << (sUnlockFusionSuit ? 1 : 0) << '\n';
@@ -1134,7 +1126,7 @@ void EnsureInitialized() {
   }
   sInitialized = true;
   LoadSettings();
-  // Until a language is chosen, the system's: the European disc has French,
+  // Until a language is chosen, the system's: a European disc has French,
   // German, Spanish and Italian text, and a Remastered import adds more.
   if (!sTextLanguageSaved) {
     sTextLanguage = SystemTextLanguage();
@@ -1744,20 +1736,6 @@ void SetGpuDriver(const std::string& id) {
     sGpuDriver = id;
     MarkDirty();
   }
-  // Keeping confirms only the current choice: another one gets its own trial.
-  if (sGpuDriverKept != id) {
-    sGpuDriverKept.clear();
-  }
-}
-
-const std::string& GpuDriverKept() {
-  EnsureInitialized();
-  return sGpuDriverKept;
-}
-
-void BeginGpuDriverTrial(const std::string& markerPath) {
-  EnsureInitialized();
-  sGpuDriverTrialMarker = markerPath;
 }
 
 int Anisotropy() {
@@ -4199,8 +4177,9 @@ std::string CardImportDolphin() {
   }
   const PortGci::DolphinCard dolphin = PortGci::FindDolphinCard();
   if (!dolphin.Found()) {
-    return std::string("No Dolphin memory card found (GC/") + PortRelease::kDolphinRegion +
-           "/Card A or GC/MemoryCardA." + PortRelease::kDolphinRegion + ".raw in Dolphin's user folder).";
+    return std::string("No Dolphin memory card found (GC/") + PortGci::CardRegion() + "/Card A or GC/MemoryCardA." +
+           PortGci::CardRegion() + ".raw in "
+           "Dolphin's user folder).";
   }
   // Dolphin uses one or the other, per its settings: try the one written last.
   std::error_code ec;
@@ -4236,9 +4215,9 @@ std::string CardExportDolphin() {
   }
   const PortGci::DolphinCard dolphin = PortGci::FindDolphinCard();
   if (!dolphin.Found()) {
-    return std::string("No Dolphin memory card found (GC/") + PortRelease::kDolphinRegion +
-           "/Card A or GC/MemoryCardA." + PortRelease::kDolphinRegion +
-           ".raw in Dolphin's user folder); start a GameCube game in Dolphin once to create it.";
+    return std::string("No Dolphin memory card found (GC/") + PortGci::CardRegion() + "/Card A or GC/MemoryCardA." +
+           PortGci::CardRegion() + ".raw in "
+           "Dolphin's user folder); start a GameCube game in Dolphin once to create it.";
   }
   std::string text;
   if (!dolphin.gciFolder.empty()) {
@@ -4370,8 +4349,8 @@ void DrawMemoryCard() {
   if (ImGui::Button("Import from Dolphin")) {
     sCardStatus = CardImportDolphin();
   }
-  ItemHelp((std::string("Dolphin's card is looked for in its user folder (GC/") + PortRelease::kDolphinRegion +
-            "/Card A, GC/MemoryCardA." + PortRelease::kDolphinRegion + ".raw).")
+  ItemHelp((std::string("Dolphin's card is looked for in its user folder (GC/") + PortGci::CardRegion() +
+            "/Card A, GC/MemoryCardA." + PortGci::CardRegion() + ".raw).")
                .c_str());
 #endif
   ImGui::EndDisabled();
@@ -4381,7 +4360,7 @@ void DrawMemoryCard() {
     sCardExportQueue = PortGci::GameFiles(folder);
     OpenCardDialog(kCardPick_ExportFile);
   }
-  ItemHelp((std::string("Saves each file in turn; keep Dolphin's names (01-") + PortRelease::kGameCode +
+  ItemHelp((std::string("Saves each file in turn; keep Dolphin's names (01-") + PortGci::GameCode() +
             "-MetroidPrime A.gci) for its GCI folder.")
                .c_str());
 #else
@@ -4470,7 +4449,7 @@ void OpenRemasteredDialog(int which) {
       sRemasteredPicks.emplace_back(int(reinterpret_cast< intptr_t >(userdata)), files[0]);
     }
   };
-  static const SDL_DialogFileFilter imageFilters[] = {{"Switch images (.nsp)", "nsp"}, {"All files", "*"}};
+  static const SDL_DialogFileFilter imageFilters[] = {{"Switch images (.nsp, .xci)", "nsp;xci"}, {"All files", "*"}};
   static const SDL_DialogFileFilter keyFilters[] = {{"Key files (.keys)", "keys"}, {"All files", "*"}};
   SDL_ShowOpenFileDialog(done, reinterpret_cast< void* >(static_cast< intptr_t >(which)), window,
                          which == 0 ? imageFilters : keyFilters, 2, nullptr, false);
@@ -4886,72 +4865,6 @@ void DrawDiscReadFailedAlert() {
   ImGui::PopStyleColor(3);
 }
 
-// A custom driver's first run: it may start fine and still draw garbage (Turnip
-// builds made for another GPU did), which leaves no readable menu to switch back.
-// So it has to be kept here within kTrialSeconds; otherwise, or if the game closes
-// first (main() finds the marker), the system driver comes back.
-void DrawGpuDriverTrial() {
-  constexpr float kTrialSeconds = 30.f;
-  static float sElapsed = 0.f;
-  if (sGpuDriverTrialMarker.empty()) {
-    return;
-  }
-  // The panel stays open meanwhile: it's what routes taps and clicks to this window.
-  sVisible = true;
-  // Long frames (pipeline builds, the app in the background) don't eat into the time
-  // the user has to read the prompt.
-  sElapsed += std::min(ImGui::GetIO().DeltaTime, 0.1f);
-  const auto finish = [](bool keep) {
-    std::error_code ec;
-    std::filesystem::remove(sGpuDriverTrialMarker, ec);
-    sGpuDriverTrialMarker.clear();
-    sVisible = false;
-    if (keep) {
-      sGpuDriverKept = PortGpuDriver::Active();
-    } else if (sGpuDriver == PortGpuDriver::Active()) {
-      sGpuDriver.clear();
-    }
-    MarkDirty();
-    SaveSettings();
-    if (!keep) {
-      // The driver can't be swapped while running; the next start uses the system's.
-      PortLog::Write("port: GPU driver %s not kept; closing to start on the system driver\n",
-                     PortGpuDriver::Active().c_str());
-      SDL_Event quit{};
-      quit.type = SDL_EVENT_QUIT;
-      SDL_PushEvent(&quit);
-    }
-  };
-  const float left = kTrialSeconds - sElapsed;
-  if (left <= 0.f) {
-    finish(false);
-    return;
-  }
-  const ImGuiViewport* viewport = ImGui::GetMainViewport();
-  ImGui::SetNextWindowPos(viewport->GetCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
-  ImGui::SetNextWindowSize(ImVec2(std::min(viewport->Size.x - 32.f, ImGui::GetFontSize() * 32.f), 0.f));
-  const bool open = ImGui::Begin("Keep this Vulkan driver?", nullptr,
-                                 ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize |
-                                     ImGuiWindowFlags_NoSavedSettings);
-  // Drawn before the panel, which would otherwise cover it.
-  ImGui::BringWindowToDisplayFront(ImGui::GetCurrentWindow());
-  if (open) {
-    ImGui::TextWrapped("The game is running on %s.", aurora_get_gpu_driver());
-    ImGui::TextWrapped("If the picture looks right, keep it. Otherwise the game closes in %d s and starts on the "
-                       "system driver next time.",
-                       int(left) + 1);
-    const float width = (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x) * 0.5f;
-    if (ImGui::Button("Keep", ImVec2(width, 0.f))) {
-      finish(true);
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Use system driver", ImVec2(width, 0.f))) {
-      finish(false);
-    }
-  }
-  ImGui::End();
-}
-
 void DrawRemasteredImport() {
   static char sImage[1024] = "";
   static char sKeys[1024] = "";
@@ -5014,7 +4927,7 @@ void DrawRemasteredImport() {
   }
   const PortRemastered::ImportState state = PortRemastered::ImportStatus();
   ImGui::TextWrapped("Converts the models of your own copy of Metroid Prime Remastered into a mod. It needs the "
-                     "game's .nsp and your console's key file (prod.keys), and takes a few minutes.");
+                     "game's .nsp or .xci and your console's key file (prod.keys), and takes a few minutes.");
   if (PortMods::StaleRemasteredImport() != nullptr) {
     ImGui::TextColored(ThemeWarnColor(),
                        "Re-import needed: the installed models were made by an older version.");
@@ -5026,11 +4939,11 @@ void DrawRemasteredImport() {
   ImGui::BeginDisabled(state.running);
 #if defined(__ANDROID__)
   // No path to type here: the files are picked, and shown by name.
-  if (ImGui::Button("Pick the .nsp...##remastered-image")) {
+  if (ImGui::Button("Pick the .nsp/.xci...##remastered-image")) {
     OpenRemasteredDialog(0);
   }
   ImGui::SameLine();
-  ImGui::TextUnformatted(sPickNames[0].empty() ? "Metroid Prime Remastered .nsp" : sPickNames[0].c_str());
+  ImGui::TextUnformatted(sPickNames[0].empty() ? "Metroid Prime Remastered .nsp or .xci" : sPickNames[0].c_str());
   if (ImGui::Button("Pick the keys...##remastered-keys")) {
     OpenRemasteredDialog(1);
   }
@@ -5041,7 +4954,7 @@ void DrawRemasteredImport() {
   ImGui::PopStyleColor();
 #else
   ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x * 0.6f);
-  ImGui::InputTextWithHint("##remastered-image", "Metroid Prime Remastered .nsp", sImage, sizeof(sImage));
+  ImGui::InputTextWithHint("##remastered-image", "Metroid Prime Remastered .nsp or .xci", sImage, sizeof(sImage));
   ImGui::SameLine();
   if (ImGui::Button("Browse...##remastered-image")) {
     OpenRemasteredDialog(0);
@@ -5698,8 +5611,6 @@ void ProcessGpuDriverPick() {
   if (id.empty()) {
     sGpuDriverStatus = "Couldn't install it: " + error + ".";
   } else {
-    // A reinstalled id may be a different build of the driver.
-    sGpuDriverKept.clear();
     SetGpuDriver(id);
     sGpuDriverStatus = "Installed " + id + ".";
   }
@@ -6053,8 +5964,13 @@ void DrawControlsKeyboardMouse() {
   bool mouseAim = sMouseAim;
   if (ImGui::Checkbox("Mouse aim", &mouseAim)) {
     SetMouseAim(mouseAim);
+    // Mouse aim replaces the R-button free look, so without twin-stick a pad
+    // would have no aim at all. Both add into the same aim; twin-stick can
+    // still be switched off on its own.
+    if (mouseAim) SetTwinStick(true);
     MarkDirty();
   }
+  ImGui::TextDisabled("Also switches on Twin stick, so a controller's right stick aims too.");
   if (ImGui::SliderFloat("Sensitivity", &sMouseSensitivity, 0.0005f, 0.02f, "%.4f rad/px",
                          ImGuiSliderFlags_Logarithmic)) {
     MarkDirty();
@@ -7010,9 +6926,10 @@ void DrawLanguageSection() {
                      static_cast< int >(PortRemastered::kTextLanguageCount) + 1)) {
       SetTextLanguage(language == 0 ? "" : PortRemastered::kTextLanguages[language - 1].code);
     }
-    ItemHelp("The language of the game's text. Only English is on the disc: the others come with the "
-             "Remastered import (its text), and any text it lacks stays English. Text already on "
-             "screen changes the next time its menu or screen opens.");
+    ItemHelp("The language of the game's text. A USA disc has only English; a PAL disc also has French, "
+             "German, Spanish and Italian, and the Remastered import adds its languages (its text wins). "
+             "Text missing in a language stays English. Text already on screen changes the next time "
+             "its menu or screen opens.");
   }
 
 }
@@ -8498,7 +8415,6 @@ void DrawUI() {
   DrawStaleImportToast();
   DrawUpdateToast();
   DrawDiscReadFailedAlert();
-  DrawGpuDriverTrial();
   DrawShaderCompilationToast();
   if (sTouchLayoutSavePending.exchange(false, std::memory_order_acq_rel)) {
     MarkDirty();
