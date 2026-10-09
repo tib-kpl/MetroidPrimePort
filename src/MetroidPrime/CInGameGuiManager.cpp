@@ -133,6 +133,14 @@ CInGameGuiManager::CInGameGuiManager(const CStateManager& mgr, CArchitectureQueu
 , x1c0_nextState(kIGGS_Zero)
 , x1d8_onScreenTexAlpha(0.f)
 , x1dc_onScreenTexTok(nullptr)
+#if VERSION >= VERSION_GM8P_00 && VERSION != VERSION_GM8E_02
+, xPAL_onScreenStrg(nullptr)
+, xPAL_onScreenText(kInvalidAssetId, CGraphics::GetViewport().mWidth - 64, 0,
+                    CGuiTextProperties(true, true, kJustification_Left,
+                                       kVerticalJustification_Center, nullptr),
+                    CColor(static_cast< uint >(0xFFFFFFFF)), CColor(static_cast< uint >(0x000000FF)),
+                    CColor(static_cast< uint >(0xFFFFFFFF)), gpSimplePool)
+#endif
 , x1e0_helmetVisMode(gpTweakGui->GetHelmetVisMode())
 , x1e4_enableTargetingManager(gpTweakGui->GetEnableTargetingManager())
 , x1e8_enableAutoMapper(gpTweakGui->GetEnableAutoMapper())
@@ -318,6 +326,31 @@ void CInGameGuiManager::Draw(const CStateManager& mgr) const {
   }
   // Re-published below if the minimap is drawn this frame.
   PortDebug::SetMinimapRect(false, false, 0.f, 0.f, 0.f, 0.f);
+#if VERSION >= VERSION_GM8P_00 && VERSION != VERSION_GM8E_02
+  if (x1d8_onScreenTexAlpha > 0.f) {
+    // No offset: a subtitle, at the bottom left, above the bottom edge.
+    const bool subtitle = x1c4_onScreenTex.xc_offset == CVector2i(0, 0);
+    gpRender->SetDepthReadWrite(false, false);
+    gpRender->SetBlendMode_AlphaBlended();
+    CGraphics::SetTevOp(kTS_Stage0, CGraphics::kEnvModulate);
+    CGraphics::SetTevOp(kTS_Stage1, CGraphics::kEnvPassthru);
+    const CViewport& viewport = CGraphics::GetViewport();
+    const int x = subtitle ? 32
+                           : viewport.mLeft + (viewport.mWidth - x1c4_onScreenTex.x4_extent[0]) / 2 +
+                                 x1c4_onScreenTex.xc_offset.GetX();
+    const int y = subtitle ? xPAL_onScreenText.GetTextBoundingHeight() + 28
+                           : viewport.mTop + (viewport.mHeight - x1c4_onScreenTex.x4_extent[1]) / 2 + 20 -
+                                 x1c4_onScreenTex.xc_offset.GetY();
+    gpRender->SetViewportOrtho(false, -4096.f, 4096.f);
+    CGraphics::SetModelMatrix(CTransform4f::Translate(static_cast< float >(x), 0.f, static_cast< float >(y)));
+    CGraphics::SetCullMode(kCM_None);
+    CColor color = CColor::White();
+    color.SetAlpha(static_cast< uchar >(255.f * x1d8_onScreenTexAlpha));
+    const_cast< CGuiTextSupport& >(xPAL_onScreenText).SetGeometryColor(color);
+    xPAL_onScreenText.Render();
+    CGraphics::SetCullMode(kCM_Front);
+  }
+#else
   if (x1d8_onScreenTexAlpha > 0.f && x1dc_onScreenTexTok->GetObject() != nullptr) {
     const CTexture& tex = *x1dc_onScreenTexTok->GetObject();
     gpRender->SetDepthReadWrite(false, false);
@@ -331,6 +364,7 @@ void CInGameGuiManager::Draw(const CStateManager& mgr) const {
     const int y = viewport.mTop + (viewport.mHeight - h) / 2 - x1c4_onScreenTex.xc_offset.GetY();
     CGraphics::Render2D(tex, x, y, w, h, CColor::White().WithAlphaOf(x1d8_onScreenTexAlpha));
   }
+#endif
 
   float staticAlpha = 0.f;
   const float deathTime = mgr.GetPlayer()->GetDeathTime();
@@ -533,6 +567,40 @@ void CInGameGuiManager::Update(const CStateManager& mgr, float dt, CArchitecture
   // Port: the touch overlay shows R in the pause menu, where it changes screens.
   PortDebug::SetPauseScreenOpen(x1c0_nextState == kIGGS_PauseGame ||
                                 x1c0_nextState == kIGGS_PauseLogBook);
+#if VERSION >= VERSION_GM8P_00 && VERSION != VERSION_GM8E_02
+  if (x1d8_onScreenTexAlpha == 0.f) {
+    xPAL_onScreenStrg = nullptr;
+    xPAL_onScreenText.SetFontId(kInvalidAssetId);
+  }
+  const SOnScreenTex& pending = mgr.GetPendingScreenTex();
+  if (pending.x0_id != x1c4_onScreenTex.x0_id) {
+    if (xPAL_onScreenStrg.null() || pending.x0_id != kInvalidAssetId) {
+      x1c4_onScreenTex = pending;
+      if (x1c4_onScreenTex.x0_id != kInvalidAssetId) {
+        const bool subtitle = x1c4_onScreenTex.xc_offset == CVector2i(0, 0);
+        xPAL_onScreenStrg = rs_new TCachedToken< CStringTable >(
+            gpSimplePool->GetObj(SObjectTag('STRG', x1c4_onScreenTex.x0_id)));
+        xPAL_onScreenStrg->Lock();
+        const CStringTable* const strings = xPAL_onScreenStrg->GetT();
+        x1d8_onScreenTexAlpha = subtitle ? 1.f : FLT_EPSILON;
+        const SObjectTag* const font = gpResourceFactory->GetResourceIdByName("FONT_Deface18O");
+        xPAL_onScreenText.SetFontId(font != nullptr ? font->GetId() : kInvalidAssetId);
+        xPAL_onScreenText.SetVerticalJustification(subtitle ? kVerticalJustification_Bottom
+                                                            : kVerticalJustification_Center);
+        xPAL_onScreenText.SetText(rstl::wstring_l(strings->GetString(0)));
+      }
+    } else if (pending.x4_extent == CVector2i(0, 0)) {
+      x1c4_onScreenTex.x4_extent = pending.x4_extent;
+      x1c4_onScreenTex.x0_id = kInvalidAssetId;
+      x1d8_onScreenTexAlpha = 0.f;
+      xPAL_onScreenText.SetFontId(kInvalidAssetId);
+    } else {
+      x1d8_onScreenTexAlpha = rstl::max_val(0.f, x1d8_onScreenTexAlpha - dt);
+    }
+  } else if (x1c4_onScreenTex.x0_id != kInvalidAssetId && !xPAL_onScreenStrg.null()) {
+    x1d8_onScreenTexAlpha = rstl::min_val(1.f, x1d8_onScreenTexAlpha + dt);
+  }
+#else
   if (x1d8_onScreenTexAlpha == 0.f) {
     x1dc_onScreenTexTok = nullptr;
   }
@@ -561,6 +629,7 @@ void CInGameGuiManager::Update(const CStateManager& mgr, float dt, CArchitecture
              x1dc_onScreenTexTok->TryCache()) {
     x1d8_onScreenTexAlpha = rstl::min_val(1.f, x1d8_onScreenTexAlpha + dt);
   }
+#endif
 
   if (cameraActive) {
     const float visorStaticAlpha = mgr.GetPlayer()->GetVisorStaticAlpha();

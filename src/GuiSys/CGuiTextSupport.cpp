@@ -1,6 +1,7 @@
 #include "GuiSys/CGuiTextSupport.hpp"
 
 #include "Kyoto/Basics/CBasics.hpp"
+#include "Kyoto/CSimplePool.hpp"
 #include "Kyoto/Graphics/CGraphics.hpp"
 #include "Kyoto/Text/CRasterFont.hpp"
 #include "Kyoto/Text/CTextExecuteBuffer.hpp"
@@ -62,6 +63,20 @@ CGuiTextSupport::CGuiTextSupport(CAssetId fontId, int extX, int extY,
 #endif
 
 CGuiTextSupport::~CGuiTextSupport() {}
+
+#if VERSION >= VERSION_GM8P_00 && VERSION != VERSION_GM8E_02
+void CGuiTextSupport::SetFontId(CAssetId fontId) {
+  if (fontId == x5c_fontId) {
+    return;
+  }
+  x5c_fontId = fontId;
+  x2cc_font = rstl::optional_object_null();
+  if (x5c_fontId != kInvalidAssetId) {
+    x2cc_font = TLockedToken< CRasterFont >(gpSimplePool->GetObj(SObjectTag('FONT', x5c_fontId)));
+  }
+  ClearRenderBuffer();
+}
+#endif
 
 bool CGuiTextSupport::GetIsTextSupportFinishedLoading() const {
   CheckAndRebuildRenderBuffer();
