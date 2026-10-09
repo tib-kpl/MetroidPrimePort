@@ -338,6 +338,10 @@ else()
     message(STATUS "OpenSSL not found: wss:// disabled")
 endif()
 mp_websocket_tls(metroid_prime_port)
+# platform/disc.cpp finds the DOL's embedded default font by inflating its zlib
+# streams. Linux finds zlib.h among the system headers; Windows has none, so
+# name the zlib target Aurora provides.
+target_link_libraries(metroid_prime_port PRIVATE ZLIB::ZLIB)
 if(ANDROID AND OpenSSL_FOUND)
     # The OpenSSL linked in is private to the game library. Exporting its
     # symbols would let them interpose on, or be interposed by, another copy in
