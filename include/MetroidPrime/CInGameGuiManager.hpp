@@ -7,6 +7,10 @@
 #include "MetroidPrime/Cameras/CCameraFilterPass.hpp"
 #include "MetroidPrime/Player/CFaceplateDecoration.hpp"
 #include "MetroidPrime/SOnScreenTex.hpp"
+#ifdef TARGET_PC
+#include "GuiSys/CGuiTextSupport.hpp"
+#include "Kyoto/Text/CStringTable.hpp"
+#endif
 #include "MetroidPrime/Tweaks/CTweakGui.hpp"
 
 #include "Kyoto/CRandom16.hpp"
@@ -130,6 +134,16 @@ private:
   SOnScreenTex x1c4_onScreenTex;
   float x1d8_onScreenTexAlpha;
   rstl::single_ptr< TCachedToken< CTexture > > x1dc_onScreenTexTok;
+#ifdef TARGET_PC
+  // A PAL disc's Billboard names a string table where 1.00's names a texture of
+  // English text (the intro's subtitles, translated). PAL's own code draws its
+  // first string in FONT_Deface18O; drawn as a texture it read a garbage ARAM
+  // token and aborted. Set while such a text is shown.
+  rstl::single_ptr< TCachedToken< CStringTable > > xPort_onScreenStrg;
+  rstl::single_ptr< CGuiTextSupport > xPort_onScreenText;
+  void PortStartOnScreenText();
+  void PortDrawOnScreenText() const;
+#endif
   CTweakGui::EHelmetVisMode x1e0_helmetVisMode;
   uint x1e4_enableTargetingManager;
   uint x1e8_enableAutoMapper;
