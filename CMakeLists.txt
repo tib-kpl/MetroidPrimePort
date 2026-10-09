@@ -340,6 +340,15 @@ function(mp_add_release release)
     endif()
     set(game mp_game${suffix})
     set(exe metroid_prime_port${suffix})
+    # The executables share their folder: only the first release's copies the
+    # files placed beside them (textures, the pipeline cache seed, runtime DLLs),
+    # or two post-build steps would clear and fill the same folder at once.
+    list(GET MP_GAME_RELEASES 0 first_release)
+    if(release STREQUAL first_release)
+        set(copies_shared_files ON)
+    else()
+        set(copies_shared_files OFF)
+    endif()
     # The port has an explicit source manifest, including registration-only and
     # shim-dependent translation units. Link those objects directly on both ELF and
     # COFF rather than relying on archive extraction or suppressing duplicate symbols.
@@ -419,7 +428,7 @@ function(mp_add_release release)
         # tools/make_prompt_glyphs.py.
         target_sources(${exe} PRIVATE "${MP_EMBED_SOURCE}")
         target_compile_definitions(${exe} PRIVATE MP_EMBED_RESOURCES)
-    else()
+    elseif(copies_shared_files)
         # Keep the HD texture replacements next to the executable, which is where the
         # port looks for them by default, so a built binary picks them up without a
         # manual copy. Regenerate them with tools/make_prompt_glyphs.py. The generated
@@ -455,12 +464,14 @@ function(mp_add_release release)
         message(FATAL_ERROR "This port currently requires an ELF linker with RESCAN support or an MSVC-compatible COFF linker")
     endif()
 
-    aurora_copy_runtime_dlls(${exe})
+    if(copies_shared_files)
+        aurora_copy_runtime_dlls(${exe})
+    endif()
 
     # Aurora imports this machine-independent pipeline description cache and
     # compiles its entries in the background before first use.
     # Embedded builds carry it inside the executable instead.
-    if(NOT MP_EMBED_RESOURCES)
+    if(NOT MP_EMBED_RESOURCES AND copies_shared_files)
         add_custom_command(TARGET ${exe} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 ${CMAKE_CURRENT_SOURCE_DIR}/assets/initial_pipeline_cache.db
