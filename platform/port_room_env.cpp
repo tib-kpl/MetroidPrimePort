@@ -1,5 +1,6 @@
 // Room environments at run time: which areas have one, their cubes on the GPU, and the
 // cube and ambient for a model. See port_room_env.h.
+#include "port_debug.h"
 #include "port_env.h"
 #include "port_room_env.h"
 #include "port_strings.h"
@@ -11,6 +12,7 @@
 #include "port_room_env_lod.h"
 #include "port_room_geo.h"
 
+#include <Kyoto/CRandom16.hpp>
 #include <dolphin/gx/GXExtra.h>
 
 #include <algorithm>
@@ -203,7 +205,7 @@ bool sHint = false;
 bool sBrdfSent = false; // the mods' brdf.lut, or the lack of one, is with Aurora
 uint32_t sHintArea = 0;
 float sHintCentre[3];
-float sHintLightmap[3] = {}; // SetLightmapHint; scale 0: none
+float sHintLightmap[3] = {}; // SetLightmapHint; PortRoomGeo::HasLightmapLookup
 int sEnabled = -1;
 int sExposure = -1;
 int sBloom = -1;
@@ -1398,6 +1400,16 @@ void SendBrdfLut() {
   GXSetPBRBrdfLut(data.empty() ? nullptr : data.data(), uint32_t(data.size()));
 }
 
+// Remastered's X-ray visor post (kb topic/xray-post-shader-00089f0.md); MP_XRAY_POST=0 keeps the
+// retail visor, as does Original experience.
+static float sXRayTime = 0.f;
+static bool sXRayActive = false;
+
+static bool XRayPostEnabled() {
+  static const bool sEnv = port::EnvFlag("MP_XRAY_POST", true);
+  return sEnv && !PortDebug::OriginalExperience();
+}
+
 void UpdateFrame(bool roomGeoDrawing) {
   if (!sBrdfSent) {
     SendBrdfLut();
@@ -1406,6 +1418,12 @@ void UpdateFrame(bool roomGeoDrawing) {
     sBombTint = port::EnvFlag("MP_REMASTERED_BOMB_TINT", true) ? 1 : 0;
   }
   PowerBombBakedLight(sBombTint != 0 ? sPowerBombTime : -1.f, sBakedLight);
+  if (sXRayActive && XRayPostEnabled()) {
+    // init_frame 0xfb34b0 sets CBakedLightingManager's modulation override (0.6, 0.6, 0.6); it
+    // replaces the colour entirely, power-bomb flash included (UpdateLightModulationColor 0x1c6f4c).
+    constexpr float kXRayShadowMod = 0.6f;
+    sBakedLight[0] = sBakedLight[1] = sBakedLight[2] = kXRayShadowMod;
+  }
   GXSetPBRBakedLightModulation(sBakedLight);
   constexpr float kGrey = 0.2158605f; // sRGB 128, linear
   constexpr uint32_t kInFlight = 3;   // readbacks Aurora may have queued
@@ -1530,6 +1548,86 @@ float GlowScale() {
   // 2^(3 - EV) / 2^(3 - static EV).
   const float scale = std::exp2(sFrame.shown[5] - sFrame.ev.value);
   return std::isfinite(scale) && scale > 0.f ? scale : 1.f;
+}
+
+// Remastered's thermal visor post (kb topic/thermal-post.md); MP_THERMAL_POST=0 keeps the retail
+// blend, as does Original experience or a mod without the imported gradient.
+static float sThermalTime = 0.f;
+static bool sThermalLutSent = false;
+
+static bool ThermalPostEnabled() {
+  static const bool sEnv = port::EnvFlag("MP_THERMAL_POST", true);
+  return sEnv && !PortDebug::OriginalExperience();
+}
+
+void ThermalTick(float dt, bool thermalActive) {
+  sThermalTime = thermalActive ? sThermalTime + dt : 0.f;
+}
+
+bool ThermalPass(bool hot, float areaHeat) {
+  if (!ThermalPostEnabled()) {
+    return false;
+  }
+  if (!sThermalLutSent) {
+    const std::string path = PortMods::ThermalLutPath();
+    if (path.empty()) {
+      return false;
+    }
+    sThermalLutSent = true;
+    std::ifstream in(PortGci::PathFromString(path), std::ios::binary);
+    const std::vector<uint8_t> data = ReadAll(in);
+    if (!in || !GXPortSetThermalLut(data.data(), uint32_t(data.size()))) {
+      PortLog::Write("room env: %s: cannot read the thermal gradient\n", path.c_str());
+      return false;
+    }
+  }
+  float tone[3][4];
+  if (!(FrameExposure() > 0.f) || !Tone(tone)) {
+    return false;
+  }
+  // The cold pass's noise offset: two draws of Remastered's CRandom16 (seed 0x54524d4c), one
+  // generator kept across calls.
+  static CRandom16 sRandom(0x54524d4c);
+  float r[4] = {0.f, 0.f, 0.f, 0.f};
+  if (!hot) {
+    r[0] = sRandom.Float();
+    r[1] = sRandom.Float();
+  }
+  // The ghost: the previous frame's target over this one, past 0.1 s of thermal time.
+  const float v[4] = {hot ? 1.f : 0.f, areaHeat, sThermalTime, sThermalTime > 0.1f ? 1.f : 0.f};
+  return GXPortThermalPass(tone, v, r);
+}
+
+void XRayTick(float dt, bool xrayActive) {
+  sXRayActive = xrayActive;
+  sXRayTime = xrayActive ? sXRayTime + dt : 0.f;
+}
+
+bool XRayPass(bool distortion) {
+  if (!XRayPostEnabled()) {
+    return false;
+  }
+  const float exposure = FrameExposure();
+  float tone[3][4];
+  if (!(exposure > 0.f) || !Tone(tone)) {
+    return false;
+  }
+  // Shader 00089f0's constants (kb topic/xray-post-shader-00089f0.md): the tweak values of
+  // init_frame 0xfb34b0; the BSS words are never written.
+  const float p[8][4] = {
+      {0.28986f, 1.3f, distortion ? 1.f : 0.f, 1.f / exposure},
+      {0.f, 0.f, 0.01f, -1.5f},
+      {0.f, 0.f, 0.f, 0.9865f},
+      {0.65f, 0.9f, 0.9f, 0.999f},
+      {0.95f, 1.5f, 3.f, 0.76f},
+      {3.5e-7f, 1.3125e-8f, 2.f, sXRayTime},
+      {0.18f, 0.22f, 0.44f, 0.7f},
+      {0.f, 15.f, 0.f, 0.f},
+  };
+  // SetupViewForDraw's depth range.
+  // skXRayResolution: the scale of the target the world is drawn into (init_frame 0xfb34b0).
+  const float depthRange[3] = {0.125f, 1.f, distortion ? 0.7f : 1.f};
+  return GXPortXRayPass(p, tone, depthRange);
 }
 
 float SkyGain() {
@@ -2533,7 +2631,7 @@ void SetLightmapHint(const float lookup[3]) { std::memcpy(sHintLightmap, lookup,
 
 void ClearVolumeHint() {
   sHint = false;
-  sHintLightmap[2] = 0.f;
+  std::fill(std::begin(sHintLightmap), std::end(sHintLightmap), 0.f);
 }
 
 static bool sProbeOverride = false;
@@ -2920,7 +3018,7 @@ bool Compose(const Located& located, Selection& out) {
 // cache, which is by position, since instances that share a middle need not share a lookup.
 bool AddLightmap(Selection& out) {
   out.lightmap = 0;
-  if (!sHint || !(sHintLightmap[2] > 0.f) || !Enabled() || !VolumesEnabled()) {
+  if (!sHint || !PortRoomGeo::HasLightmapLookup(sHintLightmap) || !Enabled() || !VolumesEnabled()) {
     return false;
   }
   const auto found = sAreas.find(sHintArea);
@@ -2940,6 +3038,10 @@ bool AddLightmap(Selection& out) {
     return false;
   }
   static const float scale = port::EnvFloat("MP_ROOM_ENV_LIGHTMAP_SCALE", 1.f);
+  // The shader takes a level of 0 for no lightmap (a scale of 0 is a one-texel lookup).
+  if (!(level * scale > 0.f)) {
+    return false;
+  }
   out.lightmap = area.lightmap;
   out.lightmapRect[0] = sHintLightmap[0];
   out.lightmapRect[1] = sHintLightmap[1];

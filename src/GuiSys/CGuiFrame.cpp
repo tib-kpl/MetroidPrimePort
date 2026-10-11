@@ -233,7 +233,11 @@ void CGuiFrame::Draw(const CGuiWidgetDrawParms& parms) const {
     return hudScaleXf * spreadView *
            CTransform4f(scale, offset, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 0.f, 1.f, 0.f) * invView;
   };
-  const auto drawSliced = [&](CGuiWidget* widget, const CTransform4f& world, bool curved) {
+  // The slices are cut in the unlagged (authored) tangents and carried through the HUD lag at the
+  // model's view depth `depth` (CGuiCamera::GetLaggedTangent), so the content keeps its shape while
+  // it lags. Each piece is the linear map through its lagged end points.
+  const auto drawSliced = [&](CGuiWidget* widget, const CTransform4f& world, bool curved,
+                              float depth) {
     int vpLeft, vpTop, vpWidth, vpHeight;
     CGraphics::GetViewport(vpLeft, vpTop, vpWidth, vpHeight);
     u32 old[4];
@@ -251,28 +255,36 @@ void CGuiFrame::Draw(const CGuiWidgetDrawParms& parms) const {
         widget->DrawWithWorldTransform(parms, sliceXf(scale, offset) * world);
       }
     };
+    const auto lagged = [&](float tangent) { return x14_camera->GetLaggedTangent(tangent, depth); };
+    // Maps the authored span [from, to] onto the warped [fromWarped, toWarped].
+    const auto piece = [&](float from, float to, float fromWarped, float toWarped) {
+      const float source = lagged(from);
+      const float target = lagged(fromWarped);
+      const float scale = (lagged(toWarped) - target) / (lagged(to) - source);
+      draw(target, lagged(toWarped), scale, target - scale * source);
+    };
     float inner, outer;
     x14_camera->GetAspectSlices(inner, outer, curved);
-    draw(-inner, inner, 1.f, 0.f);
+    curved = x14_camera->IsSliceCurved(curved);
+    piece(-inner, inner, -inner, inner);
     // The band is one linear piece, or for the eased curve enough chords that the joints don't
     // show; each maps its authored span onto the warped one, mirrored on the left.
     const int pieces = curved ? 16 : 1;
     float from = inner;
     float fromWarped = inner;
-    for (int piece = 1; piece <= pieces; ++piece) {
-      const float to = inner + (outer - inner) * piece / pieces;
+    for (int i = 1; i <= pieces; ++i) {
+      const float to = inner + (outer - inner) * i / pieces;
       const float toWarped = to + x14_camera->GetAspectSliceOffset(to, curved);
-      const float scale = (toWarped - fromWarped) / (to - from);
-      const float offset = fromWarped - scale * from;
-      draw(fromWarped, toWarped, scale, offset);
-      draw(-toWarped, -fromWarped, scale, -offset);
+      piece(from, to, fromWarped, toWarped);
+      piece(-to, -from, -toWarped, -fromWarped);
       from = to;
       fromWarped = toWarped;
     }
+    // The rest slides out with the screen edge (past it, so the scissor reaches the edge).
     const float shift = fromWarped - outer;
     const float edge = 2.f * screenTan;
-    draw(fromWarped, edge, 1.f, shift);
-    draw(-edge, -fromWarped, 1.f, -shift);
+    piece(outer, edge, fromWarped, edge + shift);
+    piece(-edge, -outer, -edge - shift, -fromWarped);
     GXSetScissor(old[0], old[1], old[2], old[3]);
   };
   for (AUTO(it, x2c_widgets.begin()); it != x2c_widgets.end(); ++it) {
@@ -383,7 +395,8 @@ void CGuiFrame::Draw(const CGuiWidgetDrawParms& parms) const {
                                    bounds.GetMaxPoint().GetZ() > quarterHeight;
 
           if (sliced && spansWidth && bounds.GetMinPoint().GetY() > projection.GetNear()) {
-            drawSliced(widget, world, curved);
+            const CVector3f mid = bounds.GetCenterPoint();
+            drawSliced(widget, world, curved, mid.GetY());
             continue;
           }
           if (bounds.GetMinPoint().GetY() > projection.GetNear() && (spansWidth || spansHeight)) {
@@ -410,7 +423,7 @@ void CGuiFrame::Draw(const CGuiWidgetDrawParms& parms) const {
     if (curved) {
       const CVector3f eye = invView * anchor;
       if (eye.GetY() > 0.f) {
-        hudXf = sliceXf(1.f, x14_camera->GetAspectSliceOffset(eye.GetX() / eye.GetY(), true));
+        hudXf = sliceXf(1.f, x14_camera->GetLaggedSliceOffset(eye, true));
       }
     }
     widget->DrawWithWorldTransform(parms, hudXf * world);

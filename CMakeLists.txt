@@ -45,6 +45,19 @@ endif()
 option(MP_EMBED_RESOURCES "Build the controller glyph textures and the pipeline cache seed into the executable (desktop)" ${_mp_embed_default})
 option(MP_ENABLE_SMOKE_DRIVER "Enable the opt-in real-disc lifecycle test driver" OFF)
 option(MP_ANDROID_NOD_STUB "Use a non-functional nod stub for Android build probes" OFF)
+# A system Abseil, fmt, SQLite, libpng or freetype ties the binary to the build
+# host's copies; Abseil's sonames change with every release, so a distro update
+# stops it starting (issue #27). Bundled, they are built from source and linked
+# in statically. SDL3, OpenSSL, zlib and zstd stay as they are: their sonames are
+# stable, and a static OpenSSL would look for CA certificates where the build
+# host's distro keeps them.
+if((CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT ANDROID) OR APPLE)
+    set(_mp_bundled_default ON)
+else()
+    set(_mp_bundled_default OFF)
+endif()
+option(MP_BUNDLED_DEPS "Build Abseil, fmt, SQLite, libpng and freetype from source and link them statically, ignoring system copies" ${_mp_bundled_default})
+set(AURORA_BUNDLED_DEPS ${MP_BUNDLED_DEPS})
 
 # The decompiled game/engine sources and the port code around them are written
 # for a *signed* plain `char`: the PowerPC/MWCC original and every host the port
@@ -78,6 +91,13 @@ if(MP_ANDROID_NOD_STUB)
     add_library(mp_android_nod_stub STATIC platform/android_probe/nod_stub.c)
     target_include_directories(mp_android_nod_stub PUBLIC platform/android_probe/include)
     add_library(nod::nod ALIAS mp_android_nod_stub)
+endif()
+
+# Apple's libc++ still marks std::jthread/std::stop_token (used by aurora's
+# threads) experimental; the flag unlocks them and links libc++experimental.
+if(APPLE)
+    add_compile_options($<$<COMPILE_LANGUAGE:CXX,OBJCXX>:-fexperimental-library>)
+    add_link_options(-fexperimental-library)
 endif()
 
 # Aurora provides the GameCube/Wii compatibility layer (MIT): GX, OS, PAD, DVD,
@@ -137,6 +157,7 @@ endif()
 set(MP_PORT_SOURCES
     platform/main.cpp
     platform/debug_ui.cpp
+    platform/port_input_settings.cpp
     platform/disc.cpp
     platform/shims.cpp
     platform/sdk_stubs.cpp
@@ -144,6 +165,10 @@ set(MP_PORT_SOURCES
     platform/port_textures.cpp
     platform/port_prompts.cpp
     platform/port_controls.cpp
+    platform/input/port_input_devices.cpp
+    platform/input/port_input_engine.cpp
+    platform/input/port_input_bindings.cpp
+    platform/input/port_input_remap_ui.cpp
     platform/port_randomizer.cpp
     platform/port_ap_metroidprime.cpp
     platform/port_ap_protocol.cpp
@@ -171,6 +196,7 @@ set(MP_PORT_SOURCES
     platform/port_skip_cutscenes.cpp
     platform/port_skip_cutscenes_ops.cpp
     platform/port_gci.cpp
+    platform/port_save_convert.cpp
     platform/port_data_folder.cpp
     platform/port_mods.cpp
     platform/port_mods_pak.cpp
@@ -259,6 +285,9 @@ if(ANDROID)
 else()
     add_executable(metroid_prime_port ${MP_PORT_SOURCES})
 endif()
+# disc.cpp and port_pal_languages.cpp inflate compressed images and fonts. Aurora
+# provides ZLIB::ZLIB everywhere (its zlib-ng on Windows).
+target_link_libraries(metroid_prime_port PRIVATE ZLIB::ZLIB)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR ANDROID)
     # port_crash.cpp logs each C++ throw's type and stack.
     target_link_options(metroid_prime_port PRIVATE "-Wl,--wrap=__cxa_throw")
@@ -338,10 +367,6 @@ else()
     message(STATUS "OpenSSL not found: wss:// disabled")
 endif()
 mp_websocket_tls(metroid_prime_port)
-# platform/disc.cpp finds the DOL's embedded default font by inflating its zlib
-# streams. Linux finds zlib.h among the system headers; Windows has none, so
-# name the zlib target Aurora provides.
-target_link_libraries(metroid_prime_port PRIVATE ZLIB::ZLIB)
 if(ANDROID AND OpenSSL_FOUND)
     # The OpenSSL linked in is private to the game library. Exporting its
     # symbols would let them interpose on, or be interposed by, another copy in
@@ -353,12 +378,12 @@ mp_signed_char(metroid_prime_port)
 add_custom_target(port_build_info
     COMMAND ${CMAKE_COMMAND}
         "-DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
-        "-DOUTPUT_HEADER=${CMAKE_CURRENT_BINARY_DIR}/generated/port_build_info.h"
+        "-DOUTPUT_SOURCE=${CMAKE_CURRENT_BINARY_DIR}/generated/port_build_info.cpp"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/BuildRevision.cmake"
-    BYPRODUCTS "${CMAKE_CURRENT_BINARY_DIR}/generated/port_build_info.h"
+    BYPRODUCTS "${CMAKE_CURRENT_BINARY_DIR}/generated/port_build_info.cpp"
     VERBATIM)
 add_dependencies(metroid_prime_port port_build_info)
-target_include_directories(metroid_prime_port PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
+target_sources(metroid_prime_port PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated/port_build_info.cpp")
 if(MP_EMBED_RESOURCES)
     # The glyph textures and the pipeline cache seed live inside the executable, so
     # a packaged folder needs no loose copies, and a new executable dropped into an
@@ -414,8 +439,14 @@ elseif(CMAKE_LINK_GROUP_USING_RESCAN_SUPPORTED OR CMAKE_CXX_LINK_GROUP_USING_RES
         mp_game
         aurora::main
         "$<LINK_GROUP:RESCAN,aurora::core,aurora::gx>")
+elseif(APPLE)
+    # ld64 searches every archive again until nothing new resolves, so the
+    # cycle needs no group.
+    target_link_libraries(metroid_prime_port PRIVATE
+        mp_game
+        aurora::main aurora::core aurora::gx)
 else()
-    message(FATAL_ERROR "This port currently requires an ELF linker with RESCAN support or an MSVC-compatible COFF linker")
+    message(FATAL_ERROR "This port currently requires an ELF linker with RESCAN support, Apple ld or an MSVC-compatible COFF linker")
 endif()
 
 include(extern/aurora/cmake/AuroraCopyRuntimeDLLs.cmake)
@@ -640,13 +671,24 @@ if(MP_BUILD_TESTS)
     target_include_directories(port_env_tests PRIVATE platform/include)
     add_executable(port_hold_toggle_tests tests/port_hold_toggle.cpp)
     target_include_directories(port_hold_toggle_tests PRIVATE platform/include)
+    add_executable(port_input_engine_tests tests/port_input_engine.cpp platform/input/port_input_engine.cpp)
+    target_include_directories(port_input_engine_tests PRIVATE platform/include)
+    add_executable(port_input_bindings_tests tests/port_input_bindings.cpp platform/input/port_input_bindings.cpp platform/input/port_input_engine.cpp)
+    target_include_directories(port_input_bindings_tests PRIVATE platform/include)
     add_executable(port_tick_pair_tests tests/port_tick_pair.cpp)
     target_include_directories(port_tick_pair_tests PRIVATE platform/include)
+    add_executable(port_presentation_rules_tests tests/port_presentation_rules.cpp)
+    target_include_directories(port_presentation_rules_tests PRIVATE platform/include)
     add_executable(port_input_map_tests tests/port_input_map.cpp)
     target_include_directories(port_input_map_tests PRIVATE platform/include)
     add_test(NAME port_input_map_tests COMMAND port_input_map_tests)
     set_tests_properties(port_input_map_tests PROPERTIES TIMEOUT 15 LABELS port)
     aurora_copy_runtime_dlls(port_input_map_tests)
+    add_executable(port_input_settings_tests tests/port_input_settings.cpp platform/port_input_settings.cpp)
+    target_include_directories(port_input_settings_tests PRIVATE platform/include)
+    add_test(NAME port_input_settings_tests COMMAND port_input_settings_tests)
+    set_tests_properties(port_input_settings_tests PROPERTIES TIMEOUT 15 LABELS port)
+    aurora_copy_runtime_dlls(port_input_settings_tests)
     add_executable(port_log_redact_tests tests/port_log_redact.cpp)
     target_include_directories(port_log_redact_tests PRIVATE platform/include)
     add_test(NAME port_log_redact_tests COMMAND port_log_redact_tests)
@@ -658,6 +700,11 @@ if(MP_BUILD_TESTS)
     add_test(NAME port_data_folder_tests COMMAND port_data_folder_tests "${CMAKE_CURRENT_BINARY_DIR}/data-folder-test")
     set_tests_properties(port_data_folder_tests PROPERTIES TIMEOUT 15 LABELS port)
     aurora_copy_runtime_dlls(port_data_folder_tests)
+    add_executable(port_config_reset_tests tests/port_config_reset.cpp)
+    target_include_directories(port_config_reset_tests PRIVATE platform/include)
+    add_test(NAME port_config_reset_tests COMMAND port_config_reset_tests "${CMAKE_CURRENT_BINARY_DIR}/config-reset-test")
+    set_tests_properties(port_config_reset_tests PROPERTIES TIMEOUT 15 LABELS port)
+    aurora_copy_runtime_dlls(port_config_reset_tests)
     add_executable(port_discord_tests tests/port_discord.cpp platform/port_json.cpp)
     target_include_directories(port_discord_tests PRIVATE platform/include)
     target_compile_definitions(port_discord_tests PRIVATE TARGET_PC)
@@ -682,7 +729,7 @@ if(MP_BUILD_TESTS)
     add_test(NAME port_card_tests COMMAND port_card_tests "${CMAKE_CURRENT_BINARY_DIR}/card-test-data")
     set_tests_properties(port_card_tests PROPERTIES TIMEOUT 15 LABELS port)
     aurora_copy_runtime_dlls(port_card_tests)
-    add_executable(port_gci_tests tests/port_gci.cpp platform/port_gci.cpp)
+    add_executable(port_gci_tests tests/port_gci.cpp platform/port_gci.cpp platform/port_save_convert.cpp)
     target_include_directories(port_gci_tests PRIVATE platform/include)
     target_link_libraries(port_gci_tests PRIVATE aurora::card)
     if(WIN32)
@@ -691,7 +738,15 @@ if(MP_BUILD_TESTS)
     add_test(NAME port_gci_tests COMMAND port_gci_tests)
     set_tests_properties(port_gci_tests PROPERTIES TIMEOUT 15 LABELS port)
     aurora_copy_runtime_dlls(port_gci_tests)
-    foreach(test IN ITEMS port_remastered_report_tests port_buffer_tests port_ai_tests port_randomizer_tests port_apclient_tests port_ap_solo_tests port_ap_logic_tests port_rando_gen_tests port_musyx_tests port_musyx_charge_loop_tests port_disc_tests port_mouse_tests port_touch_pad_tests port_json_tests port_ws_tests port_mods_tests port_pal_languages_tests port_actor_collision_bounds_tests port_room_env_tests port_room_geo_tests port_hd_font_tests port_hud_bars_tests port_remastered_astc_tests port_remastered_hud_tests port_remastered_movie_tests port_gallery_tests port_remastered_nso_tests port_remastered_text_tests port_remastered_uv_tests port_remastered_anuv_tests port_remastered_lits_tests port_remastered_blend_tests port_remastered_image_tests port_remastered_effect_tests port_remastered_effect_convert_tests port_remastered_effect_import_tests port_importers_tests port_custom_res_tests port_hold_toggle_tests port_env_tests port_tick_pair_tests port_livesplit_tests port_discord_tests port_update_check_tests port_savestate_tests port_timing_tests port_audio_math_tests)
+    # Save converter. Fixtures (real saves and scripts/wii2gci.py) are local
+    # data: point PORT_SAVE_FIXTURES at them, or the fixture checks are skipped.
+    set(PORT_SAVE_FIXTURES "${CMAKE_SOURCE_DIR}/../wii-save" CACHE PATH "Save converter fixtures (saves/, scripts/)")
+    add_executable(port_save_convert_tests tests/port_save_convert.cpp platform/port_save_convert.cpp)
+    target_include_directories(port_save_convert_tests PRIVATE platform/include)
+    add_test(NAME port_save_convert_tests COMMAND port_save_convert_tests "${PORT_SAVE_FIXTURES}")
+    set_tests_properties(port_save_convert_tests PROPERTIES TIMEOUT 120 LABELS port)
+    aurora_copy_runtime_dlls(port_save_convert_tests)
+    foreach(test IN ITEMS port_remastered_report_tests port_buffer_tests port_ai_tests port_randomizer_tests port_apclient_tests port_ap_solo_tests port_ap_logic_tests port_rando_gen_tests port_musyx_tests port_musyx_charge_loop_tests port_disc_tests port_mouse_tests port_touch_pad_tests port_json_tests port_ws_tests port_mods_tests port_pal_languages_tests port_actor_collision_bounds_tests port_room_env_tests port_room_geo_tests port_hd_font_tests port_hud_bars_tests port_remastered_astc_tests port_remastered_hud_tests port_remastered_movie_tests port_gallery_tests port_remastered_nso_tests port_remastered_text_tests port_remastered_uv_tests port_remastered_anuv_tests port_remastered_lits_tests port_remastered_blend_tests port_remastered_image_tests port_remastered_effect_tests port_remastered_effect_convert_tests port_remastered_effect_import_tests port_importers_tests port_custom_res_tests port_hold_toggle_tests port_input_engine_tests port_input_bindings_tests port_env_tests port_tick_pair_tests port_presentation_rules_tests port_livesplit_tests port_discord_tests port_update_check_tests port_savestate_tests port_timing_tests port_audio_math_tests)
         add_test(NAME ${test} COMMAND ${test})
         set_tests_properties(${test} PROPERTIES TIMEOUT 15 LABELS port)
         aurora_copy_runtime_dlls(${test})
@@ -707,6 +762,10 @@ if(MP_BUILD_TESTS)
     # dependency-free Python and skip themselves when python3 is absent.
     find_package(Python3 COMPONENTS Interpreter QUIET)
     if(Python3_Interpreter_FOUND)
+        add_test(NAME port_android_save_dialog_title
+            COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/port_android_save_dialog_title.py
+                    ${CMAKE_CURRENT_SOURCE_DIR})
+        set_tests_properties(port_android_save_dialog_title PROPERTIES TIMEOUT 15 LABELS port)
         add_test(NAME port_ap_fixture
             COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/port_ap_fixture.py
                     ${CMAKE_CURRENT_SOURCE_DIR})

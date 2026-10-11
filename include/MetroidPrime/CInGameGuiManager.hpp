@@ -7,10 +7,6 @@
 #include "MetroidPrime/Cameras/CCameraFilterPass.hpp"
 #include "MetroidPrime/Player/CFaceplateDecoration.hpp"
 #include "MetroidPrime/SOnScreenTex.hpp"
-#ifdef TARGET_PC
-#include "GuiSys/CGuiTextSupport.hpp"
-#include "Kyoto/Text/CStringTable.hpp"
-#endif
 #include "MetroidPrime/Tweaks/CTweakGui.hpp"
 
 #include "Kyoto/CRandom16.hpp"
@@ -36,6 +32,7 @@ class CSaveGameScreen;
 class CGuiWidget;
 class CGuiModel;
 class CGuiCamera;
+class CGuiTextSupport;
 
 class CStateManager;
 class CArchitectureQueue;
@@ -73,6 +70,11 @@ public:
   // Port: the fade-in filter (StartFadeIn) is still black or lifting; for the debug console.
   bool PortIsFading() const { return xf8_camFilter.PortIsActive(); }
   static const CInGameGuiManager* PortCurrent() { return sPortCurrent; }
+  const CPlayerVisor* PortPlayerVisor() const { return x30_playerVisor.get(); }
+  // The target reticles a scan window's screen copy holds, for the zoomed pass that replaces it.
+  void PortDrawScanZoomReticles(const CStateManager& mgr) const;
+  // Whether Draw would draw the player visor this frame (same prerequisites).
+  bool PortPlayerVisorDrawn(const CStateManager& mgr) const;
   bool IsInSaveUI() const { return x1f8_27_inSaveUI; }
 
 private:
@@ -134,16 +136,6 @@ private:
   SOnScreenTex x1c4_onScreenTex;
   float x1d8_onScreenTexAlpha;
   rstl::single_ptr< TCachedToken< CTexture > > x1dc_onScreenTexTok;
-#ifdef TARGET_PC
-  // A PAL disc's Billboard names a string table where 1.00's names a texture of
-  // English text (the intro's subtitles, translated). PAL's own code draws its
-  // first string in FONT_Deface18O; drawn as a texture it read a garbage ARAM
-  // token and aborted. Set while such a text is shown.
-  rstl::single_ptr< TCachedToken< CStringTable > > xPort_onScreenStrg;
-  rstl::single_ptr< CGuiTextSupport > xPort_onScreenText;
-  void PortStartOnScreenText();
-  void PortDrawOnScreenText() const;
-#endif
   CTweakGui::EHelmetVisMode x1e0_helmetVisMode;
   uint x1e4_enableTargetingManager;
   uint x1e8_enableAutoMapper;
@@ -154,6 +146,10 @@ private:
   bool x1f8_25_playerAlive : 1;
   bool x1f8_26_deferTransition : 1;
   bool x1f8_27_inSaveUI : 1;
+  // Port: PAL billboards name a STRG (an intro subtitle), drawn as text as PAL does.
+  rstl::single_ptr< CGuiTextSupport > xPortSubtitle;
+  void PortUpdateSubtitle(const SOnScreenTex& pending, float dt);
+  void PortDrawSubtitle() const;
 };
 CHECK_SIZEOF(CInGameGuiManager, 0x1fc)
 #endif

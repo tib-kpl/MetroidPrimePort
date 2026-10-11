@@ -63,10 +63,17 @@ bool InstallGci(const std::filesystem::path& folder, const std::vector<uint8_t>&
                 std::string& error, bool* replacedOut = nullptr);
 
 // Imports a .gci image, or a raw card image (every Metroid Prime file in it).
+// A save of the other release (USA or PAL GameCube, or a Wii Trilogy
+// save.bin/data.bin) is converted to the mounted disc's format; the report's
+// note says so. See port_save_convert.h.
 // `name` is only used in messages. `scratch` is a writable directory for the
 // raw card, which Aurora reads from a path.
 Report ImportBytes(const std::vector<uint8_t>& bytes, const std::string& name,
                    const std::filesystem::path& folder, const std::filesystem::path& scratch);
+// Moves the port's earlier PAL saves ("MetroidPrime A"/"B": the USA container
+// holding PAL worlds) into one real PAL "MetroidPrime" file, once, on a PAL
+// disc. The old files go to _replaced. An empty report means nothing to do.
+Report MigrateLegacyPal(const std::filesystem::path& folder);
 // The same, reading the file first.
 Report ImportFile(const std::filesystem::path& source, const std::filesystem::path& folder,
                   const std::filesystem::path& scratch);
@@ -94,6 +101,9 @@ DolphinCard FindDolphinCard();
 // The mounted card's GCI folder, or empty when the card is a raw image or
 // there is none.
 std::filesystem::path MountedCardFolder();
+// MigrateLegacyPal on the card folder in use (nothing off the PAL disc). Run once
+// the card API is up, and again when another card folder is switched in.
+Report MigrateMountedLegacyPal();
 // After an import: the front end's save screen remounts the card and probes it
 // again once the card is idle. Returns true (once) when it did the remount.
 void MarkCardChanged();

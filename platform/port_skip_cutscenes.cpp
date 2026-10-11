@@ -128,6 +128,35 @@ std::vector< uint8_t > TempleOps() {
   return std::move(w.ops);
 }
 
+const uint32_t kGeothermalCore = 0xC0498676;
+
+// PAL's Geothermal Core puts a Power Bomb rock and a door blocker in front of
+// Plasma Processing, which USA 1.00 (and so the randomizer logic, built from
+// USA) reaches without Power Bombs. Drop the rock's whole set (generator,
+// debris, effect, rumble, memory relay, scan point, blocker), so a PAL disc
+// plays this room as the USA one; the missile drops added next to it stay.
+std::vector< uint8_t > GeothermalCorePalOps() {
+  OpWriter w;
+  for (uint32_t id = 0x001403AA; id <= 0x001403B5; ++id)
+    w.remove(id);
+  return std::move(w.ops);
+}
+
+const uint32_t kArboretum = 0x18AB6106;
+
+// USA 1.01 adds an invisible platform over Arboretum's runic gate, so the
+// gate can't be bomb jumped over before it opens; the randomizer logic's
+// "Arboretum Scan Gate Skip" (built from 1.00) needs that jump. Drop it, and
+// the gate's message that turns it off, so a 1.01 disc plays this room as 1.00.
+std::vector< uint8_t > ArboretumUsa101Ops() {
+  OpWriter w;
+  w.conn(3, 0x00130140, 5 /* Inactive */, 4 /* Deactivate */, 0x001302AA);
+  w.remove(0x001302AA);
+  return std::move(w.ops);
+}
+
+bool PatchScripts(uint32_t mreaId, const uint8_t* scly, size_t size, std::vector< uint8_t >& out);
+
 } // namespace
 
 bool Forced() { return PortRandomizer::Enabled() || PortAp::RandomizedGame(); }
@@ -136,8 +165,34 @@ bool Active() { return PortDebug::SkippableCutscenes() || Forced(); }
 
 bool PatchArea(uint32_t mreaId, const uint8_t* scly, size_t size, std::vector< uint8_t >& out) {
   out.clear();
-  if (!Active())
-    return false;
+  if (Active())
+    PatchScripts(mreaId, scly, size, out);
+  if (mreaId == kGeothermalCore && PortDisc::Current() == PortDisc::Version::Pal) {
+    const std::vector< uint8_t > ops = GeothermalCorePalOps();
+    const bool patched = !out.empty();
+    std::vector< uint8_t > fixed;
+    if (ApplyOps(patched ? out.data() : scly, patched ? out.size() : size, ops.data(), ops.size(),
+                 fixed) == 0)
+      out.swap(fixed);
+    else
+      PortLog::Write("PAL: Geothermal Core Power Bomb rock doesn't match, left as is\n");
+  }
+  if (mreaId == kArboretum && PortDisc::Current() == PortDisc::Version::Usa101) {
+    const std::vector< uint8_t > ops = ArboretumUsa101Ops();
+    const bool patched = !out.empty();
+    std::vector< uint8_t > fixed;
+    if (ApplyOps(patched ? out.data() : scly, patched ? out.size() : size, ops.data(), ops.size(),
+                 fixed) == 0)
+      out.swap(fixed);
+    else
+      PortLog::Write("USA 1.01: Arboretum gate platform doesn't match, left as is\n");
+  }
+  return !out.empty();
+}
+
+namespace {
+
+bool PatchScripts(uint32_t mreaId, const uint8_t* scly, size_t size, std::vector< uint8_t >& out) {
   // PAL lays some rooms out differently: its own streams, where the USA one
   // doesn't do the same there.
   const SkipRoom* room = nullptr;
@@ -235,6 +290,8 @@ bool PatchArea(uint32_t mreaId, const uint8_t* scly, size_t size, std::vector< u
   }
   return !out.empty();
 }
+
+} // namespace
 
 bool PickupModel(int key, PortRandomizer::PickupModel& out) {
   for (const PickupModelEntry& entry : kPickupModels) {

@@ -56,10 +56,11 @@ self-contained — and it is why `MP_USER_PATH` cannot be used to move saves.
 - **All four do.** Each ships the port's own `LICENSE` and `NOTICE` alongside
   the third-party terms, because a grant nobody can read inside the package is
   not much of a grant.
-- **Windows**: the `windows` job of `ci.yml` copies the port's grant and notice, Aurora's and
+- **Windows**: `windows.yml` copies the port's grant and notice, Aurora's and
   MusyX's licences, and every `LICENSE*`/`COPYING*`/`NOTICE*` from the fetched
   packages into `dist/licenses/`, preserving the dependency path, and puts
-  `docs/NATIVE_PORT.md` in as the `README`. It also packages `textures/` (the
+  `docs/NATIVE_PORT.md` in as the `README`, with `docs/SETTINGS.md`, `docs/MODS.md`
+  and `docs/CONSOLE.md` alongside it. It also packages `textures/` (the
   HD and button-prompt sets), so the artefact zips as-is with no copy from a
   Linux build. SDL3 (built from source), zlib, libpng, nod and OpenSSL are
   linked statically into the exe, so their licences (including `openssl.txt`
@@ -76,12 +77,19 @@ self-contained — and it is why `MP_USER_PATH` cannot be used to move saves.
   configure line, so anyone can rebuild or replace it. Keep those three
   together with the executable in every Windows package. The Linux packages
   ship no ffmpeg and use the system's.
+- **macOS** (experimental): `macos.yml` builds `Metroid Prime Port.app` with
+  SDL3, nod, OpenSSL, zstd and xxhash linked in statically (the workflow fails
+  if `otool -L` shows anything outside `/usr/lib` and `/System/Library`), puts
+  the same LGPL `ffmpeg` as Windows in `Contents/MacOS`, and collects the
+  licences into `licenses/` beside the app. Both are ad-hoc signed, not
+  notarised.
 - **The AppImage and the APK**: `tools/make_appimage.sh` collects them into
   `usr/share/licenses/metroid-prime-port/`. It bundles no shared libraries.
   The APK's `syncLicenseNotices` task gathers the same set into `assets/`,
-  verified present in a built package: `port-license.txt`, `port-notice.txt`,
-  `aurora.txt`, `musyx.txt`, `sdl-src.txt`, `imgui-src.txt`, `fmt-src.txt` and
-  `zstd-src.txt`.
+  verified present in a built package (0.21.0, twelve files): `port-license.txt`,
+  `port-notice.txt`, `aurora.txt`, `musyx.txt`, `astcenc.txt`, `adrenotools.txt`,
+  `linkernsbypass.txt`, `sdl-src.txt`, `imgui-src.txt`, `fmt-src.txt`,
+  `zstd-src.txt` and `openssl-license.txt`.
 - **The Flatpak** collects them in the manifest's `post-install`: the two
   vendored snapshots out of the tree, and the four fetched packages by glob,
   because the fetched ones only exist once `cmake-ninja` has run.
@@ -114,24 +122,48 @@ into a refusal. The rule itself is Gradle's, not the script's: calling Gradle
 directly with no key stops the build.
 
 Verified on a release build: the package's signer is
-`CN=Metroid Prime Port, OU=Port, O=Metroid Prime Port` (SHA-256 `d8814c79…`),
-not the debug key's `CN=Android Debug` (`edd22fdb…`), the arm64 `.so` is 29 MB,
-all six third-party notices are in `assets/`, and no `.iso`, `.pak` or `.strg`
-is in the package.
+`CN=Metroid Prime Port, OU=Port, O=Metroid Prime Port` (SHA-256
+`87ea78eb…2b16`, the key in `android/metroid-prime-port-release.jks` and the one
+every release since 0.19.0 carries), not the debug key's `CN=Android Debug`
+(`edd22fdb…`), the arm64 `.so` is about 39 MB, all twelve third-party notices are
+in `assets/`, and no `.iso`, `.pak` or `.strg` is in the package. An earlier
+revision of this section recorded the signer as `d8814c79…` and six notices; both
+were wrong.
 
-The port targets `versionName "0.19.0"` and `versionCode 22`. A version bump
+The port targets `versionName "0.22.0"` and `versionCode 25`. A version bump
 also adds a `<release>` entry (newest first) to
 `packaging/io.github.odrannnn.metroidprimeport.metainfo.xml`, which is the
 version Flatpak reports; `tools/make_flatpak.sh` stops if the two differ.
+
+## Release checklist
+
+1. Bump `versionName`/`versionCode` in `android/app/build.gradle` and the line
+   above, add the metainfo `<release version="X" date=…>` entry, commit, and
+   `git push user port`.
+2. Build every artefact from that commit:
+   - Linux from CI, never the desktop (see "Runtime dependencies"):
+     `gh workflow run linux-release.yml --ref port -R Odrannnn/MetroidPrimePort`,
+     `gh run download <id> -n metroid_prime_port-linux`. Rename the tarball to
+     `metroid-prime-port-X-linux-x86_64.tar.gz` (its top directory stays
+     unversioned); the AppImage keeps the name `MetroidPrime-x86_64.AppImage`.
+   - Windows: run `windows.yml`, `gh run download <id> -n metroid_prime_port-windows`,
+     drop CI's `user/` folder (log, `dawn_cache.db`, `pipeline_cache.db`), and zip
+     the rest as `metroid-prime-port-X-windows-x86_64.zip`.
+   - Android: the signed APK, staged as `metroid-prime-port-X-android-arm64.apk`.
+3. Check each artefact's version string, then `git tag -a vX` and `git push user vX`.
+4. `gh release create vX --notes-file …` with every asset passed explicitly, and
+   confirm with `gh release view vX --json assets`. Base the notes on the
+   previous release's.
 
 ## Per-platform packaging
 
 | Platform | Builds from | Produces | State |
 |---|---|---|---|
 | Linux | `cmake -S . -B build/port-gcc` | executable | works; tests green. `cmake --install` also produces a complete tree, verified by running it |
-| Linux | `.github/workflows/ci.yml` (`linux` job) | AppImage + tarball | every push to `port`; builds on AlmaLinux 9 and runs `tools/make_appimage.sh`. Use these for releases, not a desktop build |
+| Linux | `.github/workflows/linux-release.yml` | AppImage + tarball | manual trigger; builds on AlmaLinux 9 and runs `tools/make_appimage.sh`. Use these for releases, not a desktop build |
 | Linux | `tools/make_flatpak.sh` | Flatpak | manifest installs a working tree and collects notices; builds (`tools/make_flatpak.sh` writes `build/flatpak/MetroidPrimePort.flatpak`). The app id is `io.github.odrannnn.metroidprimeport`, with AppStream metainfo shipped |
-| Windows | `.github/workflows/ci.yml` (`windows` job) | zipped `dist/` | every push to `port`; packaged startup checked |
+| Windows | `.github/workflows/windows.yml` | zipped `dist/` | manual trigger only for now; green when run, artifact uploaded, packaged startup checked |
+| macOS | `.github/workflows/macos.yml` | ad-hoc signed `.app` (arm64) + `licenses/` | experimental; builds, tests and packaged startup checked in CI, never run on a real Mac |
 | Android | `tools/android_apk.sh :app:assembleRelease` | APK | builds, signed with this project's own key; runs on-device (POCO F8 Ultra, 60 FPS), touch/Continue-load still unverified |
 
 The Linux binary is the only one with a test suite attached: 54 `port`-labelled
@@ -150,12 +182,12 @@ A Linux binary only runs where glibc and libstdc++ are at least as new as the
 ones it was linked against, so a desktop build is only as portable as the
 desktop. The 0.12.0 AppImage needed glibc 2.43 and GLIBCXX_3.4.34 and would not
 start on LMDE (issue #3). The release artefacts therefore come from
-the `linux` job of `.github/workflows/ci.yml`, which builds in `almalinux:9` with
+`.github/workflows/linux-release.yml`, which builds in `almalinux:9` with
 gcc-toolset-14 and fails unless the binary needs at most **glibc 2.34** and
 **GLIBCXX_3.4.29** (Debian 12, Ubuntu 22.04, RHEL 9 and newer). The AppImage
 bundles nothing, so freetype, libpng, zstd and OpenSSL 3 come from the system.
-Every push to `port` runs it and publishes the packages, with the Windows zip
-and the APK, as a release `build-<run number>` on tib-kpl/MetroidPrimePort.
+`gh workflow run linux-release.yml --ref port -R Odrannnn/MetroidPrimePort`, then
+`gh run download <id> -n metroid_prime_port-linux`.
 
 A Vulkan driver, X11 or Wayland, and DBus for the file dialog come from the
 host. A session that reaches `show_window` over SDL's Wayland backend will hang

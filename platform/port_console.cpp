@@ -128,6 +128,16 @@ constexpr size_t kMaxLine = 64 * 1024;
 constexpr size_t kMaxQueued = 256;
 #endif
 
+#ifndef _WIN32
+// macOS has no MSG_NOSIGNAL; SO_NOSIGPIPE is set on the client socket instead.
+#ifdef MSG_NOSIGNAL
+constexpr int kSendFlags = MSG_NOSIGNAL;
+#else
+constexpr int kSendFlags = 0;
+#endif
+
+#endif
+
 void SendRaw(unsigned generation, const std::string& text) {
 #ifndef _WIN32
   std::lock_guard< std::mutex > lock(sClientMutex);
@@ -138,7 +148,7 @@ void SendRaw(unsigned generation, const std::string& text) {
   int budget = kSendBudgetMs;
   while (done < text.size()) {
     const ssize_t n =
-        send(sClient, text.data() + done, text.size() - done, MSG_NOSIGNAL | MSG_DONTWAIT);
+        send(sClient, text.data() + done, text.size() - done, kSendFlags | MSG_DONTWAIT);
     if (n > 0) {
       done += static_cast< size_t >(n);
       budget = kSendBudgetMs; // still reading, just slowly
@@ -173,6 +183,12 @@ void ListenThread(int listener) {
   std::string buffer;
   for (;;) {
     const int client = accept(listener, nullptr, nullptr);
+#ifdef SO_NOSIGPIPE
+    if (client >= 0) {
+      const int on = 1;
+      setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &on, sizeof(on));
+    }
+#endif
     if (client < 0) {
       // Out of descriptors and the like do not clear up at once; do not spin.
       if (errno != EINTR) {
@@ -497,6 +513,8 @@ void CmdHelp() {
   Out("items                      the player's inventory");
   Out("visor <combat|xray|scan|thermal|0-3>, beam <power|ice|wave|plasma|0-3>  switch like the touch wheels");
   Out("heal                       refill health");
+  Out("kill <id>                  kill an actor as with a last Power Beam shot (bosses too)");
+  Out("hurt [n] | die             hit the player for n (default 10) with the HUD flash | empty the health");
   Out("god [on|off]               the player takes no damage (no argument: show)");
   Out("memo <text>                show text as a HUD message");
   Out("strg <id> [index]          a string table as the game loads it (mods included)");
@@ -561,7 +579,8 @@ void CmdHelp() {
   Out("                           fly the view away from the player (HUD hidden; freeze holds the game still)");
   Out("aspect <4:3|16:9|window>   switch the rendering aspect, as the Options row does");
   Out("original [on|off]   Original experience (retail settings over the saved ones)");
-  Out("keypreset classic|mouse   apply a keyboard preset (Controls page), as its button");
+  Out("keypreset classic|mouse   apply a keyboard preset (Controls > Remap), as its button");
+  Out("padpreset gamecube|remastered|modern|southpaw   apply a controller preset to pad 1");
   Out("fov <45..90>               first-person vertical FOV, as the Options row does");
   Out("window [<w> <h>]           resize the window (leaves fullscreen); prints the size");
   Out("msaa <1|4>, aniso <1..16>  anti-aliasing and anisotropic filtering, applied next frame");
@@ -680,6 +699,7 @@ void CmdStatus(CStateManager& mgr) {
   Out("orbit state %d, game input L=%d A=%d, charging %d (%.2f)",
       static_cast< int >(player.GetOrbitState()), in.DL() ? 1 : 0, in.DA() ? 1 : 0,
       player.GetPlayerGun()->IsCharging() ? 1 : 0, player.GetPlayerGun()->GetChargePercentage());
+  Out("scan timer %.2f", player.GetScanTimer());
   if (const CEntity* target = mgr.GetObjectById(player.GetOrbitTargetId())) {
     Out("orbit target u%u %08X %s", target->GetUniqueId().Value(), target->GetEditorId().Value(),
         target->GetDebugName().data());
@@ -1061,6 +1081,26 @@ void CmdLook(CStateManager& mgr) {
   Finish();
 }
 
+// Deals an actor its remaining health as Power Beam damage, past its
+// vulnerability, so it dies as from a last shot (bosses run their death scripts).
+void CmdKill(CStateManager& mgr) {
+  if (sCmd.args.size() < 2) {
+    return Finish("usage: kill <id>");
+  }
+  CActor* actor = TCastToPtr< CActor >(FindObject(mgr, sCmd.args[1]));
+  if (actor == nullptr) {
+    return Finish("no such actor");
+  }
+  const CHealthInfo* health = actor->GetHealthInfo(mgr);
+  if (health == nullptr) {
+    return Finish("that actor has no health");
+  }
+  const CVector3f dir = actor->GetTransform().GetForward();
+  mgr.ApplyLocalDamage(actor->GetTranslation(), dir, *actor, health->GetHP() + 1.f,
+                       CWeaponMode::Power());
+  Finish();
+}
+
 void CmdHeal(CStateManager& mgr) {
   CPlayerState& ps = *mgr.PlayerState();
   ps.HealthInfo()->SetHP(ps.CalculateHealth());
@@ -1110,6 +1150,20 @@ void CmdBeam(CStateManager& mgr) {
   }
   PortDebug::RequestBeam(beam);
   Out("beam %s requested", kBeams[beam]);
+  Finish();
+}
+
+// Hurts the player as an enemy hit would (HUD flash, damage sfx) and takes the health off;
+// `hurt 0` is a hit that costs nothing... `die` empties the health (death sequence).
+float sPendingHurt = 0.f;
+
+void CmdHurt(const std::string& arg) {
+  sPendingHurt = arg.empty() ? 10.f : static_cast<float>(atof(arg.c_str()));
+  Finish();
+}
+
+void CmdDie(CStateManager& mgr) {
+  mgr.PlayerState()->HealthInfo()->SetHP(0.f);
   Finish();
 }
 
@@ -1731,7 +1785,7 @@ bool IsTickCommand(const std::string& name) {
     }
   }
   static const char* const names[] = {"status", "areas", "objs", "obj", "send", "give",
-                                      "take", "items", "heal", "god", "memo", "strg", "language", "tp", "room", "fx", "face", "look", "warp",
+                                      "take", "items", "heal", "kill", "hurt", "die", "god", "memo", "strg", "language", "tp", "room", "fx", "face", "look", "warp",
                                       "tracker", "enter", "visor", "beam"};
   for (const char* n : names) {
     if (name == n) {
@@ -1762,6 +1816,12 @@ void RunTick(CStateManager& mgr) {
     CmdItems(mgr);
   } else if (name == "heal") {
     CmdHeal(mgr);
+  } else if (name == "kill") {
+    CmdKill(mgr);
+  } else if (name == "hurt") {
+    CmdHurt(sCmd.args.size() > 1 ? sCmd.args[1] : std::string());
+  } else if (name == "die") {
+    CmdDie(mgr);
   } else if (name == "god") {
     CmdGod();
   } else if (name == "visor") {
@@ -1848,6 +1908,14 @@ void RunFrame() {
   } else if (name == "quit") {
     Finish();
     sQuit = true;
+  } else if (name == "phazongun") {
+    CStateManager* const mgr = const_cast< CStateManager* >(PortDebug::StateManager());
+    if (mgr == nullptr || mgr->GetPlayer() == nullptr) {
+      return Finish("not in a game");
+    }
+    const std::string mode = sCmd.args.size() > 1 ? Lower(sCmd.args[1]) : "on";
+    const_cast< CPlayerGun* >(mgr->GetPlayer()->GetPlayerGun())->PortForcePhazonBeam(mode != "off");
+    Finish();
   } else if (name == "title") {
     CStateManager* const mgr = const_cast< CStateManager* >(PortDebug::StateManager());
     if (mgr == nullptr) {
@@ -1880,6 +1948,12 @@ void RunFrame() {
     const std::string preset = sCmd.args.size() > 1 ? Lower(sCmd.args[1]) : "";
     if (!PortControls::ApplyKeyPresetNamed(preset)) {
       return Finish("usage: keypreset classic|mouse");
+    }
+    Finish();
+  } else if (name == "padpreset") {
+    const std::string preset = sCmd.args.size() > 1 ? Lower(sCmd.args[1]) : "";
+    if (!PortControls::ApplyPadPresetNamed(preset)) {
+      return Finish("usage: padpreset gamecube|remastered|modern|southpaw");
     }
     Finish();
   } else if (name == "fov") {
@@ -2028,15 +2102,16 @@ void RunFrame() {
         (Lower(sCmd.args[2]) == "on" || Lower(sCmd.args[2]) == "off")) {
       PortRoomGeo::SetOffscreenCasters(Lower(sCmd.args[2]) == "on");
     }
-    f32 dir[3], color[3], center[3], radius = 0.f;
+    f32 dir[3], color[3], center[3], distance = 0.f;
     u32 casters = 0;
-    GXPortGetShadowInfo(dir, color, &radius, center, &casters);
-    if (radius <= 0.f) {
+    GXPortGetShadowInfo(dir, color, &distance, center, &casters);
+    if (distance <= 0.f) {
       Out("shadow map off (no sun, MP_SHADOWS=0, or a scene without shadows)");
     } else {
       Out("light travels %.3f %.3f %.3f colour %.3f %.3f %.3f", dir[0], dir[1], dir[2], color[0], color[1], color[2]);
-      Out("map radius %.1f centre %.2f %.2f %.2f, %u caster draw(s), %u of them out-of-view room models (casters %s)",
-          radius, center[0], center[1], center[2], casters, PortRoomGeo::OffscreenCasterCount(),
+      Out("4 cascades to %.1f, last centred %.2f %.2f %.2f, %u caster draw(s), %u of them out-of-view room models "
+          "(casters %s)",
+          distance, center[0], center[1], center[2], casters, PortRoomGeo::OffscreenCasterCount(),
           PortRoomGeo::OffscreenCasters() ? "on" : "off");
     }
     OutLines(PortRoomEnv::SunInfo());
@@ -2896,6 +2971,12 @@ bool PortConsoleFrame(unsigned frame) {
     }
   }
   return sQuit;
+}
+
+float PortConsoleTakePendingHurt() {
+  const float amount = sPendingHurt;
+  sPendingHurt = 0.f;
+  return amount;
 }
 
 void PortConsoleTick(CStateManager& mgr) {

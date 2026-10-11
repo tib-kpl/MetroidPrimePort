@@ -1449,6 +1449,29 @@ auto pbr_func(const ShaderConfig& config, const ShaderInfo& info, std::string& v
           pbr_kglow = ubuf.pbr_layer_height.xyz * (pbr_dt * ubuf.pbr_layer.z);
       }})""",
                          base, mapStage[4]);
+    // Kind 35, Remastered's Phazon_Veins_Mat (d61ae63a, the Phazon Beam's veins), permutation 002_0. Constants are
+    // GXSetPBRShield's rows: CCH0 (glow gain, ramp gain, amount scale, vertex alpha weight), ICMC in row 6 and DIFC
+    // in row 7, whose w is the "DisintegrationAmount" variable. Map 5 is TCH2, a mask the amount eats into: m =
+    // clamp(mask + vtx.a CCH0.w - amount CCH0.z (CCH0.w + 2) + 1, 0, 1). What the base alpha squared plus m doesn't
+    // lift over 0.25 through the smoothstep of (1 - m) 9.99999809 is discarded. Map 4 is TCH1, the edge ramp, read at
+    // (1 - m, 0); its colour times m CCH0.y is the glow (times the exposure, as every glow here); ICMC is added with
+    // none. The albedo is the base map times DIFC.rgb.
+    if (config.pbrKind == 35 && mapStage[4] != -1 && mapStage[5] != -1) {
+      kinds += fmt::format(R"""(
+      if (pbr_kind > 34.5 && pbr_kind < 35.5) {{
+          let pbr_vc0 = ubuf.pbr_shield[0];
+          let pbr_vdf = ubuf.pbr_shield[7];
+          let pbr_vm = clamp(sampled{1}.x + pbr_vraw.a * pbr_vc0.w - pbr_vdf.w * pbr_vc0.z * (pbr_vc0.w + 2.0) + 1.0,
+                             0.0, 1.0);
+          let pbr_vs = clamp((1.0 - pbr_vm) * 9.99999809, 0.0, 1.0);
+          if (({0}.a * {0}.a + pbr_vm) * (pbr_vs * pbr_vs * (3.0 - 2.0 * pbr_vs)) < 0.25) {{
+              discard;
+          }}
+          pbr_base = pbr_base * pbr_vdf.rgb;
+          pbr_kglow = textureSampleLevel(tex{2}, tex{2}_samp, vec2f(1.0 - pbr_vm, 0.0), 0.0).rgb * (pbr_vm * pbr_vc0.y);
+      }})""",
+                         base, mapStage[5], underlying(config.tevStages[mapStage[4]].texMapId));
+    }
     // Kind 13, a Metroid's dome (Remastered's c83e6fcd, a matcap shell): map 4 is the matcap,
     // read where the normal map's tilt (pbr_param.z, CCH1.x, scaling the map's xy, which are
     // rescaled by 255/128 as in the shader) turns the view-space normal, at 0.5 + 0.5 xy with
@@ -1784,6 +1807,12 @@ auto pbr_func(const ShaderConfig& config, const ShaderInfo& info, std::string& v
       pbr_glow += ubuf.pbr_shield[6].rgb /
                   select(1.0, ubuf.pbr_tone[0].w, ubuf.pbr_tone[1].x > 0.0 && ubuf.pbr_tone[0].w > 0.0);)""";
     }
+    // Kind 35's ICMC, with no exposure (undone here where the generic scaling applies).
+    if (config.pbrKind == 35 && mapStage[4] != -1 && mapStage[5] != -1) {
+      liquid += R"""(
+      pbr_glow += ubuf.pbr_shield[6].rgb /
+                  select(1.0, ubuf.pbr_tone[0].w, ubuf.pbr_tone[1].x > 0.0 && ubuf.pbr_tone[0].w > 0.0);)""";
+    }
     // Kind 22's glow: Remastered adds it with no exposure factor, so the room-exposure scale below is undone for it.
     if (config.pbrKind == 22 && mapStage[2] != -1 && mapStage[4] != -1 && mapStage[5] != -1) {
       liquid += R"""(
@@ -2028,7 +2057,7 @@ auto pbr_func(const ShaderConfig& config, const ShaderInfo& info, std::string& v
           if (pbr_hdr > 0.0 && ubuf.pbr_probe[0].w > 0.0 && ubuf.pbr_probe[2].w > 0.0) {{
               let pbr_xc = textureSampleLevel(pbr_cube, pbr_cube_samp, pbr_pd, pbr_xr * pbr_lod).rgb * pbr_hdr;
               var pbr_xl = 1.0;
-              if (ubuf.pbr_lmap_rect.z != 0.0) {{
+              if (ubuf.pbr_lmap_rect.w != 0.0) {{
                   pbr_xl = max(pbr_l0v.r, max(pbr_l0v.g, pbr_l0v.b)) * dot(pbr_blcm, vec3f(0.2126, 0.7152, 0.0722));
               }} else if (pbr_kind > 29.5 && pbr_bmeanok) {{
                   // cc8afd0f's probe perms (BLPD 008-011, grid 014-017): the same occlusion from the mean.
@@ -2040,7 +2069,7 @@ auto pbr_func(const ShaderConfig& config, const ShaderInfo& info, std::string& v
           pbr_alpha = 1.0;
           pbr_glow = vec3f(0.0);
           pbr_lo = pbr_xenv * (pbr_xab.x * 0.04 + pbr_xab.y);
-          if (ubuf.pbr_lmap_rect.z != 0.0) {{
+          if (ubuf.pbr_lmap_rect.w != 0.0) {{
               pbr_lo += pbr_xbase * pbr_l0v * pbr_blcm * ((1.0 - pbr_xv3.w) / pbr_pi);
           }} else if (pbr_kind > 29.5 && pbr_bmeanok) {{
               pbr_lo += pbr_xbase * pbr_bmean * pbr_blcm * ((1.0 - pbr_xv3.w) / pbr_pi);
@@ -2475,7 +2504,7 @@ auto pbr_func(const ShaderConfig& config, const ShaderInfo& info, std::string& v
       }}
       // The same modulation on the lights where the baked ambient is a lobe or a grid volume
       // (not a lightmap, which does it below): BLCM x (ambient + lights), mode 4096.
-      if (pbr_blit && ubuf.pbr_lmap_rect.z == 0.0 && (ubuf.pbr_ambient[0].w > 0.0 || ubuf.pbr_volume[3].w > 0.0)) {{
+      if (pbr_blit && ubuf.pbr_lmap_rect.w == 0.0 && (ubuf.pbr_ambient[0].w > 0.0 || ubuf.pbr_volume[3].w > 0.0)) {{
           pbr_lo += pbr_ldiff * (pbr_blcm - 1.0);
       }}
       // CharacterBacklight (ae819893) without probe data (no baked ambient, no volume) is
@@ -2718,7 +2747,7 @@ auto pbr_func(const ShaderConfig& config, const ShaderInfo& info, std::string& v
   // A baked lightmap (GX_AURORA_SET_PBR_LIGHTMAP) replaces the diffuse ambient: its level L0 in layer 0 and the
   // direction's x, y, z in layers 1-3, each relative to L0, along the three axes in pbr_lmap_axes. The volume's
   // reflection stays, dimmed where the lightmap is dark. Cost test 3 (no ambient volume) goes without it too.
-  cut("// pbr-lightmap", lightmapUsed && costTest != 3 ? R"""(if (ubuf.pbr_lmap_rect.z != 0.0) {
+  cut("// pbr-lightmap", lightmapUsed && costTest != 3 ? R"""(if (ubuf.pbr_lmap_rect.w != 0.0) {
           let pbr_luv = ubuf.pbr_lmap_rect.xy + in.pbr_lmuv * ubuf.pbr_lmap_rect.z;
           let pbr_l0 = textureSampleLevel(pbr_lmap, pbr_cube_samp, pbr_luv, 0, 0.0).rgb;
           pbr_l0v = pbr_l0;
@@ -2989,7 +3018,7 @@ std::string build_shader_source(const ShaderConfig& config) noexcept {
     shadowVs += fmt::format("\n    let {} = {};", vtx_attr(config, GX_VA_POS), attr_load(config, GX_VA_POS, vidxAttr));
     shadowVs += shadowWind;
     shadowVs += fmt::format("\n    let mv_pos = vec4f({}, 1.0) * ubuf.postex_mtx[in_pnmtxidx];"
-                            "\n    var pos = vec4f(mv_pos, 1.0) * ubuf.shadow_caster;"
+                            "\n    var pos = vec4f(mv_pos, 1.0) * ubuf.shadow_caster[imm.serial];"
                             // Pancaked: a caster further toward the sun than the map reaches (a roof high
                             // over the floor) sits on its near plane rather than being clipped. The map is
                             // orthographic, so that moves nothing across it.
@@ -3716,10 +3745,12 @@ fn vf_apply(c: vec4f, fog: vec4f, w: f32) -> vec4f {
     // An unlit surface (baked room light: pbr_func drops its light loop) has no room light to
     // shadow, but takes the sun's own colour.
     if (!pbr.empty() && info.shadowReceive) {
-      // The sun (GXPortSetShadowFrame) through its shadow map: the point pushed out along the normal,
-      // then 3x3 PCF; outside the map, or before one is drawn, it is lit. It shadows the room's own
-      // directional light along its direction (CGraphics::LoadLight puts one at -dir * 2^20 in view
-      // space) and adds its own colour, if any, as one more light.
+      // The sun (GXPortSetShadowFrame) through its cascaded shadow map, as Remastered's receivers
+      // (KB material/bfb300b6.md sec 6): the cascade picked by view depth dithered by up to 2.5 on a
+      // 4x4 Bayer pattern, a constant depth bias, 3x3 tent PCF, and faded out over the last cascade's
+      // last fifth; before a map is drawn it is lit. It shadows the room's own directional light
+      // along its direction (CGraphics::LoadLight puts one at -dir * 2^20 in view space) and adds its
+      // own colour, if any, as one more light.
       const auto put = [&](std::string_view what, std::string_view with) {
         const size_t at = pbr.find(what);
         if (at == std::string::npos) {
@@ -3729,17 +3760,26 @@ fn vf_apply(c: vec4f, fog: vec4f, w: f32) -> vec4f {
       };
       put("// pbr-sun-vis", R"""(var sun_vis = 1.0;
       {
-          let sp = vec4f(in.pbr_pos + pbr_ng * ubuf.shadow_dir.w, 1.0) * ubuf.shadow_recv;
+          var bayer = array<f32, 16>(16.0, 144.0, 48.0, 176.0, 208.0, 80.0, 240.0, 112.0,
+                                     64.0, 192.0, 32.0, 160.0, 255.0, 128.0, 224.0, 96.0);
+          let fc = vec2u(in.pos.xy) & vec2u(3u);
+          let depth = -in.pbr_pos.z;
+          let dz = depth + 2.5 * (bayer[fc.y * 4u + fc.x] / 255.0);
+          let c = min(dot(select(vec4u(0u), vec4u(1u), vec4f(dz) > ubuf.shadow_splits), vec4u(1u)), 3u);
+          let sp = vec4f(in.pbr_pos, 1.0) * ubuf.shadow_recv[c];
           let suv = vec2f(sp.x * 0.5 + 0.5, 0.5 - sp.y * 0.5);
+          let sref = saturate(sp.z - 0.00025);
           let st = ubuf.shadow_color.w;
           var sum = 0.0;
           for (var sy = -1; sy <= 1; sy++) {
               for (var sx = -1; sx <= 1; sx++) {
-                  sum += textureSampleCompareLevel(shadow_map, shadow_samp, suv + vec2f(f32(sx), f32(sy)) * st, sp.z);
+                  let w = f32((2 - abs(sx)) * (2 - abs(sy))) / 16.0;
+                  sum += w * textureSampleCompareLevel(shadow_map, shadow_samp, suv + vec2f(f32(sx), f32(sy)) * st,
+                                                      c, sref);
               }
           }
-          let edge = max(max(abs(sp.x), abs(sp.y)), select(0.0, 1.0, sp.z >= 1.0));
-          sun_vis = mix(sum / 9.0, 1.0, smoothstep(0.9, 1.0, edge));
+          let f = saturate((depth - ubuf.shadow_fade.x) / (ubuf.shadow_fade.y - ubuf.shadow_fade.x));
+          sun_vis = max(sum, f * f * (3.0 - 2.0 * f));
       })""");
       if (pbr.find("// pbr-sun-view") != std::string::npos) {
         put("// pbr-sun-view", "pbr_dc = vec3f(sun_vis);");
@@ -3768,7 +3808,7 @@ fn vf_apply(c: vec4f, fog: vec4f, w: f32) -> vec4f {
           pbr_lnl += rad * (nl * sun_vis);
       })""");
       texBindings += fmt::format("\n@group(2) @binding({})\n"
-                                 "var shadow_map: texture_depth_2d;\n"
+                                 "var shadow_map: texture_depth_2d_array;\n"
                                  "@group(2) @binding({})\n"
                                  "var shadow_samp: sampler_comparison;",
                                  kShadowMapBinding, kShadowSamplerBinding);
@@ -3884,13 +3924,15 @@ fn vf_apply(c: vec4f, fog: vec4f, w: f32) -> vec4f {
         i, i * 2, i * 2 + 1);
   }
   if (info.usesShadow) {
-    // GXState::shadowUniform: view space to the sun's map for this frame's casters and for the map the
-    // receivers read (the previous frame's), the sun's view-space direction (w: the normal offset) and
-    // its colour (w: one texel of the map in uv).
-    uniBufAttrs += "\n    shadow_caster: mat4x4f,";
-    uniBufAttrs += "\n    shadow_recv: mat4x4f,";
+    // GXState::shadowUniform (gfx/shadow.hpp's Uniform): view space to each cascade's map for this
+    // frame's casters and for the maps the receivers read (the previous frame's), the sun's view-space
+    // direction, its colour (w: one texel of the map in uv), the receivers' cascade far ends and fade.
+    uniBufAttrs += "\n    shadow_caster: array<mat4x4f, 4>,";
+    uniBufAttrs += "\n    shadow_recv: array<mat4x4f, 4>,";
     uniBufAttrs += "\n    shadow_dir: vec4f,";
     uniBufAttrs += "\n    shadow_color: vec4f,";
+    uniBufAttrs += "\n    shadow_splits: vec4f,";
+    uniBufAttrs += "\n    shadow_fade: vec4f,";
   }
   if (!prevColorNormalized && !prevAlphaNormalized) {
     fragmentFn += "\n    prev = tev_overflow_vec4f(prev);";
