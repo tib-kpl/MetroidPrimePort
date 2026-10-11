@@ -11,6 +11,11 @@
 #include <cstdlib>
 #include <stdexcept>
 
+// CMemoryStreamOut reports a truncated write through the SDK's OSReport, which
+// the game takes from Aurora and this test does not link. It is declared weak:
+// ELF leaves the reference null, but COFF (the Windows build) needs a definition.
+extern "C" void OSReport(const char* msg, ...) { (void)msg; }
+
 namespace {
 void Check(bool condition) {
   if (!condition) {
