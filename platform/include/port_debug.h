@@ -180,6 +180,11 @@ inline int FourThreeWidth(int width, int height) {
 // the aspect-matched in-game HUD frames.
 bool HudWide();
 void SetHudWide(bool enabled);
+// The front end's menus (title, file select, options) are drawn for 4:3 and
+// pillarboxed on a wider screen. On, they are stretched to fill it instead,
+// distorted, background movie included. Off by default and under Original experience.
+bool StretchMenus();
+void SetStretchMenus(bool enabled);
 // Scripted 16:9 cutscene bars (CCameraFilterPass kFS_CinemaBars). Off by default:
 // below 16:9 the cinematic camera already renders the full shot, so it fills the
 // screen instead.

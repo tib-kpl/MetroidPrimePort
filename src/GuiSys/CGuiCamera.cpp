@@ -70,7 +70,8 @@ void CGuiCamera::Draw(const CGuiWidgetDrawParms& parms) const {
   // to 4:3 as well: its width is kept by widening the vertical view instead of
   // being squeezed into the narrower viewport.
   bool fitWidth = false;
-  if (xb9_aspectMatch) {
+  // A stretched menu keeps its authored 4:3 projection over the whole viewport.
+  if (xb9_aspectMatch && !(mPortMenu && PortDebug::StretchMenus())) {
     const float vw = static_cast< float >(CGraphics::GetViewportWidth());
     const float vh = static_cast< float >(CGraphics::GetViewportHeight());
     if (vw > 0.f && vh > 0.f) {

@@ -643,6 +643,7 @@ bool CFrontEndUI::SFrontEndFrame::PumpLoad() {
       // HUD's spread would pull its text away from the panels behind it.
       if (CGuiCamera* cam = frme->GetFrameCamera()) {
         cam->SetAspectMatch(true, false);
+        cam->PortSetMenu(true);
       }
       FinishedLoading();
       return true;
@@ -821,6 +822,7 @@ bool CFrontEndUI::SNewFileSelectFrame::PumpLoad() {
       // SFrontEndFrame::PumpLoad).
       if (CGuiCamera* cam = frme->GetFrameCamera()) {
         cam->SetAspectMatch(true, false);
+        cam->PortSetMenu(true);
       }
       FinishedLoading();
       return true;
@@ -1468,6 +1470,7 @@ bool CFrontEndUI::SFusionBonusFrame::PumpLoad() {
           // Port: keep the GBA screen's proportions in widescreen.
           if (CGuiCamera* cam = frme->GetFrameCamera()) {
             cam->SetAspectMatch(true, false);
+            cam->PortSetMenu(true);
           }
           FinishedLoading();
           return true;
@@ -2269,6 +2272,10 @@ void CFrontEndUI::Draw() const {
       int centerX;
       int centerY;
       xcc_curMoviePtr->PortGetMargins(vpWidth, vpHeight, centerX, centerY);
+      if (PortDebug::StretchMenus()) {
+        // Stretched with the menus over it: the full width, the height kept.
+        centerX = 0;
+      }
 #else
       const int centerX = (static_cast< int >(vidWidth) - vpWidth) / 2;
       const int centerY = (static_cast< int >(vidHeight) - vpHeight) / 2;

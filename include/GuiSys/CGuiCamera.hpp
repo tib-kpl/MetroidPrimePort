@@ -44,6 +44,9 @@ public:
     xb9_aspectMatch = match;
     mSpreadable = spread;
   }
+  // A front end menu's camera: stretched over a wide screen instead of
+  // pillarboxed while PortDebug::StretchMenus() is on.
+  void PortSetMenu(bool menu) { mPortMenu = menu; }
   // Widescreen HUD spread for this frame's widgets: 1.0 when inactive.
   float GetAspectSpread() const { return mSpread; }
   float GetAspectSpreadCenterX() const { return mSpreadCenterX; }
@@ -126,6 +129,7 @@ public:
   // HUD reaches the wide viewport edges without distorting element shapes.
   // Computed in the const Draw() and read immediately by CGuiFrame::Draw.
   bool mSpreadable = true;
+  bool mPortMenu = false;
   mutable float mSpread = 1.f;
   mutable float mSpreadCenterX = 0.f;
   mutable float mSpreadY = 1.f;

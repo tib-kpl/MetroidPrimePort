@@ -196,6 +196,7 @@ int sDynHoldLow = 0;        // seconds left without stepping down (a step down g
 int sDynHoldFor = 30;       // the next such hold; doubles each time
 PortDebug::EAspectMode sAspectMode = PortDebug::kAspect_Window;
 bool sHudWide = true;
+bool sStretchMenus = false;
 bool sCinemaBars = false;
 bool sSharpScanWindow = false;
 bool sAutoAim = true;
@@ -564,6 +565,8 @@ void ApplySetting(const std::string& key, const std::string& value) {
     sShowMenuHint = ParseBool(value);
   } else if (key == "hud_wide") {
     sHudWide = ParseBool(value);
+  } else if (key == "stretch_menus") {
+    sStretchMenus = ParseBool(value);
   } else if (key == "hud_scale") {
     const int s = std::atoi(value.c_str());
     if (s >= PortDebug::kHudScaleMin && s <= PortDebug::kHudScaleMax) {
@@ -785,6 +788,7 @@ std::string SettingsText() {
   file << "# Environment variables (MP_*) override these for a single run.\n";
   file << "aspect=" << aspect << '\n';
   file << "hud_wide=" << (sHudWide ? 1 : 0) << '\n';
+  file << "stretch_menus=" << (sStretchMenus ? 1 : 0) << '\n';
   file << "cinema_bars=" << (sCinemaBars ? 1 : 0) << '\n';
   file << "sharp_scan_window=" << (sSharpScanWindow ? 1 : 0) << '\n';
   file << "auto_aim=" << (sAutoAim ? 1 : 0) << '\n';
@@ -1455,6 +1459,17 @@ bool HudWide() {
 void SetHudWide(bool enabled) {
   EnsureInitialized();
   sHudWide = enabled;
+  MarkDirty();
+}
+
+bool StretchMenus() {
+  EnsureInitialized();
+  return sStretchMenus && !sOriginalExperience;
+}
+
+void SetStretchMenus(bool enabled) {
+  EnsureInitialized();
+  sStretchMenus = enabled;
   MarkDirty();
 }
 
@@ -5736,6 +5751,12 @@ void DrawVideoDisplay() {
     SetAspectMode(static_cast< EAspectMode >(aspect));
     MarkDirty();
   }
+  if (ImGui::Checkbox("Stretch menus to the screen", &sStretchMenus)) {
+    MarkDirty();
+  }
+  ImGui::SetItemTooltip("The title and file select menus are made for 4:3.\n"
+                        "Off: kept in proportion, with black bars at the sides.\n"
+                        "On: stretched to fill a wide screen (the image is distorted).");
   if (ImGui::Checkbox("Cutscene black bars", &sCinemaBars)) {
     MarkDirty();
   }
