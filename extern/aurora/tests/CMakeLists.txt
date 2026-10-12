@@ -182,6 +182,8 @@ if (AURORA_ENABLE_GX)
   add_executable(gfx_recording_tests
     gfx_recording_test.cpp
     gx_uniform_limit_test.cpp
+    gx_suit_glass_test.cpp
+    gx_inventory_visor_test.cpp
     render_target_layout_test.cpp
   )
   target_include_directories(gfx_recording_tests PRIVATE

@@ -1,5 +1,14 @@
 # Metroid Prime — native port
 
+A native build of **Metroid Prime** (GameCube, USA v1.00, v1.01 or v1.02 `GM8E01`, or PAL `GM8P01` as experimental) for Linux,
+Windows and Android. The game is compiled natively from the
+[PrimeDecomp](https://github.com/PrimeDecomp/prime) decompiled source and renders
+through Aurora (SDL3 and WebGPU), with no emulator involved.
+
+**No game content is included.** You need your own copy of the game: the port
+reads it from a disc image and never ships any of its assets. This repository
+ships no disc image, and neither does any package or release built from it.
+
 > **Ce dépôt est un fork** de [Odrannnn/MetroidPrimePort](https://github.com/Odrannnn/MetroidPrimePort)
 > dont le but est la prise en charge des langues, **en priorité le français**,
 > avec le disque européen (*Metroid Prime (Europe) (En,Fr,De,Es,It)*), dont les
@@ -10,15 +19,6 @@
 > disque européen.
 >
 > *This repository is a fork focused on language support, French first.*
-
-A native build of **Metroid Prime** (GameCube, USA v1.00 or v1.01 `GM8E01`, or PAL `GM8P01` as experimental) for Linux,
-Windows and Android. The game is compiled natively from the
-[PrimeDecomp](https://github.com/PrimeDecomp/prime) decompiled source and renders
-through Aurora (SDL3 and WebGPU), with no emulator involved.
-
-**No game content is included.** You need your own copy of the game: the port
-reads it from a disc image and never ships any of its assets. This repository
-ships no disc image, and neither does any package or release built from it.
 
 ## What it adds over the console release
 
@@ -134,7 +134,7 @@ succeeds but links a stub that cannot open a disc — see
 
 The disc can also be set with `MP_DISC`, kept beside the executable, or picked
 through a file dialog the first time you launch without one — the choice is
-remembered in the settings. The image must be `GM8E01`, disc 0, revision 0 or 1 (USA 1.00 or 1.01), or
+remembered in the settings. The image must be `GM8E01`, disc 0, revision 0, 1 or 2 (USA 1.00, 1.01 or 1.02), or
 `GM8P01` (PAL, experimental, which also brings its French, German, Spanish and Italian text;
 a USA player can add those from a PAL image in F1 > Game > Language). If a
 remembered disc stops opening — the file moved, or on Android the system revoked

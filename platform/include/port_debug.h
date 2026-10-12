@@ -254,6 +254,10 @@ void SetApSuitDamage(int mode);
 // (PortSkipCutscenes::Active).
 bool SkippableCutscenes();
 void SetSkippableCutscenes(bool enabled);
+// The stored 1.00 sequence-break compatibility choice (raw, not the effective
+// policy). Randomizer and Archipelago games force it on at use.
+bool Revision100Compatibility();
+void SetRevision100Compatibility(bool enabled);
 // The language of the game's text: "" for the disc's English, else one of the
 // codes in PortRemastered::kTextLanguages, which a Remastered import adds to the
 // string tables. A table without it shows English. Read at every
@@ -396,12 +400,15 @@ bool StartRemasteredImport(const std::string& image, const std::string& keys);
 // the console. Each returns a message for the user. Imports are refused in
 // game; `path` may be a .gci, a raw card image, a folder of .gci files or an
 // Android content:// URI, and an export to a path ending in .raw writes a card
-// image instead of .gci files.
+// image instead of .gci files. `format` picks what an export writes: "" (the
+// card's files as they are), "usa" or "pal" (the save converted to that
+// GameCube release; Dolphin's card of that region) or "trilogy" (the newest
+// save written into the Wii Trilogy's save.bin at `dest`, or Dolphin's).
 std::string CardList();
 std::string CardImport(const std::string& path);
-std::string CardExport(const std::string& dest);
+std::string CardExport(const std::string& dest, const std::string& format = "");
 std::string CardImportDolphin();
-std::string CardExportDolphin();
+std::string CardExportDolphin(const std::string& format = "");
 // Cheat: the player takes no damage (F1 > Debug > Cheats, MP_GODMODE, console `god`).
 bool Invulnerable();
 void SetInvulnerable(bool enabled);

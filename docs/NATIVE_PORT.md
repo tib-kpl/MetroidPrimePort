@@ -98,12 +98,13 @@ image. Otherwise, when no disc is found it opens the platform's file dialog and
 remembers the answer as `disc_path` in the settings file. There is no prompt
 when the port has no window to show one on, or with `MP_NO_DISC_DIALOG=1`
 (for scripted runs that do have a window, as on a build runner). The disc must
-identify as **GM8E01, disc 0, revision 0 or 1** (USA 1.00 or 1.01) or **GM8P01** (PAL).
+identify as **GM8E01, disc 0, revision 0, 1 or 2** (USA 1.00, 1.01 or 1.02) or **GM8P01** (PAL).
 PAL support is experimental: a PAL disc runs the same 1.00 code on its own data, at 60 Hz, with every port
 feature (Remastered import, randomizer, Archipelago, cutscene skips) and its
 languages; its saves are kept apart from USA ones. USA 1.01 runs the same
 way; its data differs from 1.00 only in a few rooms' scripts and one credits
-name. USA 1.02 is only taken with `MP_DISC_ANY_VERSION=1` (untested); Japanese, Korean and Wii discs
+name. USA 1.02 runs the same way (its rooms' scripts differ more, and the
+cutscene skips and the Arboretum gate fix have 1.02 variants); Japanese, Korean and Wii discs
 are rejected. Nod/Aurora supports additional image
 containers, but the same retail content is required.
 
@@ -409,6 +410,24 @@ glibc floor and the licensing position.
 Where FUSE itself is unavailable, such as in a container, run the AppImage
 with `APPIMAGE_EXTRACT_AND_RUN=1` (or `--appimage-extract-and-run`), which
 unpacks to a temporary directory instead of mounting.
+
+### 1.00 sequence-break compatibility
+
+F1 > Game > Cutscenes > "1.00 sequence-break compatibility" (INI key
+`revision_100_compatibility`, default false; forced on in randomizer and
+Archipelago games, reload needed) puts back what 1.00 sequence breaks rely on.
+`platform/port_revision_scripts.cpp` adds room-script ops (applied through
+`PortSkipCutscenes::PatchArea`, whose op stream it shares) for the rev2 locks, the 1.02 Hive Totem
+trigger and lock, and the PAL Ore Processing, Main Quarry and Central Dynamo
+locks (randomprime's values, not byte-exact 1.00). Every op target is checked first (layer, object
+type, property size, lock model, active byte), and a mismatch leaves the room
+untouched (logged, all or nothing); deactivations are EDITs of the active byte,
+removals are DELETEs of the verified full ids.
+It reads the setting at use through
+`PortDebug::Revision100Compatibility() || PortSkipCutscenes::Forced()`. Only the
+named script locks are fixed; missing 1.00 geometry (e.g. the Ruined Shrine
+root) is not restored. Unit test: `port_revision_scripts_tests`. Ordinary
+cutscene skipping is independent.
 
 ### Controls and settings
 

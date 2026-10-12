@@ -7,14 +7,10 @@
 #include "MetroidPrime/PathFinding/CPFBitSet.hpp"
 
 #include <array>
+#include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
 #include <stdexcept>
-
-// CMemoryStreamOut reports a truncated write through the SDK's OSReport, which
-// the game takes from Aurora and this test does not link. It is declared weak:
-// ELF leaves the reference null, but COFF (the Windows build) needs a definition.
-extern "C" void OSReport(const char* msg, ...) { (void)msg; }
 
 namespace {
 void Check(bool condition) {
@@ -30,6 +26,15 @@ struct Element {
 };
 int Element::live = 0;
 int gameFrees = 0;
+}
+
+// CMemoryStreamOut reports a truncated write; the game links OSReport from
+// aurora, the test has to define it (macOS rejects an undefined weak symbol).
+extern "C" void OSReport(const char* msg, ...) {
+  va_list args;
+  va_start(args, msg);
+  std::vfprintf(stderr, msg, args);
+  va_end(args);
 }
 
 rstl::CRefData rstl::CRefData::sNull(nullptr, 0x1000000 - 1);

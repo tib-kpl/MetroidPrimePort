@@ -224,6 +224,9 @@ bool sTrackerProgress = false;
 int sApSuitDamage = 1;
 bool sCheats = false;
 bool sSkippableCutscenes = false;
+// The stored choice only. Randomizer and Archipelago games force it on at use
+// (PortSkipCutscenes::Forced), which the getter does not fold in.
+bool sRevision100Compatibility = false;
 std::string sTextLanguage;
 // Whether the settings file named a language (English is saved as an empty one).
 bool sTextLanguageSaved = false;
@@ -609,6 +612,8 @@ void ApplySetting(const std::string& key, const std::string& value) {
     sTextLanguageSaved = true;
   } else if (key == "skippable_cutscenes") {
     sSkippableCutscenes = ParseBool(value);
+  } else if (key == "revision_100_compatibility") {
+    sRevision100Compatibility = ParseBool(value);
   } else if (key == "elevator_ride") {
     const int mode = std::atoi(value.c_str());
     sElevatorRide = mode >= PortDebug::kElevatorRide_Original && mode <= PortDebug::kElevatorRide_Skip
@@ -820,6 +825,7 @@ std::string SettingsText() {
   file << "ap_suit_damage=" << sApSuitDamage << '\n';
   file << "cheats=" << (sCheats ? 1 : 0) << '\n';
   file << "skippable_cutscenes=" << (sSkippableCutscenes ? 1 : 0) << '\n';
+  file << "revision_100_compatibility=" << (sRevision100Compatibility ? 1 : 0) << '\n';
   file << "text_language=" << sTextLanguage << '\n';
   file << "elevator_ride=" << sElevatorRide << '\n';
   file << "savestate_hotkeys=" << (sSaveStateHotkeys ? 1 : 0) << '\n';
@@ -1613,6 +1619,17 @@ bool SkippableCutscenes() {
 void SetSkippableCutscenes(bool enabled) {
   EnsureInitialized();
   sSkippableCutscenes = enabled;
+  MarkDirty();
+}
+
+bool Revision100Compatibility() {
+  EnsureInitialized();
+  return sRevision100Compatibility;
+}
+
+void SetRevision100Compatibility(bool enabled) {
+  EnsureInitialized();
+  sRevision100Compatibility = enabled;
   MarkDirty();
 }
 
@@ -4139,13 +4156,41 @@ void DrawPerformanceTab() {
 // Memory card transfer (port_gci.h). The work runs on the main thread; the
 // file dialogs answer on another one, so their picks wait in sCardPicks.
 namespace {
-enum CardPick { kCardPick_Import, kCardPick_ExportFolder, kCardPick_ExportFile };
+// kCardPick_Trilogy: the Trilogy save.bin to write the save into.
+enum CardPick { kCardPick_Import, kCardPick_ExportFolder, kCardPick_ExportFile, kCardPick_Trilogy };
 std::mutex sCardPickMutex;
 std::vector<std::pair<CardPick, std::string>> sCardPicks;
 std::atomic<bool> sCardDialogOpen{false};
 std::string sCardStatus;
 // Android has no folder dialog: each file gets its own save dialog, in turn.
-std::vector<std::filesystem::path> sCardExportQueue;
+struct CardExportFile {
+  std::string name; // the suggested file name
+  std::vector<uint8_t> bytes;
+  std::string note; // what a conversion could not carry over
+};
+std::vector<CardExportFile> sCardExportQueue;
+// The overlay's "Export as" choice: an index into kCardExportWords.
+int sCardExportChoice = 0;
+constexpr const char* kCardExportWords[] = {"", "usa", "pal", "trilogy"};
+constexpr const char* kCardExportUsage = " (usa, pal or trilogy).";
+
+// "" means the card's files as they are; Unknown for a word that is no format.
+// "trilogy" is the Wii Trilogy's save.bin (WiiSave).
+PortGci::ExportFormat CardExportFormat(const std::string& word) {
+  if (word.empty()) {
+    return PortGci::NativeExport();
+  }
+  if (word == "usa") {
+    return PortGci::ExportFormat::UsaGci;
+  }
+  if (word == "pal") {
+    return PortGci::ExportFormat::PalGci;
+  }
+  if (word == "trilogy") {
+    return PortGci::ExportFormat::WiiSave;
+  }
+  return PortGci::ExportFormat::Unknown;
+}
 
 // The last path segment, for messages; content:// URIs keep theirs escaped.
 std::string CardDisplayName(const std::string& path) {
@@ -4230,17 +4275,24 @@ std::string CardImport(const std::string& path) {
       PortGci::ImportBytes(contents, CardDisplayName(path), folder, folder.parent_path()));
 }
 
-std::string CardExport(const std::string& dest) {
+std::string CardExport(const std::string& dest, const std::string& format) {
   std::filesystem::path folder;
   const std::string refusal = CardExportSource(folder);
   if (!refusal.empty()) {
     return refusal;
   }
-  const std::filesystem::path target = PortGci::PathFromString(dest);
-  if (target.extension() == ".raw") {
-    return PortGci::ExportRaw(folder, target).Summary("Exported");
+  const PortGci::ExportFormat to = CardExportFormat(format);
+  if (to == PortGci::ExportFormat::Unknown) {
+    return "Unknown export format " + format + kCardExportUsage;
   }
-  return PortGci::ExportFolder(folder, target).Summary("Exported");
+  const std::filesystem::path target = PortGci::PathFromString(dest);
+  if (to == PortGci::ExportFormat::WiiSave) {
+    return PortGci::ExportTrilogy(folder, target).Summary("Exported");
+  }
+  if (target.extension() == ".raw") {
+    return PortGci::ExportRaw(folder, target, to).Summary("Exported");
+  }
+  return PortGci::ExportFolder(folder, target, to).Summary("Exported");
 }
 
 std::string CardImportDolphin() {
@@ -4281,27 +4333,39 @@ std::string CardImportDolphin() {
   return "Dolphin's memory card holds no Metroid Prime saves.";
 }
 
-std::string CardExportDolphin() {
+std::string CardExportDolphin(const std::string& format) {
   std::filesystem::path folder;
   const std::string refusal = CardExportSource(folder);
   if (!refusal.empty()) {
     return refusal;
   }
-  const PortGci::DolphinCard dolphin = PortGci::FindDolphinCard();
+  const PortGci::ExportFormat to = CardExportFormat(format);
+  if (to == PortGci::ExportFormat::Unknown) {
+    return "Unknown export format " + format + kCardExportUsage;
+  }
+  if (to == PortGci::ExportFormat::WiiSave) {
+    const std::filesystem::path bin = PortGci::FindDolphinTrilogy();
+    if (bin.empty()) {
+      return "No Trilogy save in Dolphin (Wii/title/00010000/52334d45 or 52334d50/data/save.bin in its user "
+             "folder); start Metroid Prime Trilogy in Dolphin once to create it.";
+    }
+    return "To " + PortGci::PathString(bin) + ": " + PortGci::ExportTrilogy(folder, bin).Summary("Exported");
+  }
+  const char* region = PortGci::CardRegionOf(to);
+  const PortGci::DolphinCard dolphin = PortGci::FindDolphinCard(region);
   if (!dolphin.Found()) {
-    return std::string("No Dolphin memory card found (GC/") + PortGci::CardRegion() + "/Card A or GC/MemoryCardA." +
-           PortGci::CardRegion() + ".raw in "
-           "Dolphin's user folder); start a GameCube game in Dolphin once to create it.";
+    return std::string("No Dolphin memory card found (GC/") + region + "/Card A or GC/MemoryCardA." + region +
+           ".raw in Dolphin's user folder); start a GameCube game of that region in Dolphin once to create it.";
   }
   std::string text;
   if (!dolphin.gciFolder.empty()) {
     text = "To " + PortGci::PathString(dolphin.gciFolder) + ": " +
-           PortGci::ExportFolder(folder, dolphin.gciFolder).Summary("Exported");
+           PortGci::ExportFolder(folder, dolphin.gciFolder, to).Summary("Exported");
   }
   if (!dolphin.rawImage.empty()) {
     text += std::string(text.empty() ? "" : "\n") + "To " +
             PortGci::PathString(dolphin.rawImage) + ": " +
-            PortGci::ExportRaw(folder, dolphin.rawImage).Summary("Exported");
+            PortGci::ExportRaw(folder, dolphin.rawImage, to).Summary("Exported");
   }
   return text;
 }
@@ -4385,11 +4449,23 @@ void OpenCardDialog(CardPick pick) {
   case kCardPick_ExportFolder:
     SDL_ShowOpenFolderDialog(done, userdata, window, nullptr, false);
     break;
+  case kCardPick_Trilogy: {
+#if defined(__ANDROID__)
+    SDL_ShowOpenFileDialog(done, userdata, window, nullptr, 0, nullptr, false);
+#else
+    static const SDL_DialogFileFilter filters[] = {
+        {"Trilogy save (save.bin)", "bin"},
+        {"All files", "*"},
+    };
+    SDL_ShowOpenFileDialog(done, userdata, window, filters, 2, nullptr, false);
+#endif
+    break;
+  }
   case kCardPick_ExportFile: {
     static std::string location;
     location = sCardExportQueue.empty()
                    ? std::string()
-                   : PortGci::PathString(sCardExportQueue.front().filename());
+                   : sCardExportQueue.front().name;
 #if defined(__ANDROID__)
     // SDL's Android save picker ignores its initial-location argument. Hand the
     // current queue member's basename to its Java dialog instead.
@@ -4402,16 +4478,76 @@ void OpenCardDialog(CardPick pick) {
   }
 }
 
-std::string CardSaveTo(const std::filesystem::path& source, const std::string& target) {
-  std::ifstream in(source, std::ios::binary);
-  const std::vector<char> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-  SDL_IOStream* out = in ? SDL_IOFromFile(target.c_str(), "wb") : nullptr;
-  bool ok = out != nullptr && SDL_WriteIO(out, bytes.data(), bytes.size()) == bytes.size();
+#if defined(__ANDROID__)
+// Fills sCardExportQueue with the card's files, read as they are or converted
+// to `format` (one file then). Returns an error, or "" with the queue filled.
+std::string CardQueueExport(const std::filesystem::path& folder, const std::string& format) {
+  sCardExportQueue.clear();
+  const PortGci::ExportFormat to = CardExportFormat(format);
+  if (to == PortGci::ExportFormat::Unknown || to == PortGci::ExportFormat::WiiSave) {
+    return "Unknown export format " + format + " (usa or pal).";
+  }
+  if (to == PortGci::NativeExport()) {
+    for (const std::filesystem::path& file : PortGci::GameFiles(folder)) {
+      std::ifstream in(file, std::ios::binary);
+      std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+      if (!in && !in.eof()) {
+        sCardExportQueue.clear();
+        return "Could not read " + PortGci::PathString(file.filename()) + ".";
+      }
+      sCardExportQueue.push_back({PortGci::PathString(file.filename()), std::move(bytes), {}});
+    }
+    return {};
+  }
+  CardExportFile entry;
+  std::string error;
+  PortGci::Header header;
+  if (!PortGci::ExportBytes(folder, to, entry.bytes, entry.note, error) ||
+      !PortGci::ParseHeader(entry.bytes.data(), entry.bytes.size(), header, error)) {
+    return "Could not convert the save: " + error;
+  }
+  entry.name = PortGci::DiskName(header);
+  sCardExportQueue.push_back(std::move(entry));
+  return {};
+}
+
+// Queues the Trilogy save.bin at `basePath` (a content:// URI from the picker)
+// with the card's newest save written into it.
+std::string CardQueueTrilogy(const std::string& basePath) {
+  sCardExportQueue.clear();
+  std::filesystem::path folder;
+  const std::string refusal = CardExportSource(folder);
+  if (!refusal.empty()) {
+    return refusal;
+  }
+  size_t size = 0;
+  void* data = SDL_LoadFile(basePath.c_str(), &size);
+  if (data == nullptr) {
+    return "Could not read " + CardDisplayName(basePath) + ": " + SDL_GetError();
+  }
+  const uint8_t* bytes = static_cast< const uint8_t* >(data);
+  const std::vector<uint8_t> base(bytes, bytes + size);
+  SDL_free(data);
+  CardExportFile entry;
+  std::string error;
+  if (!PortGci::ExportBytes(folder, PortGci::ExportFormat::WiiSave, entry.bytes, entry.note, error, base)) {
+    return "Could not convert the save: " + error;
+  }
+  entry.name = "save.bin";
+  sCardExportQueue.push_back(std::move(entry));
+  return {};
+}
+#endif
+
+std::string CardSaveTo(const CardExportFile& source, const std::string& target) {
+  SDL_IOStream* out = SDL_IOFromFile(target.c_str(), "wb");
+  bool ok = out != nullptr && SDL_WriteIO(out, source.bytes.data(), source.bytes.size()) == source.bytes.size();
   if (out != nullptr) {
     ok = SDL_CloseIO(out) && ok;
   }
-  return ok ? "Saved " + PortGci::PathString(source.filename()) + " as " + CardDisplayName(target) + "."
-            : "Could not save " + PortGci::PathString(source.filename()) + ": " + SDL_GetError();
+  return ok ? "Saved " + source.name + " as " + CardDisplayName(target) +
+                  (source.note.empty() ? "" : ", " + source.note) + "."
+            : "Could not save " + source.name + ": " + SDL_GetError();
 }
 
 // Runs every frame, overlay open or not, so a dialog's answer is acted on.
@@ -4434,7 +4570,17 @@ void ProcessCardPicks() {
       sCardStatus = CardImport(path);
       break;
     case kCardPick_ExportFolder:
-      sCardStatus = CardExport(path);
+      sCardStatus = CardExport(path, kCardExportWords[sCardExportChoice]);
+      break;
+    case kCardPick_Trilogy:
+#if defined(__ANDROID__)
+      sCardStatus = CardQueueTrilogy(path);
+      if (!sCardExportQueue.empty()) {
+        OpenCardDialog(kCardPick_ExportFile);
+      }
+#else
+      sCardStatus = CardExport(path, "trilogy");
+#endif
       break;
     case kCardPick_ExportFile:
       if (!sCardExportQueue.empty()) {
@@ -4479,23 +4625,51 @@ void DrawMemoryCard() {
 #endif
   ImGui::EndDisabled();
   ImGui::BeginDisabled(busy || saves == 0);
+  const std::string asIs = std::string("As on the card (") +
+                           PortSaveConvert::FormatName(PortGci::NativeExport()) + ")";
+  const char* choices[] = {asIs.c_str(), "USA GameCube (GM8E)", "PAL GameCube (GM8P)",
+                           "Wii Trilogy (save.bin)"};
+  ImGui::SetNextItemWidth(ImGui::GetFontSize() * 14.0f);
+  ImGui::Combo("Export as", &sCardExportChoice, choices, IM_ARRAYSIZE(choices));
+  ItemHelp("The release the exported save is for. A save of another release is converted from the newest "
+           "save on the card; it replaces that release's saves at the destination. The Trilogy's save is "
+           "written into an existing save.bin (Dolphin's, or one exported from a Wii and decrypted): the "
+           "newest save replaces the Metroid Prime game the Trilogy shows (start one there and save once "
+           "first); Echoes and Corruption are kept. A Wii's data.bin is signed by the console, so it "
+           "cannot be made here.");
+  const char* format = kCardExportWords[sCardExportChoice];
+  const bool trilogy = CardExportFormat(format) == PortGci::ExportFormat::WiiSave;
 #if defined(__ANDROID__)
-  if (ImGui::Button("Export...")) {
-    sCardExportQueue = PortGci::GameFiles(folder);
-    OpenCardDialog(kCardPick_ExportFile);
+  if (trilogy) {
+    if (ImGui::Button("Export into save.bin...")) {
+      OpenCardDialog(kCardPick_Trilogy);
+    }
+    ItemHelp("Pick the Trilogy save.bin to start from, then where to save the new one.");
+  } else {
+    if (ImGui::Button("Export...")) {
+      sCardStatus = CardQueueExport(folder, format);
+      if (!sCardExportQueue.empty()) {
+        OpenCardDialog(kCardPick_ExportFile);
+      }
+    }
+    ItemHelp((std::string("Saves each file in turn; keep Dolphin's names (01-") +
+              PortGci::GameCodeOf(CardExportFormat(format)) + "-MetroidPrime A.gci) for its GCI folder.")
+                 .c_str());
   }
-  ItemHelp((std::string("Saves each file in turn; keep Dolphin's names (01-") + PortGci::GameCode() +
-            "-MetroidPrime A.gci) for its GCI folder.")
-               .c_str());
 #else
-  if (ImGui::Button("Export to folder...")) {
-    OpenCardDialog(kCardPick_ExportFolder);
+  if (ImGui::Button(trilogy ? "Export into save.bin..." : "Export to folder...")) {
+    OpenCardDialog(trilogy ? kCardPick_Trilogy : kCardPick_ExportFolder);
   }
   ImGui::SameLine();
   if (ImGui::Button("Export to Dolphin")) {
-    sCardStatus = CardExportDolphin();
+    sCardStatus = CardExportDolphin(format);
   }
-  ItemHelp("Close Dolphin first. A raw card is backed up to .raw.bak before it is written.");
+  ItemHelp(trilogy ? "Close Dolphin first. Goes to Dolphin's Trilogy save (Wii/title/00010000/52334d45/data/"
+                     "save.bin); the old one is kept as save.bin.bak."
+                   : (std::string("Close Dolphin first. Goes to Dolphin's ") +
+                      PortGci::CardRegionOf(CardExportFormat(format)) +
+                      " card; a raw card is backed up to .raw.bak before it is written.")
+                         .c_str());
 #endif
   ImGui::EndDisabled();
 #if !defined(__ANDROID__)
@@ -5487,6 +5661,21 @@ void DrawCutscenesSection() {
            "half the time. What a scan records is unchanged.");
   EndOriginalLocked(locked);
 
+  // Not under the Original experience lock: the stored choice applies there too.
+  ImGui::SeparatorText("Revision compatibility");
+  const bool revisionForced = PortSkipCutscenes::Forced();
+  bool revisionCompat = sRevision100Compatibility || revisionForced;
+  ImGui::BeginDisabled(revisionForced);
+  if (ImGui::Checkbox("1.00 sequence-break compatibility", &revisionCompat)) {
+    SetRevision100Compatibility(revisionCompat);
+  }
+  ImGui::EndDisabled();
+  ItemHelp("Restores supported revision-specific sequence-break behavior on newer/PAL discs. "
+           "Requires reloading the game. Automatically enabled for randomizer and Archipelago games.");
+  if (revisionForced) {
+    SameLineAfterHelp();
+    ImGui::TextDisabled("(automatic in randomizer and Archipelago games)");
+  }
 }
 
 void DrawUnlocksSection() {

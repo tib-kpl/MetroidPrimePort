@@ -195,7 +195,9 @@
   A/B/X/Y, shoulders, triggers and D-pad (A confirms, B backs out, the triggers page and
   zoom), and they can be rebound like any row; the prompts there follow them. Start and the
   map button keep their gameplay inputs (a Menu row on either input is ignored); bindings
-  set for Menu or Map under Advanced still apply; keyboard and touch are unchanged. With
+  set for Menu or Map under Advanced still apply. Keyboard and mouse inputs bound to the
+  rows apply in menus and the map with or without a controller, replacing what that key
+  does in gameplay there; touch is unchanged. With
   the option off, menus and the map follow the gameplay bindings and the rows do nothing.
   It binds any action to an input or a chord of up to four
   (hold the first ones, press the last; or "Any order" within the chord window). The editor's
@@ -348,6 +350,21 @@
   finish at once, a Reset ends a beetle's emergence, no skip without a
   cutscene camera). Rooms a mod replaced are left unpatched. Archipelago
   games also skip the Landing Site intro: Samus starts on top of her ship.
+- 1.00 sequence-break compatibility (F1 > Game > Cutscenes > Revision
+  compatibility, `revision_100_compatibility`, off by default; always on in
+  randomizer and Archipelago games, where the box shows ticked and disabled)
+  restores 1.00 sequence breaks that newer discs (USA 1.01/1.02, PAL) fixed.
+  It is independent of Skippable cutscenes and is not under the Original
+  experience lock. Changing it needs a game reload: the room scripts are patched
+  at load. Script blockers restored on rev2 (USA 1.02): Geothermal Core, Main Quarry and Ore
+  Processing lose their added lock actors; Ruined Courtyard gets 1.00's
+  trigger/relay wiring back; Elite Research's pickup-gated exit unlock is
+  rewired so the Phazon Elite's death unlocks it directly. USA 1.02 Hive
+  Totem gets randomprime's boss trigger box back and loses its added door lock;
+  PAL keeps Ore Processing's destructible rock and Main Quarry's layer-7 door
+  lock switched off and loses Central Dynamo's extra door lock. Only these
+  script locks are fixed; missing 1.00 geometry (such as the Ruined Shrine
+  root) is not restored, so the setting is not exact all-1.00 behavior.
 - Elevator ride (F1 > Game > Cutscenes, pause Options > Visor,
   `elevator_ride`: 0 Original, 1 Fast, 2 Skip; Original by default) sets the
   ride shown between worlds. Retail holds it at least 5 s whatever the load
@@ -424,9 +441,18 @@ other `X:\Users\<name>`: `X:\Users\<user>`); the
   Windows) and uses its `GC/USA/Card A` folder and/or `GC/MemoryCardA.USA.raw`
   (import takes the more recently written one); close Dolphin before exporting.
   Android uses the system pickers: one save dialog per file on export, so keep
-  Dolphin's names (`01-GM8E-MetroidPrime A.gci`). Logic in
-  `platform/port_gci.cpp`, covered by `port_gci_tests`. Console:
-  `gci list | import <path> | export <dir or .raw> | dolphin import|export`.
+  Dolphin's names (`01-GM8E-MetroidPrime A.gci`). "Export as" picks the release:
+  the card's files as they are, USA or PAL GameCube (the newest save converted),
+  or the Wii Trilogy, written into an existing `save.bin` (Dolphin's
+  `Wii/title/00010000/52334d45/data/save.bin`, or a decrypted one; backed up to
+  `save.bin.bak`): the newest save replaces the Metroid Prime game the Trilogy
+  last used (it shows one per Mii, so start one there and save once first);
+  Echoes/Corruption are kept. A Wii `data.bin` is console-signed and
+  cannot be written. Logic in `platform/port_gci.cpp` and
+  `platform/port_save_convert.cpp`, covered by `port_gci_tests` and
+  `port_save_convert`. Console: `gci list | import <path> | export [usa|pal]
+  <dir or .raw> | export trilogy <save.bin> | dolphin import | dolphin export
+  [usa|pal|trilogy]`.
 - Unlocks (F1 > Game > Unlocks, persisted as `unlock_hard_mode`, `unlock_fusion_suit`,
   `unlock_galleries`, all off by default): offer what finishing the game
   unlocks without finishing it. Hard mode adds Normal/Hard to a new file; the
