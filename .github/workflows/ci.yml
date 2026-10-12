@@ -199,16 +199,28 @@ jobs:
     steps:
       - name: Dependencies
         run: |
-          dnf install -y epel-release dnf-plugins-core
+          # The EPEL and AlmaLinux mirrors fail now and then ("all mirrors were
+          # already tried"): retry with fresh metadata before failing the job.
+          retry() {
+            for attempt in 1 2 3 4; do
+              "$@" && return 0
+              echo "::warning::attempt $attempt failed: $*"
+              dnf clean metadata || true
+              sleep $((attempt * 20))
+            done
+            return 1
+          }
+          retry dnf install -y epel-release dnf-plugins-core
           dnf config-manager --set-enabled crb
-          dnf install -y --allowerasing gcc-toolset-14-gcc gcc-toolset-14-gcc-c++ \
+          retry dnf install -y --allowerasing gcc-toolset-14-gcc gcc-toolset-14-gcc-c++ \
             cmake ninja-build git curl file findutils binutils python3 \
             alsa-lib-devel pulseaudio-libs-devel libX11-devel libXext-devel \
             libXrandr-devel libXcursor-devel libXi-devel libXfixes-devel \
             libXScrnSaver-devel libXtst-devel wayland-devel wayland-protocols-devel \
             libxkbcommon-devel mesa-libEGL-devel mesa-libGL-devel \
             freetype-devel libpng-devel zlib-devel bzip2-devel brotli-devel \
-            libzstd-devel openssl-devel ccache             systemd-devel libusb1-devel
+            libzstd-devel openssl-devel ccache \
+            systemd-devel libusb1-devel
       - uses: actions/checkout@v4
         with:
           # The version string is `git describe`; it needs the tags.
