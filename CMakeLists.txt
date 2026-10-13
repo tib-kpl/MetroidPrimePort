@@ -187,12 +187,14 @@ set(MP_PORT_SOURCES
     platform/port_map_pickups.cpp
     platform/port_viewmodel.cpp
     platform/port_freecam.cpp
+    platform/port_photo.cpp
     platform/port_console.cpp
     platform/port_log_file.cpp
     platform/port_crash.cpp
     platform/port_watchdog.cpp
     platform/port_savestate.cpp
     platform/port_savestate_format.cpp
+    platform/port_savestate_room.cpp
     platform/port_skip_cutscenes.cpp
     platform/port_revision_scripts.cpp
     platform/port_skip_streams.cpp
@@ -794,5 +796,10 @@ if(MP_BUILD_TESTS)
         add_test(NAME port_pipeline_seed
             COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/pipeline_seed.py check)
         set_tests_properties(port_pipeline_seed PROPERTIES TIMEOUT 60 LABELS port)
+        # The F1 settings search index against the widgets it names, both ways.
+        add_test(NAME port_settings_index
+            COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/tools/check_settings_index.py
+                    ${CMAKE_CURRENT_SOURCE_DIR})
+        set_tests_properties(port_settings_index PROPERTIES TIMEOUT 15 LABELS port)
     endif()
 endif()

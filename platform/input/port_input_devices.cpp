@@ -5,6 +5,7 @@
 #include "port_input_remap_ui.h"
 #include "port_log.h"
 #include "port_paths.h"
+#include "port_photo.h"
 #include "MetroidPrime/CStateManager.hpp"
 #include "MetroidPrime/Player/CPlayer.hpp"
 #include "MetroidPrime/Player/CPlayerGun.hpp"
@@ -395,6 +396,7 @@ void BindPortControls(Profile& p) {
   Bind(p, Action::SaveState, Make(Device::Key, SDL_SCANCODE_F5));
   Bind(p, Action::LoadState, Make(Device::Key, SDL_SCANCODE_F9));
   Bind(p, Action::Screenshot, Make(Device::Key, SDL_SCANCODE_F12));
+  Bind(p, Action::PhotoMode, Make(Device::Key, SDL_SCANCODE_F8));
 
   // The wheel cycles beams, as in PrimeHack (issue #61); retail has no wheel.
   if (!PortDebug::OriginalExperience()) {
@@ -403,7 +405,8 @@ void BindPortControls(Profile& p) {
   }
 
   // Mouse buttons: under mouse aim each does its action (or the beam shift);
-  // out of it the ones on A and B still press them (bombs, boosts, text boxes).
+  // out of it the ones on A and B still press them (bombs, boosts, text boxes),
+  // and in morph ball the ones on Y and R too (power bombs, spider ball).
   for (int i = 0; i < PortInputMap::kMouseButtonCount; ++i) {
     const int action = PortDebug::MouseAction(i);
     if (action == PortInputMap::kMA_Shift) continue; // a beam chord's shift, bound above
@@ -412,6 +415,8 @@ void BindPortControls(Profile& p) {
     Bind(p, a, Make(Device::MouseButton, kMouseGameplay + i));
     if (pad == PAD_BUTTON_A || pad == PAD_BUTTON_B) {
       Bind(p, a, Make(Device::MouseButton, kMouseMenu + i));
+    } else if (pad == PAD_BUTTON_Y || pad == PAD_TRIGGER_R) {
+      BindIn(p, a, Make(Device::MouseButton, kMouseMenu + i), PortInput::kCtxMorphBall);
     }
   }
 }
@@ -420,6 +425,8 @@ float StickValue(s16 raw, u16 deadZone, bool useDeadZones) {
   if (useDeadZones && std::abs(static_cast< int >(raw)) <= deadZone) return 0.f;
   return std::clamp(static_cast< float >(raw) / 32767.f, -1.f, 1.f);
 }
+
+uint16_t GameContexts();
 
 void FillRawState(PortInput::RawState& raw, unsigned mouseHeld, bool focused) {
   int numKeys = 0;
@@ -454,9 +461,11 @@ void FillRawState(PortInput::RawState& raw, unsigned mouseHeld, bool focused) {
     actions[i] = PortDebug::MouseAction(i);
   }
   // Its gate also waits for a release, so a held charge carried into morph ball
-  // doesn't drop a bomb; only the A/B buttons feed it, so a held side button
-  // with nothing to do there doesn't hold it shut.
-  const unsigned menuMask = PortInputMap::MouseButtonsFor(actions, PAD_BUTTON_A | PAD_BUTTON_B);
+  // doesn't drop a bomb; only the buttons with something to do there feed it
+  // (A/B, plus Y/R in morph ball), so a held side button doesn't hold it shut.
+  unsigned menuPad = PAD_BUTTON_A | PAD_BUTTON_B;
+  if ((GameContexts() & PortInput::kCtxMorphBall) != 0) menuPad |= PAD_BUTTON_Y | PAD_TRIGGER_R;
+  const unsigned menuMask = PortInputMap::MouseButtonsFor(actions, menuPad);
   mouse |= (PortDebug::MouseMenuButtons(mouseHeld & menuMask, focused) & PortInputMap::kMouseButtonMask)
            << kMouseMenu;
   if (PortDebug::MouseGameplayActive() && PortDebug::MouseCaptured() && PortDebug::MouseButtons()) {
@@ -498,11 +507,18 @@ s8 StickY(float down, float up) {
   return static_cast< s8 >(std::clamp(static_cast< int >(y), -127, 127));
 }
 
-// One of menu (front end, pause screen), map, morph ball or gameplay; the scan
-// visor adds scan to gameplay.
+// The scan text is up (the scan freeze): it reads A while the lock stays held.
+static bool ScanTextOpen(uint16_t contexts) {
+  return (contexts & PortInput::kCtxMenu) != 0 && (contexts & PortInput::kCtxScan) != 0;
+}
+
+// One of menu (front end, pause screen, save station, upgrade message), map, morph
+// ball or gameplay; the scan visor adds scan to gameplay, and the scan text adds
+// menu to that, so its A follows the Menu rows while gameplay keeps the lock
+// (issue #93).
 uint16_t GameContexts() {
   CStateManager* mgr = PortDebug::StateManager();
-  if (mgr == nullptr || PortDebug::PauseScreenOpen()) return PortInput::kCtxMenu;
+  if (mgr == nullptr || PortDebug::PausedMenuOpen()) return PortInput::kCtxMenu;
   if (PortDebug::MapScreenOpen()) return PortInput::kCtxMap;
   if (const CPlayer* player = mgr->GetPlayer()) {
     const CPlayer::EPlayerMorphBallState morph = player->GetMorphballTransitionState();
@@ -510,7 +526,10 @@ uint16_t GameContexts() {
   }
   uint16_t contexts = PortInput::kCtxGameplay;
   const CPlayerState* state = mgr->GetPlayerState();
-  if (state != nullptr && state->GetCurrentVisor() == CPlayerState::kPV_Scan) contexts |= PortInput::kCtxScan;
+  if (state != nullptr && state->GetCurrentVisor() == CPlayerState::kPV_Scan) {
+    contexts |= PortInput::kCtxScan;
+    if (mgr->GetGameState() == CStateManager::kGS_SoftPaused) contexts |= PortInput::kCtxMenu;
+  }
   return contexts;
 }
 
@@ -613,7 +632,7 @@ void RouteDirectActions(const PortInput::Output& out) {
 // ticks, so they work while the game is paused or the F1 overlay is open.
 bool IsPortAction(Action a) {
   return a == Action::PortMenu || a == Action::SaveState || a == Action::LoadState || a == Action::Screenshot ||
-         a == Action::ToggleOriginal;
+         a == Action::ToggleOriginal || a == Action::PhotoMode;
 }
 
 // Keys pressed since the last PollPortActions, added by an SDL event watch: a short
@@ -1088,7 +1107,8 @@ SPoll Poll(unsigned mouseHeld, bool focused) {
   PortInput::RawState raw;
   FillRawState(raw, mouseHeld, focused);
   sClockMs += static_cast< double >(PortDebug::TickPeriod()) * 1000.0;
-  const PortInput::Output& out = sRuntime.Poll(raw, GameContexts(), sClockMs);
+  const uint16_t contexts = GameContexts();
+  const PortInput::Output& out = sRuntime.Poll(raw, contexts, sClockMs);
   SPoll r;
   if (PortInputRemap::Capturing()) {
     // The F1 Remap page is recording an input: it reaches neither the game nor
@@ -1099,6 +1119,12 @@ SPoll Poll(unsigned mouseHeld, bool focused) {
   RouteDirectActions(out);
 
   r.status = Synthesize(out);
+  // The scan text reads only A: the Menu row's, not gameplay's (issue #93). The
+  // other buttons keep gameplay's, so the held lock stays.
+  if (ScanTextOpen(contexts) && MenuButtonsActive()) {
+    r.status.button &= static_cast< u16 >(~PAD_BUTTON_A);
+    if (out.Held(Action::MenuA)) r.status.button |= PAD_BUTTON_A;
+  }
   return r;
 }
 
@@ -1137,6 +1163,7 @@ void PollPortActions() {
   if (out.Pressed(Action::SaveState)) PortDebug::RequestSaveStateHotkey(1);
   if (out.Pressed(Action::LoadState)) PortDebug::RequestSaveStateHotkey(2);
   if (out.Pressed(Action::Screenshot)) aurora::request_screenshot();
+  if (out.Pressed(Action::PhotoMode)) PortPhoto::RequestToggle();
   if (out.Pressed(Action::ToggleOriginal)) PortDebug::SetOriginalExperience(!PortDebug::OriginalExperience());
 }
 

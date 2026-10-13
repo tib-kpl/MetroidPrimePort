@@ -6,6 +6,17 @@
   precedence. SDL controllers are supported.
 - F1: debug overlay. F10: 60 FPS cap on/off (off: F1 Video > Frame rate "FPS cap", `fps_cap=`, `MP_FPS_CAP`; 0 = unlimited). F11: fullscreen.
   F12: screenshot.
+- Settings search: the box at the top of the F1 overlay (Ctrl+F) lists the
+  settings whose name, page, section or keywords contain every typed word;
+  picking one opens its page, sub-tab and collapsed section, scrolls to it and flashes it. Escape
+  clears the box. The index is `platform/port_settings_index.inc` (one row per
+  widget, in draw order; ctest `port_settings_index` checks it against the
+  sources, so a new setting must be added there). `MP_DEBUG_SEARCH=<query>`
+  types a query into the box when the overlay first opens, for captures.
+  `MP_DEBUG_SEARCH_AUDIT=1` (with `MP_SHOW_DEBUG_UI=1`) opens every row in turn
+  and logs `search audit: found|MISSED: <row>`, then a total: a row missed on
+  every platform and in every state is in the wrong place. Rows only drawn on
+  Android sit in an `#if defined(__ANDROID__)` block of the index.
 - Fullscreen (F1 > Video > Display, persisted as `fullscreen`): a borderless window over
   the whole screen on desktop, toggled with F11; on Android it hides the status
   and navigation bars (on by default there; a swipe from the edge shows them
@@ -58,7 +69,9 @@
   right stick feeds the first-person aim through the same path as the mouse (so
   the same sensitivity/invert apply, tuned by `stick_aim_rate`, default 900 px/s, 50-10000; the F1
   slider and the pause menu's Stick Aim Speed row, both shown only with twin stick
-  on, go up to 8100)
+  on, go up to 8100; with `stick_aim_split=1`, the F1 "Separate vertical speed"
+  checkbox, `stick_aim_rate` sets only horizontal speed and `stick_aim_rate_y`,
+  same range, default 900, the vertical)
   and is consumed, so it no longer drives the game's free-look. Under mouse aim
   a C-stick held from the keyboard is not consumed, so keyboard beam keys still
   pick beams, and an L from a key or mouse button stays lock-on. Fire
@@ -191,7 +204,8 @@
   a kind or model is its own profile on top. "Reset..." restores a preset (after a confirmation).
   "Separate menu buttons" (on by default; `menu_standard_buttons=`,
   `MP_MENU_STANDARD_BUTTONS`) makes a controller read the "Menus and map" rows instead of
-  the game buttons in the pause screen, front end and map. Their defaults are the pad's own
+  the game buttons in the pause screen, front end, map, save stations and upgrade messages
+  (the scan text takes only its A from them, so the held scan lock stays). Their defaults are the pad's own
   A/B/X/Y, shoulders, triggers and D-pad (A confirms, B backs out, the triggers page and
   zoom), and they can be rebound like any row; the prompts there follow them. Start and the
   map button keep their gameplay inputs (a Menu row on either input is ignored); bindings
@@ -246,6 +260,11 @@
   drawn at the retail FOV whatever the setting (a view-model FOV), so it keeps
   its size and place. Morph ball, cutscene and other scripted cameras keep
   their own FOVs; cutscenes that end in Samus's eyes ease to the setting.
+- Arm cannon offset (Video > Display, persisted as `gun_offset=right,forward,up`,
+  metres, each -1 to 1, default 0,0,0; like PrimeHack's): moves the arm
+  cannon from its retail place along the camera's axes. It moves the real gun,
+  so shots leave from the moved muzzle; the grapple arm follows. Off in the
+  original experience. Console: `gunoffset <r> <f> <u>`.
 - Anti-aliasing and anisotropic filtering (Video > Quality, persisted as `msaa`,
   1 or 4, default 1, and `anisotropy`, 1-16, default 16; pause Options >
   Display has an Anti-Aliasing on/off row): 4x MSAA on the scene framebuffer
@@ -374,6 +393,12 @@
   no-model transition it stops all sound effects at the switch. The elevator
   room's own cinematic is not affected. `MP_SMOKE_ELEVATOR`'s `passed` line
   prints the ride's wall time.
+- Boot logos (F1 > Game > Cutscenes, `boot_logos`: 0 Show, 1 Skip with A or
+  Start, 2 Off; 1 by default, Show under Original experience) sets the
+  Nintendo, Retro and Dolby logos at launch. Skip with A or Start ends the
+  current logo with its 0.5 s fade out; Off goes straight to the opening
+  (which A or Start already skips to the title). Read at launch. The quick
+  resume prompt takes A and Start first while it is up.
 - F1 > Debug > Audio holds the audio switches and the MusyX voice list (collapsed), and F1 > Debug > Cheats holds the
   cheats: health, items, ammo, area and world teleport. The cheats stay hidden
   until Show cheats is ticked (`cheats`, off by default). Invulnerable
@@ -417,12 +442,48 @@ other `X:\Users\<name>`: `X:\Users\<user>`); the
   (`savestate_hotkeys`, on by default). A state holds the whole game save
   (items, ammo, doors, pickups, map, scans, world layers) plus Samus's room,
   position, facing and morph ball state; loading reloads that world and puts
-  her back. It does not keep enemies, projectiles, cutscene or boss-fight
-  progress, or velocity: the room comes back as if just entered. Every load
+  her back. With `savestate_room_state` (F1 > Save states, on by default) it
+  also keeps the live script objects of the loaded rooms by editor id: killed
+  enemies stay dead, enemies, platforms and moving objects keep position,
+  velocity and health, doors keep open or closed (set directly, without firing their connections), timers and counters keep
+  their count (about 5 KB, 0.2 ms to capture). Enemy AI state is not kept
+  (they resume from their start behaviour), nor are projectiles, cutscene or
+  boss-fight progress. States without the section, or with the setting off,
+  bring the room back as if just entered. Every load
   first writes slot 0, so "Undo last load" goes back to where you were.
   Saving is refused while Samus is dead. A state saved on an elevator pad
   rides the elevator after loading, like stepping onto it. Console:
   `state list | last | save [n] | load [n] | undo | slot <n>`.
+- Quick resume (F1 > Save states, `quick_resume`, on by default): when the app
+  goes to the background (Android) or you quit (desktop, window close, the
+  overlay's Exit game or the console `quit`) during play, one more state is
+  written to `savestates/resume.mpss`, outside the eight slots (slot 0's undo is
+  not touched). The game keeps the last safe point in memory (taken two seconds
+  after each room load and then every 30 s while Samus is alive, out of
+  cutscenes, elevators and transitions; about 0.3 ms and 4 KB each), so what is
+  written is the current moment when that is safe and otherwise that last safe
+  point, at most about 30 s old. Each new safe point is also written at once,
+  so after a crash, a hang you had to kill or a power loss the next launch
+  still offers the last one; the prompt then says the game closed
+  unexpectedly (a `savestates/running` marker, removed on a clean quit and
+  while Android has the app in the background). If the game closes
+  unexpectedly again after resuming, before a newer safe point, the prompt says
+  so and starts on No. On Android the write runs from the system's
+  pause notification itself, not from the game loop, which the system may block
+  before it runs. The file is written to a temp file and renamed. It also records the memory card, file slot and the randomizer seed
+  or Archipelago session. At the next launch a window in the middle of the
+  screen asks "Resume where you left off?" with the room and time, from the
+  Nintendo splash on and through the other splashes, loading and opening logos
+  (it holds the attract movie off). Tap or click Yes or No,
+  or use the pad or keyboard (D-pad left/right to choose, A or Start to
+  answer); Yes starts the file it came from and loads the state like a
+  save state, straight from black without the file-select movie (a Yes during a
+  splash skips the rest of the splashes; with `savestate_room_state` the room keeps its enemies and doors as saved; boss progress is not kept),
+  No dismisses the prompt and keeps the file; B does nothing. The file stays after Yes too, until the next safe point replaces it. Nothing is written
+  (and a previous resume file stays) on the title screen or before the first
+  safe point of a session.
+  A resume from another card, randomizer seed or Archipelago session is never
+  offered. Console: `resume [status|save|load|clear]`.
 - Memory card transfer (F1 > System > Memory card): moves saves between the
   port's card (a GCI folder, `user/USA/Card A` beside the executable, or the current
   Archipelago game's) and Dolphin's. Import takes a Dolphin `.gci`, a whole raw
@@ -478,7 +539,9 @@ other `X:\Users\<name>`: `X:\Users\<user>`); the
   uses immediate yaw/pitch with an approximately ±87° pitch range. Up moves aim
   up by default; `MP_MOUSE_INVERT_X=1` and `MP_MOUSE_INVERT_Y=1` invert either axis.
   SDL and the compositor own pointer locking; capture is released outside
-  playable first person (menus, cinematics, morph ball, and scripted input locks).
+  playable first person (menus, cinematics, and scripted input locks). Morph ball
+  has no mouse aim but keeps the pointer locked, so a bomb click can't land
+  outside the window (the pause and map screens release it).
   Mouse aim replaces the R-button free look, so switching it on in F1 also
   switches on twin stick (still its own setting): the mouse and a pad's right
   stick then add into the same aim.
@@ -755,3 +818,48 @@ Smooth particles draws particle effects, projectile effects included, between
 their last two 60 Hz positions when the frame limiter is off, using the game's
 own sub-frame particle path. Beam trails (swooshes), electric effects and
 the flamethrower still step at 60 Hz.
+
+## Photo mode
+
+A frozen free camera for screenshots, entered from the pause menu's "Photo
+mode" row (works with touch), the Port binding "Photo mode" (F8 by default,
+rebindable on the Controls page), F1 > Game > "Photo mode (keys)", or the
+console's `photo`. It is refused, with a toast, outside gameplay and while
+Samus is dead. It works during cutscenes too (the pause menu is not available
+then, so use F8, the F1 button or `photo on`): the cutscene freezes where it
+is, the free camera starts at the cinematic camera's view, and leaving resumes
+the cutscene from the same frame, without skipping it. Entering freezes the
+simulation and starts the free camera at the game camera; the HUD, arm cannon, helmet and visor effects
+are hidden. Leaving restores all of them, and the free camera and freeze
+states the session had before.
+
+The panel (top right; H brings back a hidden one) has FOV (20-120), Roll
+(-180 to 180, a real roll of the view), Show Samus, Camera speed, the
+1x / 2x / 4x supersample choice, Capture, Hide panel and Exit. The camera
+moves as the free camera does. On a pad: A captures, B or Start exits, the
+d-pad rolls, X plus the d-pad changes the FOV, and the sticks fly. Y shows a
+hidden panel, and when it is shown gives it the pad: the d-pad moves between
+the widgets (a slider changes with left/right), A presses or toggles, and Y or B
+hands the pad back to the camera (Start still exits). The camera is still while
+the panel has the pad. None of this reaches the game. The sliders also take
+mouse or touch. On a touchscreen the touch controls hide for all of photo
+mode: a finger on the left half is an invisible stick centred where it lands,
+one on the right half drags the view, and a hidden panel leaves a small bar
+(Panel, Capture, Exit) in its place.
+
+Capture writes `metroid-prime-photo-<time>.png` to the screenshot folder with
+the panel, overlays and toasts hidden. On Android it is then moved to the
+shared `Pictures/Metroid Prime` folder, where the gallery shows it (if that
+fails it stays in the app's `screenshots`). 2x and 4x raise the render scale
+temporarily (the base is the window's pixel height / 480) and render the
+frame at that size. The result is at least N times the 1x size in both
+directions and exactly N times where the rounding allows: the frame buffer is
+the scaled height with the width rounded from the aspect, then fitted to the
+render mode's 854:480, so a 1280x720 window (1280x719 at 1x) gives 2562x1440 or
+5124x2880 rather than exactly 4x. A size over the GPU's texture limit or
+past 48 M pixels (96 M samples with MSAA) steps down to 2x, then 1x, and the
+Saved toast says so. Very large captures can stall a frame for a second or
+more.
+
+Saved: `photo_supersample` (1, 2 or 4) and `photo_speed` (camera speed).
+Filters, vignette and depth of field are not part of it.
