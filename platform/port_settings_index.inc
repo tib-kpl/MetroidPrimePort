@@ -99,6 +99,7 @@
 #endif
 {"Video", "Display", "Display", "Vsync", "vertical sync tearing refresh"},
 {"Video", "Display", "Display", "Aspect ratio", "widescreen 4:3 16:9 stretch shape"},
+{"Video", "Display", "Display", "Stretch menus to the screen", "title file select widescreen 4:3 stretch black bars"},
 {"Video", "Display", "Display", "Cutscene black bars", "letterbox cinematic bars"},
 {"Video", "Display", "Display", "Sharp scan window", "scan visor window sharp pixel"},
 {"Video", "Display", "HUD and view", "Widescreen HUD (spread to edges)", "hud widescreen edges stretch"},
