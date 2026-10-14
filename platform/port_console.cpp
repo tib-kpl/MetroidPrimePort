@@ -54,6 +54,7 @@
 #include "MetroidPrime/Enemies/CPatterned.hpp"
 #include "MetroidPrime/HUD/CSamusHud.hpp"
 #include "MetroidPrime/Player/CGameState.hpp"
+#include "port_map_pickups.h"
 #include "MetroidPrime/Player/CPlayer.hpp"
 #include "MetroidPrime/Player/CPlayerGun.hpp"
 #include "MetroidPrime/Player/CPlayerState.hpp"
@@ -588,6 +589,7 @@ void CmdHelp() {
   Out("padpreset gamecube|remastered|modern|southpaw   apply a controller preset to pad 1");
   Out("fov <45..90>               first-person vertical FOV, as the Options row does");
   Out("gunoffset <r> <f> <u>      arm cannon offset in metres (+-1), as the Video row does");
+  Out("pointeraim [on|off|<x> <y>] pointer aim mode, or place its pointer (-1..1); prints it");
   Out("window [<w> <h>]           resize the window (leaves fullscreen); prints the size");
   Out("msaa <1|4>, aniso <1..16>  anti-aliasing and anisotropic filtering, applied next frame");
   Out("pixellight [0|1]         per-pixel lighting (1) or the original per-vertex (0); no argument prints it");
@@ -2052,6 +2054,22 @@ void RunFrame() {
                              static_cast< float >(std::atof(sCmd.args[3].c_str()))};
     PortDebug::SetGunOffset(offset);
     Finish();
+  } else if (name == "pointeraim") {
+    if (sCmd.args.size() == 2 && (Lower(sCmd.args[1]) == "on" || Lower(sCmd.args[1]) == "off")) {
+      PortDebug::SetPointerAim(Lower(sCmd.args[1]) == "on");
+    } else if (sCmd.args.size() == 3) {
+      PortDebug::SetPointerAimPosition(static_cast< float >(std::atof(sCmd.args[1].c_str())),
+                                       static_cast< float >(std::atof(sCmd.args[2].c_str())));
+    } else if (sCmd.args.size() != 1) {
+      return Finish("usage: pointeraim [on|off|<x> <y>]   x, y in -1..1 of the half view");
+    }
+    float x = 0.f, y = 0.f;
+    const bool free = PortDebug::PointerAimPosition(x, y);
+    char line[128];
+    std::snprintf(line, sizeof(line), "pointeraim %s %s x=%.3f y=%.3f",
+                  PortDebug::PointerAim() ? "on" : "off", free ? "free" : "centred", x, y);
+    Out(line);
+    Finish();
   } else if (name == "pointer") {
     // Coordinates are GUI (EFB) pixels, not window pixels; `pointer hits` lists the rects.
     static const char* const kUsage =
@@ -2191,11 +2209,41 @@ void RunFrame() {
     PortDebug::SetRevealMap(value == "1");
     Finish();
   } else if (name == "pickups") {
-    const std::string value = sCmd.args.size() > 1 ? sCmd.args[1] : "";
-    if (value != "0" && value != "1") {
-      return Finish("usage: pickups <0|1>   pickup dots on the map (on in randomized games)");
+    const std::string value = sCmd.args.size() > 1 ? Lower(sCmd.args[1]) : "";
+    if (value == "seen") {
+      const std::string sub = sCmd.args.size() > 2 ? Lower(sCmd.args[2]) : "";
+      if (sub == "clear") {
+        PortMapPickups::ClearSeen();
+      } else if (sub == "all") {
+        PortMapPickups::MarkAllSeen();
+      } else if (!sub.empty()) {
+        return Finish("usage: pickups seen [clear|all]");
+      } else {
+        PortDebug::SetMapPickups(PortDebug::kMapPickups_Seen);
+      }
+      size_t dots = 0;
+      const PortMapPickups::Dot* list = PortMapPickups::Dots(dots);
+      const uint32_t world = gpGameState != nullptr ? gpGameState->CurrentWorldAssetId() : 0;
+      std::string indices;
+      for (size_t i = 0; i < dots; ++i) {
+        if (PortMapPickups::Seen(i) && list[i].world == world) {
+          indices += (indices.empty() ? "" : " ") + std::to_string(i);
+        }
+      }
+      Out("seen %zu of %zu; this world: %s", PortMapPickups::SeenCount(), dots,
+          indices.empty() ? "none" : indices.c_str());
+      return Finish();
     }
-    PortDebug::SetMapPickups(value == "1");
+    if (value == "0" || value == "off") {
+      PortDebug::SetMapPickups(PortDebug::kMapPickups_Off);
+    } else if (value == "1" || value == "all") {
+      PortDebug::SetMapPickups(PortDebug::kMapPickups_All);
+    } else if (value == "rooms") {
+      PortDebug::SetMapPickups(PortDebug::kMapPickups_Rooms);
+    } else {
+      return Finish("usage: pickups <off|seen|rooms|all>   pickups on the map (0 and 1 are off and all)\n"
+                    "       pickups seen [clear|all]   the pickups seen so far in this save");
+    }
     Finish();
   } else if (name == "mods") {
     // mods [reload]: what is loaded; reload reads the folder again.

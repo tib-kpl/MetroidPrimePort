@@ -229,7 +229,7 @@ float sCrosshairColor[3] = {1.f, 1.f, 1.f};
 bool sHideHelmet = false;
 bool sHideVisorEffects = false;
 bool sRevealMap = false;
-bool sMapPickups = false;
+int sMapPickups = PortDebug::kMapPickups_Off;
 bool sMapLogicColors = true;
 // The Tracker tab's item, scan and room counts. Off so the tab doesn't spoil
 // what is left to find until asked.
@@ -348,6 +348,9 @@ bool sMouseGameplayActive = false;
 std::string sGameOptions;
 bool sGameOptionsRestored = false;
 PortMouse::AimState sMouseAimState;
+// Pointer aim's pointer, and whether it steered this tick (free look).
+PortMouse::PointerAim sPointerAim;
+bool sPointerAimFree = false;
 PortMouse::ButtonGate sMouseButtonGate;
 PortMouse::ButtonGate sMouseMenuGate;
 PortMouse::HeldButtons sMouseHeldButtons;
@@ -621,7 +624,11 @@ void ApplySetting(const std::string& key, const std::string& value) {
   } else if (key == "reveal_map") {
     sRevealMap = ParseBool(value);
   } else if (key == "map_pickups") {
-    sMapPickups = ParseBool(value);
+    // Old hand-edited on/true/yes meant the all-pickups dots.
+    const int mode = ParseBool(value) ? PortDebug::kMapPickups_All : std::atoi(value.c_str());
+    sMapPickups = mode >= PortDebug::kMapPickups_Off && mode <= PortDebug::kMapPickups_Rooms
+                      ? mode
+                      : PortDebug::kMapPickups_Off;
   } else if (key == "tracker_progress") {
     sTrackerProgress = ParseBool(value);
   } else if (key == "map_logic_colors") {
@@ -861,7 +868,7 @@ std::string SettingsText() {
   file << "hide_helmet=" << (sHideHelmet ? 1 : 0) << '\n';
   file << "hide_visor_effects=" << (sHideVisorEffects ? 1 : 0) << '\n';
   file << "reveal_map=" << (sRevealMap ? 1 : 0) << '\n';
-  file << "map_pickups=" << (sMapPickups ? 1 : 0) << '\n';
+  file << "map_pickups=" << sMapPickups << '\n';
   file << "tracker_progress=" << (sTrackerProgress ? 1 : 0) << '\n';
   file << "map_logic_colors=" << (sMapLogicColors ? 1 : 0) << '\n';
   file << "ap_suit_damage=" << sApSuitDamage << '\n';
@@ -1753,14 +1760,14 @@ void SetRevealMap(bool enabled) {
   MarkDirty();
 }
 
-bool MapPickups() {
+EMapPickups MapPickups() {
   EnsureInitialized();
-  return sMapPickups;
+  return static_cast< EMapPickups >(sMapPickups);
 }
 
-void SetMapPickups(bool enabled) {
+void SetMapPickups(EMapPickups mode) {
   EnsureInitialized();
-  sMapPickups = enabled;
+  sMapPickups = mode >= kMapPickups_Off && mode <= kMapPickups_Rooms ? mode : kMapPickups_Off;
   MarkDirty();
 }
 
@@ -2601,6 +2608,8 @@ void PollGyro() {
 
 void ResetMouseAim() {
   sMouseAimState.Reset();
+  sPointerAim.Center();
+  sPointerAimFree = false;
   sMouseGameplayActive = false;
   sMouseButtonGate.Reset();
   sMousePendingX = sMousePendingY = sMouseFrameX = sMouseFrameY = 0.f;
@@ -2633,6 +2642,62 @@ bool MouseInvertX() { EnsureInitialized(); return sInput.mouseInvertX; }
 bool MouseInvertY() { EnsureInitialized(); return sInput.mouseInvertY; }
 bool MouseButtons() { EnsureInitialized(); return sInput.mouseButtons; }
 bool MouseCrosshair() { EnsureInitialized(); return sInput.mouseCrosshair; }
+// Window travel (pixels) to pointer units (-1..1 of the half view). At the default
+// sensitivity the pointer follows the cursor's speed; the sensitivity slider scales it.
+static void PointerAimScale(float& sx, float& sy) {
+  constexpr float kReferenceSensitivity = 0.0035f;
+  int width = 0, height = 0;
+  if (!WindowSize(width, height)) {
+    width = 640;
+    height = 480;
+  }
+  const float speed = MouseSensitivity() / kReferenceSensitivity;
+  sx = 2.f / static_cast<float>(width) * speed;
+  sy = 2.f / static_cast<float>(height) * speed;
+}
+
+bool AimCrosshair() { return MouseCrosshair() || PointerAim(); }
+// Any direct aim moves the pointer: the mouse, twin stick's right stick, gyro and touch drags.
+bool PointerAim() {
+  EnsureInitialized();
+  return sInput.pointerAim && DirectAim() && !sOriginalExperience;
+}
+void SetPointerAim(bool on) {
+  EnsureInitialized();
+  sInput.pointerAim = on;
+  sPointerAim.Center();
+  MarkDirty();
+}
+int PointerAimBox() { EnsureInitialized(); return sInput.pointerAimBox; }
+int PointerAimTurn() { EnsureInitialized(); return sInput.pointerAimTurn; }
+void SetPointerAimPosition(float x, float y) {
+  sPointerAim.Center();
+  sPointerAim.Move(x, y);
+}
+bool PointerAimPosition(float& x, float& y) {
+  x = sPointerAim.x;
+  y = sPointerAim.y;
+  return sPointerAimFree;
+}
+bool PresentedPointerAimPosition(float fraction, float& x, float& y) {
+  if (!PointerAimPosition(x, y)) return false;
+  // The travel since the tick (the stick's over the part of the tick already shown), so the
+  // drawn pointer moves every frame.
+  float touchX = 0.f, touchY = 0.f;
+  {
+    std::lock_guard lock(sTouchAimMutex);
+    touchX = sTouchAimPendingX;
+    touchY = sTouchAimPendingY;
+  }
+  const float ahead =
+      FrameInterpolation() && std::isfinite(fraction) && fraction > 0.f ? std::min(fraction, 1.f) * TickPeriod()
+                                                                        : 0.f;
+  float sx = 0.f, sy = 0.f;
+  PointerAimScale(sx, sy);
+  PortMouse::PointerAim::Move((sMousePendingX + sGyroPendingX + touchX + sStickAimVelX * ahead) * sx,
+                              (sMousePendingY + sGyroPendingY + touchY + sStickAimVelY * ahead) * sy, x, y);
+  return true;
+}
 int CrosshairSize() { EnsureInitialized(); return sInput.crosshairSize; }
 void SetCrosshairSize(int percent) {
   EnsureInitialized();
@@ -2662,8 +2727,32 @@ unsigned MouseHeldButtons() { return sMouseHeldButtons.Held(); }
 
 bool UpdateMouseAim(bool active, bool locked, float x, float y, float z) {
   SetMouseGameplayActive(active);
-  const bool applied = sMouseAimState.Update(active, locked, x, y, z, sMouseFrameX, sMouseFrameY,
-                                            MouseSensitivity(), MouseInvertX(), MouseInvertY());
+  const bool pointer = PointerAim();
+  float dx = sMouseFrameX;
+  float dy = sMouseFrameY;
+  if (pointer) {
+    // The travel moves the pointer, not the view. A lock (or anything that stops free
+    // look) re-centres it: lock-on, scan and grapple still aim through the centre.
+    if (active && !locked) {
+      float sx = 0.f, sy = 0.f;
+      PointerAimScale(sx, sy);
+      sPointerAim.Move(dx * sx, dy * sy);
+    } else {
+      sPointerAim.Center();
+    }
+    dx = dy = 0.f;
+  }
+  const bool applied = sMouseAimState.Update(active, locked, x, y, z, dx, dy, MouseSensitivity(),
+                                            MouseInvertX(), MouseInvertY());
+  if (applied && pointer) {
+    float dyaw = 0.f, dpitch = 0.f;
+    PortMouse::PointerAim::TurnAt(sPointerAim.x, sPointerAim.y, PointerAimBox() / 100.f,
+                                  PointerAimTurn() * (PortMouse::kPi / 180.f), TickPeriod(), dyaw,
+                                  dpitch);
+    sMouseAimState.Turn(dyaw, dpitch);
+  }
+  sPointerAimFree = pointer && applied;
+  if (!sPointerAimFree) sPointerAim.Center();
   if (applied) sMouseFrameX = sMouseFrameY = 0.f;
   sAimAppliedLastTick = applied;
   return applied;
@@ -3126,6 +3215,16 @@ bool PresentedAimDelta(float fraction, float& dyaw, float& dpitch) {
   }
   const float dx = sMousePendingX + sGyroPendingX + touchX + sStickAimVelX * ahead;
   const float dy = sMousePendingY + sGyroPendingY + touchY + sStickAimVelY * ahead;
+  if (sPointerAimFree) {
+    // The edge turn the next tick will make, over the part of it already shown.
+    float sx = 0.f, sy = 0.f;
+    PointerAimScale(sx, sy);
+    float px = sPointerAim.x, py = sPointerAim.y;
+    PortMouse::PointerAim::Move(dx * sx, dy * sy, px, py);
+    PortMouse::PointerAim::TurnAt(px, py, PointerAimBox() / 100.f,
+                                  PointerAimTurn() * (PortMouse::kPi / 180.f), ahead, dyaw, dpitch);
+    return dyaw != 0.f || dpitch != 0.f;
+  }
   float yaw = 0.f;
   float pitch = 0.f;
   if (!sMouseAimState.Preview(dx, dy, MouseSensitivity(), MouseInvertX(), MouseInvertY(), yaw,
@@ -6943,6 +7042,31 @@ void DrawControlsOptions() {
   ItemHelp("On, as the original: without Lock-On, the arm cannon turns toward the enemy nearest the "
            "middle of the screen and shots home in on it. Off, shots go where you aim; Lock-On still "
            "aims at its target.");
+  bool pointerAim = sInput.pointerAim;
+  if (ImGui::Checkbox("Pointer aim (Trilogy style)", &pointerAim)) {
+    SetPointerAim(pointerAim);
+  }
+  ItemHelp("The mouse, the right stick (twin stick), gyro or a touch drag moves the crosshair over "
+           "the screen and the shots follow it; the view turns only when the crosshair passes the "
+           "dead box, faster the closer it gets to the edge. Lock-on, scanning and grappling still "
+           "aim through the centre. Needs Mouse aim, Twin stick or the modern touch layout; Invert "
+           "X/Y do not apply.");
+  ImGui::BeginDisabled(!sInput.pointerAim);
+  if (ImGui::SliderInt("Dead box", &sInput.pointerAimBox, PortInput::kPointerAimBoxMin, PortInput::kPointerAimBoxMax,
+                       "%d%%")) {
+    sInput.pointerAimBox = std::clamp(sInput.pointerAimBox, PortInput::kPointerAimBoxMin, PortInput::kPointerAimBoxMax);
+    MarkDirty();
+  }
+  ImGui::SetItemTooltip("How far from the centre (percent of the half screen) the crosshair moves "
+                        "before the view turns.");
+  if (ImGui::SliderInt("Edge turn speed", &sInput.pointerAimTurn, PortInput::kPointerAimTurnMin,
+                       PortInput::kPointerAimTurnMax, "%d deg/s")) {
+    sInput.pointerAimTurn =
+        std::clamp(sInput.pointerAimTurn, PortInput::kPointerAimTurnMin, PortInput::kPointerAimTurnMax);
+    MarkDirty();
+  }
+  ImGui::SetItemTooltip("The turn speed with the crosshair at the screen edge.");
+  ImGui::EndDisabled();
 
   ImGui::SeparatorText("Morph ball");
   bool fastMorph = sInput.fastMorph;
@@ -8623,17 +8747,24 @@ void DrawTrackerTab() {
   ItemHelp("Shows every world's map as if its map station had been used, and lists every world on "
            "the star map. Rooms a map station leaves hidden stay hidden, and rooms you haven't "
            "entered keep the unexplored colour. The save is not changed.");
-  bool pickups = sMapPickups;
-  if (ImGui::Checkbox("Pickup dots on the map", &pickups)) {
-    SetMapPickups(pickups);
+  // Combo order: Off, Seen, Rooms, All.
+  static const EMapPickups kPickupModes[] = {kMapPickups_Off, kMapPickups_Seen, kMapPickups_Rooms,
+                                             kMapPickups_All};
+  int pickups = 0;
+  for (int i = 0; i < 4; ++i) {
+    if (kPickupModes[i] == sMapPickups) {
+      pickups = i;
+    }
   }
-  ItemHelp("A white dot marks each item pickup in the rooms the map shows, until you collect it. "
-           "Every item gets the same dot, so it doesn't give away what a pickup holds. An "
-           "Archipelago game colours them by what its logic lets you reach.");
-  if (PortMapPickups::Forced()) {
-    SameLineAfterHelp();
-    ImGui::TextDisabled("(on in randomized games)");
+  if (ImGui::Combo("Pickups on the map", &pickups, "Off\0Seen\0Rooms\0All\0")) {
+    SetMapPickups(kPickupModes[pickups]);
   }
+  ItemHelp("Marks item pickups on the map and minimap, until you collect them. Seen: a white dot "
+           "once you have seen the pickup, in the room or through a gap. Rooms: no dots; each "
+           "room the map shows that still holds an uncollected pickup is tinted amber. All: a dot "
+           "for every pickup in the rooms the map shows. Every item gets the same dot, so it "
+           "doesn't give away what a pickup holds. In Seen and All an Archipelago game colours the "
+           "dots by what its logic lets you reach.");
 
   DrawTrackerLogic();
 

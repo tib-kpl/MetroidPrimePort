@@ -381,9 +381,14 @@
   pause Options > Visor, off by default) shows every world's map as if its map
   station had been used and lists every world on the star map. It only changes
   what the map screen asks, never the save; rooms a map station leaves hidden
-  stay hidden. Pickup dots (`map_pickups`, also pause Options > Visor, off by
-  default, always on in randomized games) draw a plain white dot on the map and
-  minimap for every pickup not yet collected, in rooms the map shows. The dots
+  stay hidden. Pickup marking (`map_pickups`, also pause Options > Visor, off by
+  default; Tracker page: Off, Seen, Rooms, All; the pause row cycles Off, Seen
+  and All, with Rooms shown as the third value when set elsewhere): All draws a
+  plain white dot on the map and minimap for every pickup not yet collected, in
+  rooms the map shows; Seen draws the dot only once you have had that pickup in
+  view (within 40 units, in the view cone, with a clear line from the eye;
+  kept per save, `pickups seen`); Rooms draws no dots but tints the rooms that
+  still hold an uncollected pickup amber. An old saved `1` stays All. The dots
   never tell what the item is; an Archipelago game colours them by its logic
   (`map_logic_colors`, see `ARCHIPELAGO.md`). The positions come from
   `tools/gen_map_pickups.py` (`platform/port_map_pickups.inc`). With Show
@@ -611,6 +616,16 @@ other `X:\Users\<name>`: `X:\Users\<user>`); the
   under mouse aim and twin stick, where it is always shown and the retail size
   covers much of the view. Holding R without either keeps the retail size.
   Console: `crosshair <25..100>`.
+- Pointer aim (Controls > Options > Aiming, `pointer_aim`, default off,
+  `MP_POINTER_AIM=1`; needs Mouse aim, Twin stick or the modern touch layout): the
+  Trilogy/Prime 3 scheme. The mouse, twin stick's right stick, gyro aim or a touch aim
+  drag moves the crosshair over the screen and shots leave along the ray through it;
+  the gun model turns toward it, at most 25 degrees. Past the dead box (`pointer_aim_box`,
+  20-95 percent of the half screen, default 70) the view turns toward that edge, up to
+  `pointer_aim_turn` degrees/second (30-720, default 180) at the edge itself. The mouse
+  sensitivity slider scales the pointer speed for every input (the default follows the
+  cursor), on top of the stick aim, gyro and touch aim speeds; Invert X/Y do not apply. The crosshair is always shown. Lock-on, scanning and grappling
+  re-centre the pointer and aim as before; auto-aim does not bend pointer shots.
   Lock-on owns the camera while held; releasing it resumes at the actual locked
   direction rather than at accumulated mouse angles. Jump/fall auto-pitch is
   bypassed during free mouse aim. Capture/UI transitions cancel held charges and

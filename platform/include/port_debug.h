@@ -250,10 +250,14 @@ void SetHideVisorEffects(bool enabled);
 // not changed.
 bool RevealMap();
 void SetRevealMap(bool enabled);
-// A white dot on the map for each item pickup not yet collected. Randomizer
-// and Archipelago games force it on (PortMapPickups::Active).
-bool MapPickups();
-void SetMapPickups(bool enabled);
+// Pickup marking on the map (PortMapPickups): Off; Seen draws a dot for each
+// uncollected pickup the player has laid eyes on; Rooms tints the rooms that
+// still hold an uncollected pickup; All draws a dot for every uncollected
+// pickup. The saved value 1 (the old on/off setting) is All.
+// The values are stored in the config: don't reorder or renumber.
+enum EMapPickups { kMapPickups_Off, kMapPickups_All, kMapPickups_Seen, kMapPickups_Rooms };
+EMapPickups MapPickups();
+void SetMapPickups(EMapPickups mode);
 // In an Archipelago game, colour the dots by the seed's logic like a tracker
 // (green in logic, yellow sequence break, blue visible only, red out of reach,
 // grey checked). On by default; off gives the plain white dots.
@@ -513,6 +517,24 @@ bool MouseInvertX();
 bool MouseInvertY();
 bool MouseButtons();
 bool MouseCrosshair();
+// The free-aim crosshair under direct aim: the setting, or always with pointer aim.
+bool AimCrosshair();
+// Pointer aim (Trilogy style, any direct aim): the mouse, right stick, gyro or a
+// touch drag moves a pointer and the view turns once it passes the dead box
+// (percent of the half view) at up to PointerAimTurn degrees/second. Shots and
+// the gun follow the pointer.
+bool PointerAim();
+void SetPointerAim(bool on);
+int PointerAimBox();
+int PointerAimTurn();
+// The pointer (-1..1 of the half view, right/down positive) as of the last tick;
+// false (and centre) unless it steered that tick's free look.
+bool PointerAimPosition(float& x, float& y);
+// The same, plus the travel since the tick, for drawing; fraction is the part of
+// the tick shown (CCameraManager::GetPresentationInterpolation).
+bool PresentedPointerAimPosition(float fraction, float& x, float& y);
+// Places the pointer (console `pointeraim <x> <y>`); the next tick's look may re-centre it.
+void SetPointerAimPosition(float x, float y);
 // Crosshair size in percent while mouse aim or twin stick is on (the retail
 // free-aim crosshair is sized for a held R, and it stays up the whole time
 // under those modes). Retail R free-aim keeps 100.
