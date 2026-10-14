@@ -148,7 +148,7 @@ const Signatures& ElementsOf(Type type) {
       {F("CONE"), "vr"},    {F("CIRC"), "vvrrr"}, {F("CCLU"), "vvir"}, {F("ADD_"), "vv"}, {F("MULT"), "vv"},
       {F("CHAN"), "vvi"},   {F("PULS"), "iivv"}, {F("RTOV"), "r"},  {F("PLOC"), ""},    {F("PLCO"), ""},
       {F("PVEL"), ""},      {F("PSOF"), ""},    {F("PSOU"), ""},   {F("PSOR"), ""},    {F("PSTR"), ""},
-      {F("SUB_"), "vv"},    {F("CTVC"), "c"},
+      {F("SUB_"), "vv"},    {F("CTVC"), "c"},     {F("PQAD"), "vv"},
   };
   static const Signatures modVectorElements = {
       {F("NONE"), ""},     {F("CNST"), "rrr"},  {F("GRAV"), "v"},    {F("WIND"), "vr"},  {F("EXPL"), "rr"},
@@ -302,10 +302,22 @@ constexpr uint32_t kColorTex = 1, kOpacityTex = 2, kErosion = 4, kRamp = 8, kInd
 // aurora::gfx::vfx::Blend::Multiply, the port's stand-in for the FrameBuffer_* shaders.
 constexpr uint32_t kBlendMultiply = 4;
 constexpr uint32_t kBlendAdditiveOne = 5;  // aurora::gfx::vfx::Blend::AdditiveOne (RGB One/One)
+// aurora::gfx::vfx::AlreadyExposed: an exposure policy carried in the features word, not a shader feature.
+constexpr uint32_t kAlreadyExposed = 1u << 31;
 
 // MTIN 756533fc-e832-48f2-b1ef-ebb41fcea14f, the wave orb's material, as the table's little-endian GUID.
 constexpr EffectGuid kWaveOrbMati = {0xfc, 0x33, 0x65, 0x75, 0x32, 0xe8, 0xf2, 0x48,
                                      0xb1, 0xef, 0xeb, 0xb4, 0x1f, 0xce, 0xa1, 0x4f};
+
+// PowerBall projectile/APSM child, MATI and constant PMDL.
+// These are little-endian UUID bytes, as read from the Remastered GENP/MATI.
+constexpr EffectGuid kPowerBallChild = {0x82, 0x07, 0x87, 0xae, 0xf4, 0x41, 0x26, 0x4c,
+                                        0x88, 0x76, 0xc2, 0xf0, 0x70, 0xcf, 0x1e, 0x06};
+constexpr EffectGuid kPowerBallMati = {0x46, 0x2a, 0x75, 0x86, 0x33, 0xe7, 0x23, 0x4d,
+                                       0xad, 0xc8, 0xc7, 0x4f, 0x28, 0x15, 0x80, 0xec};
+constexpr EffectGuid kPowerBallModel = {0x60, 0xae, 0xf6, 0x4b, 0xe5, 0x3b, 0x51, 0x4d,
+                                        0x88, 0xbd, 0x50, 0xbb, 0xd1, 0xbd, 0xf6, 0x71};
+constexpr uint32_t kPowerBallShader = 0xe899b1df;
 
 enum class Role { Color, Opacity, Ramp, Ramp2, Threshold, Indirect, Palette };
 
@@ -1039,29 +1051,60 @@ public:
                        [fourcc](const EffectValue& arg) { return UsesElement(arg, fourcc); });
   }
 
-  // PMRQ (a model particle's rotation) REUL(x, y, z, #00) as retail's PMRT
-  // CNST(x, y, z). CERotationEuler::QuatGeneric's order 0 is Rz * Ry * Rx in
-  // degrees, as CElementGen builds PMRT. IRND is left out: retail evaluates a
-  // varying PMRT afresh each frame, where IRND gives 0 after frame 0.
+  // PMRQ's direct REUL remains the existing PMRT CNST path. For the source's
+  // ordered RADD(REUL, REUL), PQAD carries two Euler vectors; CNST(r, r, r)
+  // preserves each real expression and the runtime composes the rotations as
+  // Rz * Ry * Rx in degrees. RTOV is not suitable here: it replicates one real
+  // into all three vector components.
   bool ModelRotation(const std::vector<EffectValue>& value, std::vector<uint8_t>& out, std::string& why) const {
     const EffectValue* reul = value.size() == 1 ? &value[0] : nullptr;
-    if (reul == nullptr || !IsElement(*reul, F("REUL")) || reul->args.size() != 4) {
+    if (reul != nullptr && IsElement(*reul, F("REUL")) && reul->args.size() == 4) {
+      const EffectValue& order = reul->args[3];
+      if ((order.kind != EffectValue::Kind::Byte && order.kind != EffectValue::Kind::Word) || order.word != 0) {
+        why = "a rotation order other than 0 (XYZ)";
+        return false;
+      }
+      AppendBE32(out, F("CNST"));
+      for (size_t i = 0; i < 3; ++i) {
+        // Keep the pre-existing direct-REUL behavior. IRND is supported only
+        // by the ordered composition carrier, where PIRN makes it stable per particle.
+        if (UsesElement(reul->args[i], F("IRND"))) {
+          why = "an angle with IRND";
+          return false;
+        }
+        if (!Element(reul->args[i], Type::Real, out, why)) {
+          return false;
+        }
+      }
+      return true;
+    }
+
+    const EffectValue* add = value.size() == 1 && IsElement(value[0], F("RADD")) ? &value[0] : nullptr;
+    if (add == nullptr || add->args.size() != 2) {
       why = "a rotation that is not REUL";
       return false;
     }
-    const EffectValue& order = reul->args[3];
-    if ((order.kind != EffectValue::Kind::Byte && order.kind != EffectValue::Kind::Word) || order.word != 0) {
-      why = "a rotation order other than 0 (XYZ)";
-      return false;
-    }
-    AppendBE32(out, F("CNST"));
-    for (size_t i = 0; i < 3; ++i) {
-      if (UsesElement(reul->args[i], F("IRND"))) {
-        why = "an angle with IRND";
+    for (const EffectValue& operand : add->args) {
+      if (!IsElement(operand, F("REUL")) || operand.args.size() != 4) {
+        why = "a rotation that is not REUL";
         return false;
       }
-      if (!Element(reul->args[i], Type::Real, out, why)) {
+      const EffectValue& order = operand.args[3];
+      if (order.kind != EffectValue::Kind::Byte || order.word != 0) {
+        why = "a rotation order other than 0 (XYZ)";
         return false;
+      }
+    }
+
+    AppendBE32(out, F("PQAD"));
+    for (const EffectValue& operand : add->args) {
+      // CNST is the vector carrier: RTOV only replicates one scalar and cannot
+      // represent REUL's three independent angle expressions.
+      AppendBE32(out, F("CNST"));
+      for (size_t i = 0; i < 3; ++i) {
+        if (!Element(operand.args[i], Type::Real, out, why)) {
+          return false;
+        }
       }
     }
     return true;
@@ -1620,6 +1663,17 @@ public:
     return true;
   }
 
+  // LTYP and LFOT are usually stored as a byte property in Remastered, though
+  // the typed integer form is also accepted by the grammar.
+  static bool SmallInteger(const EffectProperty& property, uint32_t& word) {
+    if (property.value.size() == 1 && (property.value[0].kind == EffectValue::Kind::Byte ||
+                                       property.value[0].kind == EffectValue::Kind::Word)) {
+      word = property.value[0].word;
+      return true;
+    }
+    return SmallConst(property, word);
+  }
+
   // SMVR as `SMOV(EXTT, CNST(0, 0, 0), EXTR, NONE, NONE)`: the emitter's own
   // translation and rotation with no offset (1114 of 1233 SMVR forms).
   static bool IdentityMover(const EffectProperty& mover) {
@@ -1708,6 +1762,18 @@ public:
       }
       return nullptr;
     };
+    auto findUnique = [&node](uint32_t fourcc) -> const EffectProperty* {
+      const EffectProperty* found = nullptr;
+      for (const EffectProperty& property : node.properties) {
+        if (property.fourcc == fourcc) {
+          if (found != nullptr) {
+            return nullptr;
+          }
+          found = &property;
+        }
+      }
+      return found;
+    };
     const auto cch0 = mati.vectors.count("CCH0") ? mati.vectors.at("CCH0") : std::array<float, 4>{};
     if (recipe->unitCch0 && (cch0[2] != 1.0f || cch0[3] != 0.0f)) {
       m_approximated.push_back(std::string("VMAT: shader ") + shaderText + " has a fade gain/bias the renderer lacks");
@@ -1760,6 +1826,62 @@ public:
         mati.headerBlend == 1) {
       blend = kBlendAdditiveOne;
     }
+    // Its exposure: the source scales the orb by the inverse of the auto exposure and the post
+    // multiplies it back, so the light it adds to the (already exposed) HDR scene is T * COLR * ITEN,
+    // net exposure 1. Validated for this MATI only; every other effect keeps the room's exposure.
+    // Its own test, not read off the blend: a later blend change must not move the policy.
+    uint32_t features = recipe->features;
+    if (!swoosh && find(F("PMDL")) != nullptr && guid->guid == kWaveOrbMati && mati.shader == 0x642dd72b &&
+        mati.headerBlend == 1) {
+      features |= kAlreadyExposed;
+    }
+    // PowerBall's projectile/source material writes RGB multiplied by inverse
+    // auto-exposure on the CPU; the source post restores that exposure. Require the exact
+    // material, shader, header, model and source render-state fields: PBDM or a
+    // similar ramp material alone does not prove exposure invariance.
+    const EffectProperty* powerPmdl = findUnique(F("PMDL"));
+    const EffectProperty* powerDvvn = findUnique(F("DVVN"));
+    const EffectProperty* powerPbdm = findUnique(F("PBDM"));
+    const EffectProperty* powerMtin = findUnique(F("MTIN"));
+    const bool exactMatiProperty = powerMtin == &material && material.tag == 0 && material.value.size() == 2 &&
+                                   material.value[0].kind == EffectValue::Kind::Byte && material.value[0].word == 0 &&
+                                   material.value[1].kind == EffectValue::Kind::Guid &&
+                                   material.value[1].guid == kPowerBallMati;
+    const bool hasIexp = std::any_of(node.properties.begin(), node.properties.end(),
+                                     [](const EffectProperty& property) { return property.fourcc == F("IEXP"); });
+    const auto constantIs = [](const EffectProperty* property, uint8_t expectedTag, uint32_t expected,
+                               bool requireCnst, bool requireByte) {
+      if (property == nullptr || property->tag != expectedTag || property->value.size() != 1) {
+        return false;
+      }
+      const EffectValue* value = &property->value[0];
+      if (requireByte) {
+        return value->kind == EffectValue::Kind::Byte && value->word == expected;
+      }
+      if (IsElement(*value, F("CNST")) && value->args.size() == 1) {
+        value = &value->args[0];
+      } else if (requireCnst) {
+        return false;
+      }
+      return (value->kind == EffectValue::Kind::Byte || value->kind == EffectValue::Kind::Word) &&
+             value->word == expected;
+    };
+    const auto guidIs = [](const EffectProperty* property, const EffectGuid& expected) {
+      if (property == nullptr || property->tag != 3 || property->value.size() != 1) {
+        return false;
+      }
+      const EffectValue* value = &property->value[0];
+      if (!IsElement(*value, F("CNST")) || value->args.size() != 1) {
+        return false;
+      }
+      value = &value->args[0];
+      return value->kind == EffectValue::Kind::Guid && value->guid == expected;
+    };
+    if (!swoosh && node.id == kPowerBallChild && exactMatiProperty && mati.shader == kPowerBallShader &&
+        mati.headerBlend == kNoHeaderBlend && guidIs(powerPmdl, kPowerBallModel) &&
+        constantIs(powerDvvn, 1, 4, false, true) && constantIs(powerPbdm, 1, 0, true, false) && !hasIexp) {
+      features |= kAlreadyExposed;
+    }
     if (recipe->frameBuffer) {
       if (cch0[0] != 0.0f || cch0[1] != 0.0f) {
         m_approximated.push_back(std::string("VMAT: shader ") + shaderText + "'s scene warp dropped (drawn as a multiply)");
@@ -1779,7 +1901,7 @@ public:
     // The blob.
     std::vector<uint8_t> blob;
     AppendBE32(blob, 2);
-    AppendBE32(blob, recipe->features);
+    AppendBE32(blob, features);
     AppendBE32(blob, blend);
     AppendBE32(blob, uint32_t(slots.size()));
     int32_t slotOf[7] = {-1, -1, -1, -1, -1, -1, -1};
@@ -1911,9 +2033,8 @@ public:
     if (const EffectProperty* smtr = find(F("SMTR"))) {
       std::vector<uint8_t> items;
       uint32_t count = 0;
+      constexpr uint32_t kCch0 = F("CCH0");
       for (const EffectValue& item : smtr->value) {
-        // The id's four bytes read little-endian: 'CCH0'.
-        constexpr uint32_t kCch0 = 0x30484343;
         if (item.word != kCch0 || item.args.size() != 2) {
           result.dropped.push_back("SMTR: " + std::string(item.word == kCch0 ? "an entry" : "a parameter") +
                                    " VSMT cannot take");
@@ -2055,6 +2176,48 @@ public:
     const auto& retail = PropertiesOf(type);
     const bool part = type == F("PART");
     const bool swoosh = type == F("SWHC");
+    // This is deliberately not a general Remastered particle-light mapping:
+    // source proof covers only this embedded Plasma impact child.
+    std::vector<uint8_t> nestedLightInnerRadius;
+    std::vector<uint8_t> nestedLightOuterRadius;
+    bool nestedHdrLight = false;
+    if (part && EffectGuidString(node.id) == "f911701f-ec15-458b-ae13-ca2bf65d42f6") {
+      auto unique = [&node](uint32_t fourcc) -> const EffectProperty* {
+        const EffectProperty* found = nullptr;
+        for (const EffectProperty& property : node.properties) {
+          if (property.fourcc == fourcc) {
+            if (found != nullptr) {
+              return nullptr;
+            }
+            found = &property;
+          }
+        }
+        return found;
+      };
+      const EffectProperty* ltyp = unique(F("LTYP"));
+      const EffectProperty* lfot = unique(F("LFOT"));
+      const EffectProperty* lclr = unique(F("LCLR"));
+      const EffectProperty* lint = unique(F("LINT"));
+      const EffectProperty* lird = unique(F("LIRD"));
+      const EffectProperty* lord = unique(F("LORD"));
+      uint32_t lightType = 0;
+      uint32_t falloff = 0;
+      std::string why;
+      std::vector<uint8_t> colorProbe;
+      std::vector<uint8_t> intensityProbe;
+      nestedHdrLight = ltyp != nullptr && lfot != nullptr && lird != nullptr && lord != nullptr &&
+                       lclr != nullptr && lint != nullptr && lclr->value.size() == 1 &&
+                       lint->value.size() == 1 &&
+                       SmallInteger(*ltyp, lightType) && lightType == 2 && SmallInteger(*lfot, falloff) &&
+                       falloff == 3 && lird->value.size() == 1 && lord->value.size() == 1 &&
+                       Element(lclr->value[0], Type::Color, colorProbe, why) &&
+                       Element(lint->value[0], Type::Real, intensityProbe, why) &&
+                       Element(lird->value[0], Type::Real, nestedLightInnerRadius, why) &&
+                       Element(lord->value[0], Type::Real, nestedLightOuterRadius, why);
+      if (!nestedHdrLight) {
+        result.dropped.push_back("PHDR: exact Plasma child lacks constant point/smooth light or supported LIRD/LORD");
+      }
+    }
     // Swooshes: SBDM is Remastered's blend mode, 0 or 1, which retail has as
     // AALP (additive). Taken only where there's no AALP of its own.
     bool additive = false;
@@ -2406,6 +2569,15 @@ public:
       AppendBE32(out, F("CNST"));
       AppendBE32(out, 1);
     }
+    if (nestedHdrLight) {
+      AppendBE32(out, F("PHDR"));
+      AppendBE32(out, F("CNST"));
+      AppendBE32(out, 1);
+      AppendBE32(out, F("PIR0"));
+      out.insert(out.end(), nestedLightInnerRadius.begin(), nestedLightInnerRadius.end());
+      AppendBE32(out, F("POR0"));
+      out.insert(out.end(), nestedLightOuterRadius.begin(), nestedLightOuterRadius.end());
+    }
     AppendBE32(out, F("_END"));
     result.approximated = std::move(m_approximated);
     m_approximated.clear();
@@ -2714,9 +2886,11 @@ bool SplitRetailEffect(uint32_t type, const uint8_t* data, size_t size, std::vec
       ok = reader.TextureTransforms();
     } else if (vfx && (fourcc == F("VPMT") || fourcc == F("VSMT"))) {
       ok = reader.PerParticle(fourcc == F("VSMT"));
-    } else if ((part && fourcc == F("SSZE")) || (vfx && fourcc == F("ITEN"))) {
+    } else if ((part && (fourcc == F("SSZE") || fourcc == F("PIR0") || fourcc == F("POR0"))) ||
+               (vfx && fourcc == F("ITEN"))) {
       ok = reader.Element(Type::Real);
-    } else if ((part && (fourcc == F("VORN") || fourcc == F("XFMD") || fourcc == F("PFCM") || fourcc == F("PSHP"))) ||
+    } else if ((part && (fourcc == F("VORN") || fourcc == F("XFMD") || fourcc == F("PFCM") ||
+                         fourcc == F("PSHP") || fourcc == F("PHDR"))) ||
                (vfx && fourcc == F("PIRN"))) {
       ok = reader.PortWord();
     } else if (vfx && fourcc == F("PVRT")) {

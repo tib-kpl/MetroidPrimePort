@@ -228,7 +228,11 @@ wgpu::PrimitiveState to_primitive_state(GXCullMode gx_cullMode) {
       .cullMode = cullMode,
   };
 }
+std::atomic_bool sPerPixelLighting{false};
 } // namespace
+
+void set_per_pixel_lighting(bool enabled) noexcept { sPerPixelLighting.store(enabled, std::memory_order_relaxed); }
+bool per_pixel_lighting() noexcept { return sPerPixelLighting.load(std::memory_order_relaxed); }
 
 void set_viewport_policy(AuroraViewportPolicy policy) noexcept {
   sPendingViewportPolicy.store(policy, std::memory_order_release);
@@ -382,7 +386,8 @@ wgpu::RenderPipeline build_pipeline(const PipelineConfig& config, ArrayRef<wgpu:
   const auto blendState =
       to_blend_state(config.blendMode, config.blendFacSrc, config.blendFacDst, config.blendOp, config.dstAlpha);
   const std::array colorTargets{wgpu::ColorTargetState{
-      .format = g_graphicsConfig.surfaceConfiguration.format,
+      // The HDR scene's RGBA16F target is a different format from every other pass's.
+      .format = config.shaderConfig.sceneHdr ? webgpu::SceneHdrFormat : g_graphicsConfig.surfaceConfiguration.format,
       .blend = &blendState,
       .writeMask = to_write_mask(config.colorUpdate, config.alphaUpdate),
   }};
@@ -451,6 +456,9 @@ void populate_pipeline_config(PipelineConfig& config, GXPrimitive primitive, GXV
 
   const auto& vtxFmt = g_gxState.vtxFmts[fmt];
   config.shaderConfig = {};
+  // From the pass being recorded (the replayed FIFO's), so an offscreen pass or the next frame's
+  // LDR scene never takes an HDR pipeline.
+  config.shaderConfig.sceneHdr = gfx::scene_hdr_pass_active();
   config.shaderConfig.fogType = g_gxState.fog.type;
   config.shaderConfig.fogRangeEnabled = g_gxState.fog.rangeEnabled;
   config.shaderConfig.pbr = g_gxState.pbr;
@@ -540,6 +548,7 @@ void populate_pipeline_config(PipelineConfig& config, GXPrimitive primitive, GXV
       };
     }
   }
+  config.shaderConfig.perPixelLight = wants_per_pixel_light(config.shaderConfig);
   for (u8 i = 0; i < g_gxState.numTexGens; ++i) {
     config.shaderConfig.tcgs[i] = g_gxState.tcgs[i];
   }
@@ -915,6 +924,7 @@ void shutdown() noexcept {
   g_gxState.loadedTextures.fill({});
   g_gxState.loadedTluts.fill({});
   clear_copy_texture_cache();
+  g_gxState.copySceneLinear = false;
   texture::shutdown();
 }
 } // namespace aurora::gx

@@ -31,6 +31,7 @@
 #include "port_debug.h"
 #include "port_map_pickups.h"
 #include "port_photo.h"
+#include "port_pointer_menu.h"
 #include "port_skip_cutscenes.h"
 #include <math.h>
 #endif
@@ -781,6 +782,24 @@ void COptionsScreen::ProcessInput(const CFinalInput& input) {
   }
 }
 
+#ifdef TARGET_PC
+void COptionsScreen::PortPointerInput(CFinalInput& input) {
+  if (!x19c_quitGame.null()) {
+    PortPointerMenu::Table(x19c_quitGame->PortTable());
+    if (PortPointerMenu::TakeBack()) {
+      PortPointerMenu::PressB(input);
+    }
+    return;
+  }
+  // The slider and value rows set the option; the rest is the shared tables.
+  if (!PortPointerMenu::Slider(x18c_slidergroup_slider)) {
+    PortPointerMenu::Table(x190_tablegroup_double, false, false);
+    PortPointerMenu::Table(x194_tablegroup_triple, false, false);
+  }
+  CPauseScreenBase::PortPointerInput(input);
+}
+#endif
+
 void COptionsScreen::Draw(float transInterp, float totalAlpha, float yOff) const {
   CPauseScreenBase::Draw(transInterp, totalAlpha, yOff);
   x1a0_gameCube->Draw(transInterp * (1.f - x29c_optionAlpha));
@@ -1260,6 +1279,30 @@ bool SOptionsFrontEndFrame::ProcessUserInput(const CFinalInput& input, CSaveGame
     saveUI->ProcessUserInput(input);
   }
   if (x1c_loadedFrame != nullptr && x134_24_visible) {
+#ifdef TARGET_PC
+    // Pointer: the slider drags, enum values select on click only (hovering
+    // must not change a setting), a click on a category while the options
+    // are open returns to it, back = B.
+    CFinalInput pointerInput = input;
+    if (PortPointerMenu::Begin()) {
+      // Selecting a right row is what opens its value, so its Advance needs
+      // no A.
+      if (!PortPointerMenu::Slider(x34_slidergroup_slider)) {
+        PortPointerMenu::Table(x2c_tablegroup_double, false, false);
+        PortPointerMenu::Table(x30_tablegroup_triple, false, false);
+        if (x28_tablegroup_rightmenu->GetIsActive() &&
+            PortPointerMenu::PeekClickRow(x24_tablegroup_leftmenu) >= 0) {
+          x28_tablegroup_rightmenu->PortCancel();
+        }
+        PortPointerMenu::Table(x28_tablegroup_rightmenu, false);
+        PortPointerMenu::Table(x24_tablegroup_leftmenu);
+      }
+      if (PortPointerMenu::TakeBack()) {
+        PortPointerMenu::PressB(pointerInput);
+      }
+    }
+    const CFinalInput& input = pointerInput;
+#endif
     if (input.PB() && x24_tablegroup_leftmenu->GetIsActive()) {
       x134_25_exitOptions = true;
       CSfxManager::SfxStart(0x446, 0x7f, 0x40, false, CSfxManager::kMedPriority, false,

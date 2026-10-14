@@ -230,6 +230,8 @@ set(MP_PORT_SOURCES
     platform/port_room_geo_file.cpp
     platform/port_room_liquid.cpp
     platform/port_collision_view.cpp
+    platform/port_pointer.cpp
+    platform/port_pointer_menu.cpp
     platform/port_remastered_cmdl.cpp
     platform/port_remastered_anuv.cpp
     platform/port_remastered_image.cpp
@@ -642,9 +644,37 @@ if(MP_BUILD_TESTS)
     target_include_directories(port_remastered_effect_tests PRIVATE platform/include)
     add_executable(port_remastered_effect_convert_tests tests/port_remastered_effect_convert.cpp platform/port_remastered_effect_convert.cpp platform/port_remastered_effect.cpp)
     target_include_directories(port_remastered_effect_convert_tests PRIVATE platform/include)
+    add_executable(port_ice_rotation_element_tests
+        tests/port_ice_rotation_element.cpp
+        src/Kyoto/Particles/CVectorElement.cpp
+        src/Kyoto/Math/CQuaternion.cpp
+        src/Kyoto/Math/CVector3f.cpp
+        src/Kyoto/Math/CMatrix3f.cpp)
+    target_include_directories(port_ice_rotation_element_tests PRIVATE include extern/aurora/include)
+    target_compile_definitions(port_ice_rotation_element_tests PRIVATE TARGET_PC VERSION=0)
+    # CVectorElement.cpp references particle globals and streams the test never reaches; the
+    # linker drops them. lld-link resolves symbols before /OPT:REF, so they only warn there.
+    if(MSVC OR CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC")
+        target_compile_options(port_ice_rotation_element_tests PRIVATE /Gy)
+        target_link_options(port_ice_rotation_element_tests PRIVATE /OPT:REF /FORCE:UNRESOLVED)
+    elseif(APPLE)
+        target_link_options(port_ice_rotation_element_tests PRIVATE -Wl,-dead_strip)
+    else()
+        target_compile_options(port_ice_rotation_element_tests PRIVATE -ffunction-sections -fdata-sections)
+        target_link_options(port_ice_rotation_element_tests PRIVATE -Wl,--gc-sections)
+    endif()
+    add_test(NAME port_ice_rotation_element_tests COMMAND port_ice_rotation_element_tests)
+    set_tests_properties(port_ice_rotation_element_tests PROPERTIES TIMEOUT 15 LABELS port)
+    add_executable(port_nested_light_tests tests/port_nested_light_math.cpp
+        src/Kyoto/Graphics/CLight.cpp src/Kyoto/Graphics/CColor.cpp src/Kyoto/Math/RMathUtils.cpp
+        src/Kyoto/Math/CVector3f.cpp src/Kyoto/Streams/CInputStream.cpp src/Kyoto/Streams/COutputStream.cpp)
+    target_include_directories(port_nested_light_tests PRIVATE include extern/aurora/include platform/include)
+    target_compile_definitions(port_nested_light_tests PRIVATE TARGET_PC VERSION=0)
     add_executable(port_remastered_effect_import_tests tests/port_remastered_effect_import.cpp platform/port_remastered_effect_import.cpp platform/port_remastered_effect_convert.cpp platform/port_remastered_effect.cpp platform/port_remastered_image.cpp)
     target_include_directories(port_remastered_effect_import_tests PRIVATE platform/include)
     target_link_libraries(port_remastered_effect_import_tests PRIVATE astcenc)
+    add_executable(port_remastered_import_tests tests/port_remastered_import.cpp platform/port_remastered_effect.cpp)
+    target_include_directories(port_remastered_import_tests PRIVATE platform/include)
     add_executable(port_hud_bars_tests tests/port_hud_bars.cpp platform/port_hud_bars_file.cpp)
     target_include_directories(port_hud_bars_tests PRIVATE platform/include)
     add_executable(port_remastered_hud_tests tests/port_remastered_hud.cpp platform/port_remastered_hud.cpp platform/port_hud_bars_file.cpp platform/port_remastered_image.cpp platform/port_remastered_pak.cpp)
@@ -665,6 +695,9 @@ if(MP_BUILD_TESTS)
     add_executable(port_remastered_lits_tests tests/port_remastered_lits_tests.cpp platform/port_remastered_convert.cpp platform/port_remastered_anuv.cpp platform/port_remastered_image.cpp platform/port_remastered_pak.cpp)
     target_include_directories(port_remastered_lits_tests PRIVATE platform/include)
     target_link_libraries(port_remastered_lits_tests PRIVATE astcenc)
+    add_executable(port_remastered_ice_tests tests/port_remastered_ice_tests.cpp platform/port_remastered_convert.cpp platform/port_remastered_anuv.cpp platform/port_remastered_image.cpp platform/port_remastered_pak.cpp)
+    target_include_directories(port_remastered_ice_tests PRIVATE platform/include)
+    target_link_libraries(port_remastered_ice_tests PRIVATE astcenc)
     add_executable(port_remastered_blend_tests tests/port_remastered_blend_tests.cpp platform/port_remastered_convert.cpp platform/port_remastered_anuv.cpp platform/port_remastered_image.cpp platform/port_remastered_pak.cpp)
     target_include_directories(port_remastered_blend_tests PRIVATE platform/include)
     target_link_libraries(port_remastered_blend_tests PRIVATE astcenc)
@@ -684,8 +717,15 @@ if(MP_BUILD_TESTS)
     target_include_directories(port_custom_res_tests PRIVATE platform/include)
     add_executable(port_env_tests tests/port_env.cpp)
     target_include_directories(port_env_tests PRIVATE platform/include)
+    add_executable(port_hdr_scene_policy_tests tests/port_hdr_scene_policy.cpp)
+    target_include_directories(port_hdr_scene_policy_tests PRIVATE include extern/aurora/include)
+    target_compile_definitions(port_hdr_scene_policy_tests PRIVATE TARGET_PC VERSION=0)
+    add_test(NAME port_hdr_scene_policy_tests COMMAND port_hdr_scene_policy_tests)
+    set_tests_properties(port_hdr_scene_policy_tests PROPERTIES TIMEOUT 15 LABELS port)
     add_executable(port_hold_toggle_tests tests/port_hold_toggle.cpp)
     target_include_directories(port_hold_toggle_tests PRIVATE platform/include)
+    add_executable(port_pointer_tests tests/port_pointer.cpp)
+    target_include_directories(port_pointer_tests PRIVATE platform/include)
     add_executable(port_input_engine_tests tests/port_input_engine.cpp platform/input/port_input_engine.cpp)
     target_include_directories(port_input_engine_tests PRIVATE platform/include)
     add_executable(port_input_bindings_tests tests/port_input_bindings.cpp platform/input/port_input_bindings.cpp platform/input/port_input_engine.cpp)
@@ -761,7 +801,12 @@ if(MP_BUILD_TESTS)
     add_test(NAME port_save_convert_tests COMMAND port_save_convert_tests "${PORT_SAVE_FIXTURES}")
     set_tests_properties(port_save_convert_tests PROPERTIES TIMEOUT 120 LABELS port)
     aurora_copy_runtime_dlls(port_save_convert_tests)
-    foreach(test IN ITEMS port_remastered_report_tests port_buffer_tests port_ai_tests port_randomizer_tests port_apclient_tests port_ap_solo_tests port_ap_logic_tests port_rando_gen_tests port_musyx_tests port_musyx_charge_loop_tests port_disc_tests port_skip_streams_tests port_revision_scripts_tests port_mouse_tests port_touch_pad_tests port_json_tests port_ws_tests port_mods_tests port_pal_languages_tests port_actor_collision_bounds_tests port_room_env_tests port_room_geo_tests port_hd_font_tests port_hud_bars_tests port_remastered_astc_tests port_remastered_hud_tests port_remastered_movie_tests port_gallery_tests port_remastered_nso_tests port_remastered_text_tests port_remastered_uv_tests port_remastered_anuv_tests port_remastered_lits_tests port_remastered_blend_tests port_inventory_visor_tests port_remastered_image_tests port_remastered_effect_tests port_remastered_effect_convert_tests port_remastered_effect_import_tests port_importers_tests port_custom_res_tests port_hold_toggle_tests port_input_engine_tests port_input_bindings_tests port_env_tests port_tick_pair_tests port_presentation_rules_tests port_livesplit_tests port_discord_tests port_update_check_tests port_savestate_tests port_timing_tests port_audio_math_tests)
+    add_executable(port_charge_locator_tests tests/port_charge_locator.cpp)
+    target_include_directories(port_charge_locator_tests PRIVATE include extern/aurora/include)
+    target_compile_definitions(port_charge_locator_tests PRIVATE TARGET_PC VERSION=0)
+    add_test(NAME port_charge_locator_tests COMMAND port_charge_locator_tests)
+    set_tests_properties(port_charge_locator_tests PROPERTIES TIMEOUT 15 LABELS port)
+    foreach(test IN ITEMS port_remastered_report_tests port_buffer_tests port_ai_tests port_randomizer_tests port_apclient_tests port_ap_solo_tests port_ap_logic_tests port_rando_gen_tests port_musyx_tests port_musyx_charge_loop_tests port_disc_tests port_skip_streams_tests port_revision_scripts_tests port_mouse_tests port_touch_pad_tests port_json_tests port_ws_tests port_mods_tests port_pal_languages_tests port_actor_collision_bounds_tests port_room_env_tests port_room_geo_tests port_hd_font_tests port_hud_bars_tests port_remastered_astc_tests port_remastered_hud_tests port_remastered_movie_tests port_gallery_tests port_remastered_nso_tests port_remastered_text_tests port_remastered_uv_tests port_remastered_anuv_tests port_remastered_lits_tests port_remastered_ice_tests port_remastered_blend_tests port_inventory_visor_tests port_remastered_image_tests port_remastered_effect_tests port_remastered_effect_convert_tests port_nested_light_tests port_remastered_effect_import_tests port_remastered_import_tests port_importers_tests port_custom_res_tests port_hold_toggle_tests port_pointer_tests port_input_engine_tests port_input_bindings_tests port_env_tests port_tick_pair_tests port_presentation_rules_tests port_livesplit_tests port_discord_tests port_update_check_tests port_savestate_tests port_timing_tests port_audio_math_tests)
         add_test(NAME ${test} COMMAND ${test})
         set_tests_properties(${test} PROPERTIES TIMEOUT 15 LABELS port)
         aurora_copy_runtime_dlls(${test})

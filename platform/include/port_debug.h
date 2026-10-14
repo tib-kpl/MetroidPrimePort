@@ -211,6 +211,13 @@ const int kHudScaleMin = 50;
 const int kHudScaleMax = 100;
 int HudScale();
 void SetHudScale(int percent);
+// How far the widescreen HUD spread moves the scan visor's side panels and their images, in
+// percent of the full spread (0 keeps them at their 4:3 place near the centre, 100 takes them
+// out to the screen edges with the rest of the HUD). Touch controls cover the edges on phones.
+const int kScanSpreadMin = 0;
+const int kScanSpreadMax = 100;
+int ScanSpread();
+void SetScanSpread(int percent);
 // The centre crosshair (free aim, mouse aim, twin stick): opacity in percent,
 // and an optional colour that replaces the game's (false = the game's own).
 const int kCrosshairOpacityMin = 0;
@@ -231,6 +238,7 @@ bool SecondaryCrosshairs();
 // Menus and the map read a remapped pad's standard buttons (F1 Controls > Remap).
 bool MenuStandardButtons();
 void SetMenuStandardButtons(bool enabled);
+void SetPointerMenus(bool enabled); // the pointer_menus setting; read with PortPointer::Enabled()
 // Hide the helmet frame (the visor rim and its glow and lights).
 bool HideHelmet();
 void SetHideHelmet(bool enabled);
@@ -303,6 +311,10 @@ int Msaa();
 void SetMsaa(int samples);
 int Anisotropy();
 void SetAnisotropy(int level);
+// Setting `per_pixel_lighting` (default off, off in the original experience): GX
+// lights summed per pixel instead of per vertex. Lit pipelines rebuild on next use.
+bool PerPixelLighting();
+void SetPerPixelLighting(bool enabled);
 // Setting `opengles`: start on Dawn's OpenGL ES backend instead of Vulkan, for
 // drivers that draw wrong on Vulkan (Adreno 7xx, issue #7). Read at window
 // creation, so it takes a restart; aurora falls back to Vulkan if it fails.
@@ -541,6 +553,11 @@ void SetTouchAim(bool on);
 float TouchAimSpeed();
 void SetTouchAimSpeed(float pixelsPerDp);
 void AddTouchAim(float dxDp, float dyDp);
+// A quick swipe up on the touch aim area (the overlay detects it): requests the
+// Spring Ball when "Spring Ball on swipe up" is on. Thread-safe.
+bool SpringBallSwipe();
+void SetSpringBallSwipe(bool enabled);
+void TouchSpringSwipe();
 // GameCube scheme (neither mouse aim nor twin stick): CPlayer turns by the touch
 // travel and holds a free-look pitch while a touch-aim finger is down.
 // TakeTouchLook returns this tick's world yaw/pitch change in radians (once per

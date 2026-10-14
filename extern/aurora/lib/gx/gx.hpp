@@ -47,7 +47,6 @@ constexpr float GX_LARGE_NUMBER = -1048576.0f;
 namespace aurora::gx {
 constexpr bool EnableNormalVisualization = false;
 constexpr bool EnableDebugPrints = false;
-constexpr bool UsePerPixelLighting = false;
 constexpr bool UseReversedZ = true;
 
 constexpr u32 MaxTextures = GX_MAX_TEXMAP;
@@ -339,15 +338,17 @@ struct GXState {
     u32 height = 0;
     GXTexFmt format = GX_TF_I4;
     bool mips = false;
+    // The texture holds the linear RGBA16F scene (GXPortCopyScene in an HDR pass), not a GX copy.
+    bool linear = false;
 
     bool operator==(const CopyTextureKey& rhs) const {
       return dest == rhs.dest && width == rhs.width && height == rhs.height && format == rhs.format &&
-             mips == rhs.mips;
+             mips == rhs.mips && linear == rhs.linear;
     }
 
     template <typename H>
     friend H AbslHashValue(H h, const CopyTextureKey& key) {
-      return H::combine(std::move(h), key.dest, key.width, key.height, key.format, key.mips);
+      return H::combine(std::move(h), key.dest, key.width, key.height, key.format, key.mips, key.linear);
     }
   };
 
@@ -483,6 +484,7 @@ struct GXState {
   bool texCopyDstWide = false;
   bool texCopyMips = false; // GXSetTexCopyDst mipmap flag: the copy gets a full mip chain
   const void* texCopyDest = nullptr;
+  bool copySceneLinear = false; // GX_AURORA_PORT_COPY_SCENE: copies are linear scene copies (GXPortCopyScene)
   absl::flat_hash_map<const void*, CopyTextureRef> copyTextures;
   absl::flat_hash_map<CopyTextureKey, CopyTextureRef> copyTextureCache;
 
@@ -602,7 +604,9 @@ struct ShaderConfig {
   // endianness.
   u8 pbrBindPos : 1 = false;
   u8 pbrBindLe : 1 = false;
-  u8 pad1 : 1 = 0;
+  // The draw writes the RGBA16F HDR scene (gfx::scene_hdr_pass_active): exposed linear light, not
+  // display sRGB. The old padding bit, so an LDR config keeps its bytes and cache keys.
+  u8 sceneHdr : 1 = false;
   u8 pbr = 0; // GX_AURORA_SET_PBR
   u8 sdf = 0; // GX_AURORA_SET_SDF
   u8 depthOnly = 0; // pass 1 of GX_AURORA_PORT_DEPTH_PREPASS: the colour is not written
@@ -612,7 +616,11 @@ struct ShaderConfig {
   // With pbr, the vertex attribute holding the baked lightmap's UV (GX_VA_TEX0..7), or GX_VA_NULL: a varying in the shader.
   u8 pbrLightmapAttr = GX_VA_NULL;
   u8 hudSample = 0; // GX_AURORA_SET_HUD_SAMPLE
-  u8 pad2[2]{}; // keeps the struct free of padding (memcmp and hash)
+  // aurora_set_per_pixel_lighting, on a draw with a lit channel: the GX lights are summed per
+  // fragment from the interpolated view-space position and normal instead of per vertex. The
+  // old padding, so a config with it off keeps its bytes and cache keys.
+  u8 perPixelLight = 0;
+  u8 pad2[1]{}; // keeps the struct free of padding (memcmp and hash)
   std::array<AttrConfig, MaxVtxAttr> attrs;
   std::array<TevSwap, MaxTevSwap> tevSwapTable;
   std::array<TevStage, MaxTevStages> tevStages;
@@ -659,11 +667,28 @@ struct ShaderInfo {
   bool usesVolFog : 1 = false;
   bool usesShadow : 1 = false;    // ShaderConfig::shadow: the shadow uniforms and vs_shadow
   bool shadowReceive : 1 = false; // shadow_receives: group 2 uses the shadow layout
+  bool usesHdrTone : 1 = false;   // ShaderConfig::sceneHdr without pbr: the hdr_tone uniform (GXState::pbrTone)
 };
 struct BindGroupRanges {
   std::array<gfx::Range, MaxIndexAttr> vaRanges{};
 };
 void populate_pipeline_config(PipelineConfig& config, GXPrimitive primitive, GXVtxFmt fmt) noexcept;
+// aurora_set_per_pixel_lighting; any thread.
+void set_per_pixel_lighting(bool enabled) noexcept;
+bool per_pixel_lighting() noexcept;
+// ShaderConfig::perPixelLight for a config with its other fields set: a PBR draw shades per
+// pixel already (and has no interpolators to spare).
+inline bool wants_per_pixel_light(const ShaderConfig& config) noexcept {
+  if (!per_pixel_lighting() || config.pbr != 0) {
+    return false;
+  }
+  for (const auto& cc : config.colorChannels) {
+    if (cc.lightingEnabled) {
+      return true;
+    }
+  }
+  return false;
+}
 wgpu::RenderPipeline build_pipeline(const PipelineConfig& config, ArrayRef<wgpu::VertexBufferLayout> vtxBuffers,
                                     wgpu::ShaderModule shader, const char* label) noexcept;
 std::string build_shader_source(const ShaderConfig& config) noexcept;

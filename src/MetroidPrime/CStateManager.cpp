@@ -2642,8 +2642,8 @@ void CStateManager::PreRender() {
   const CTransform4f curCamXf =
       PortFreeCam::View(x870_cameraManager->GetCurrentCameraTransform(*this));
 #ifdef TARGET_PC
-  const float curRenderFov = PortFreeCam::FovOverride() > 0.f
-                                 ? CGameCamera::VertPlusFov(PortFreeCam::FovOverride(), curCam.GetAspectRatio())
+  const float curRenderFov = PortFreeCam::PresentedFovOverride() > 0.f
+                                 ? CGameCamera::VertPlusFov(PortFreeCam::PresentedFovOverride(), curCam.GetAspectRatio())
                                  : curCam.GetRenderFov();
 #else
   const float curRenderFov = curCam.GetRenderFov();
@@ -2701,8 +2701,8 @@ CFrustumPlanes CStateManager::SetupViewForDraw(const CViewport& viewport) const 
   const int top = viewport.mTop + (viewport.mHeight - height) / 2;
 
 #ifdef TARGET_PC
-  const float renderFov = PortFreeCam::FovOverride() > 0.f
-                              ? CGameCamera::VertPlusFov(PortFreeCam::FovOverride(), cam.GetAspectRatio())
+  const float renderFov = PortFreeCam::PresentedFovOverride() > 0.f
+                              ? CGameCamera::VertPlusFov(PortFreeCam::PresentedFovOverride(), cam.GetAspectRatio())
                               : cam.GetRenderFov();
   const float tangent = CMath::SlowTangentR(CMath::Deg2Rad(0.5f * renderFov)) / sPortViewZoom;
 #else
@@ -3227,6 +3227,7 @@ void CStateManager::PortCaptureProbeFace() const {
 #endif
 
 #ifdef TARGET_PC
+bool CStateManager::sPortSceneHdrRequest = false;
 float CStateManager::sPortViewZoom = 1.f;
 
 float CStateManager::PortZoomedFov(float fov) {
@@ -3242,8 +3243,14 @@ void CStateManager::DrawWorld() const {
   // A zoomed pass (sharp scan window) draws before the frame's own: the frame's captures and
   // the gun belong to that one.
   const bool portZoomed = sPortViewZoom != 1.f;
+  const bool portSceneHdrRequested = sPortSceneHdrRequest;
+  sPortSceneHdrRequest = false;
   if (!portZoomed)
     PortCaptureProbeFace();
+  // Probe faces are retail/display colour. Start HDR only after the capture and before the
+  // first real world draw; a post from the preceding scan-zoom pass has already returned to LDR.
+  if (portSceneHdrRequested)
+    GXPortSceneHdr(GX_TRUE);
 #endif
 #ifdef TARGET_PC
   // Port: material UV animations read the presented time between ticks (smooth frames).

@@ -89,6 +89,12 @@
   to 0.2 s before landing still counts. It reads the gyro aim's source but works
   with gyro aim off. The phone's gyro is turned to the screen's orientation, so
   pitch and yaw stay right in landscape.
+  **Spring Ball on swipe up** (Android, Touch controls, `spring_ball_swipe`, on
+  by default) springs on a quick swipe up of an aiming finger (the free-area
+  drag, or Fire/Jump slid): 40 dp up, more up than sideways, within 150 ms of
+  where the stroke began, once per stroke (`TouchControlsView.trackSwipe` →
+  `PortDebug::TouchSpringSwipe` → the Spring Ball request). Touch aim does
+  nothing in the ball, so the swipe takes nothing away there.
   **Touch aim** (Android, `touch_aim`, on by default; `touch_aim_speed`, default
   2.25 aim px per dp): with twin stick on, the right stick is gone and a finger
   dragged on the free screen area turns the view by the distance dragged, like a
@@ -213,6 +219,20 @@
   rows apply in menus and the map with or without a controller, replacing what that key
   does in gameplay there; touch is unchanged. With
   the option off, menus and the map follow the gameplay bindings and the rows do nothing.
+  "Point and click menus" (on by default; `pointer_menus=`, `MP_POINTER_MENUS`) lets
+  the mouse and touch work the game's own menus (front end, pause screen, save stations,
+  upgrade messages) and the map. A hover selects (a tap on touch), a click confirms (a
+  tap on the selected item), right click (or Android back) backs out, and a click on a
+  button hint presses that button. The wheel or a drag pages the log book text, a press
+  or drag sets a slider, and in the Samus doll view a drag turns the doll, a right drag
+  or two fingers move it and the wheel or a pinch zooms.
+  On the map a left drag rotates (one finger pans), a right or middle drag or two
+  fingers pan, a two-finger twist turns it, the wheel or a pinch zooms, a click selects a world or room and a click
+  on the selected one opens it. While such a screen is up the mouse is released and the
+  cursor shown; the button prompts show mouse glyphs after the mouse was last used; on
+  Android the gameplay touch buttons hide, leaving a back button. Escape pauses, backs out
+  of menus (resuming from the pause screen's top level) and closes the map while this is
+  on, outside Original experience.
   It binds any action to an input or a chord of up to four
   (hold the first ones, press the last; or "Any order" within the chord window). The editor's
   Advanced section holds the typed input text, the trigger (press, tap, hold, double tap,
@@ -272,11 +292,24 @@
   textures, which retail asks for as GX_ANISO_4. Both apply at the start of the
   next frame without a restart; an MSAA change rebuilds the framebuffers and
   pipelines, so it hitches once. Console: `msaa <1|4>`, `aniso <1..16>`.
+- Per-pixel lighting (Video > Quality, persisted as `per_pixel_lighting`,
+  default off, off in the original experience; issue #113): the GX lights on
+  lit draws (Samus, enemies, items and other vertex-lit models) are summed per pixel
+  from the interpolated view-space position and normal, as Dolphin's option
+  does, instead of per vertex. Remastered (PBR) models are per pixel already
+  and unchanged. Lit pipelines rebuild on their next draw, so turning it on
+  hitches once. Console: `pixellight [0|1]`.
 - HUD scale (Video > Display and pause Options > Display, persisted as `hud_scale`,
   50-100 percent, default 100): shrinks the combat HUD, radar, beam and visor
   menus and the minimap toward the screen centre, each frame as a whole so the
   pieces stay on the visor frame. The helmet is not scaled. The minimap eases
   back to full size as it opens into the map screen.
+- Scan image spread (Video > Display, persisted as `scan_spread`, 0-100 percent,
+  default 100, 0 on Android): how far the widescreen HUD moves the scan visor's side panels and
+  the scan images out toward the screen edges. At 0 they keep their 4:3 place
+  near the centre, clear of a phone's touch controls; the rest of the HUD still
+  spreads. No effect at 4:3, without the widescreen HUD, or under Original
+  experience. Console: `scanspread <0..100>`.
 - Crosshair opacity and colour (Video > Display, persisted as `crosshair_opacity`,
   0-100 percent, default 100, and `crosshair_color`, `RRGGBB` or empty for the
   game's own colour): the centre crosshair of free aim, mouse aim and twin stick.
@@ -569,7 +602,9 @@ other `X:\Users\<name>`: `X:\Users\<user>`); the
   handling. Diagonal input/speed is bounded. Lock-on keeps its native orbit/dash
   behavior; closing F1 does not require reacquiring a lock to strafe.
 - Mouse mode requests the GC aiming crosshair without holding R or entering the
-  console's movement-restricting free-look mode. `MP_DISABLE_MOUSE_CROSSHAIR=1`
+  console's movement-restricting free-look mode. While locked on (aim follows the
+  target) the crosshair shrinks away as in the original and returns on release
+  (issue #112). `MP_DISABLE_MOUSE_CROSSHAIR=1`
   opts out. The Controls > Mouse settings sub-tab exposes inversion, weapon-button and crosshair toggles.
 - Crosshair size (Controls > Mouse settings and pause Options > Controller, persisted as
   `crosshair_size`, 25-100 percent, default 50): scales the free-aim crosshair
@@ -643,8 +678,8 @@ other `X:\Users\<name>`: `X:\Users\<user>`); the
   when a mod has room geometry and `MP_ROOM_GEO_RESIDENT` is off (6 on Android),
   and 2 with it on (the default).
   A frame that outgrows them aborts with a buffer overflow.
-- `MP_ROOM_GEO_RESIDENT=<0|1>` (setting `room_geo_gpu`, F1 > Remastered >
-  Room models > Keep on the GPU; on by default, read at
+- `MP_ROOM_GEO_RESIDENT=<0|1>` (setting `room_geo_gpu`, F1 > Debug >
+  Remastered room models > Keep on the GPU; on by default, read at
   startup; an old `room_geo_resident=1` still turns it on). On a POCO F8 Ultra it
   gives 8 to 27% more frames per second in the heaviest rooms; on a desktop GPU it
   makes no measurable difference. On an integrated GPU (Ryzen 7000 Raphael) the
@@ -659,12 +694,12 @@ other `X:\Users\<name>`: `X:\Users\<user>`); the
   that. Console `stats` and the F1 > Debug > Rendering frame statistics show how much of it is in use. A
   model that finds no room left is sent every frame as before, which can
   overflow the smaller frame buffers: raise the room if the log warns of it.
-- `MP_ROOM_GEO_MIN_PX=<n>` (setting `room_geo_min_px`, F1 > Remastered >
-  Room models > Skip small models, console `roomgeo minpx <n>`; default 0): leaves out room
+- `MP_ROOM_GEO_MIN_PX=<n>` (setting `room_geo_min_px`, F1 > Debug >
+  Remastered room models > Skip small models, console `roomgeo minpx <n>`; default 0): leaves out room
   geometry instances that span fewer than n pixels of the game's 480-line
   screen.
-- `MP_ROOM_GEO_LOD=<scale>` (setting `room_geo_lod`, F1 > Remastered >
-  Room models > Detail distance, console `roomgeo lod <scale>`;
+- `MP_ROOM_GEO_LOD=<scale>` (setting `room_geo_lod`, F1 > Debug >
+  Remastered room models > Detail distance, console `roomgeo lod <scale>`;
   default 1): the import also converts each room model's coarser Remastered
   levels of detail (a level is kept only when it has at most 3/4 of the
   triangles of the one before) and lists them in `roomgeo/lods.bin`. An
@@ -715,6 +750,10 @@ other `X:\Users\<name>`: `X:\Users\<user>`); the
   the grid; adding them as well blew actors out near lamps.
   `MP_ROOM_ENV_AREA_LIGHTS=1` (console `roomenv arealights on|off`) adds them
   back. This also applies to room geometry under `MP_ROOM_GEO_AREA_LIGHTS=1`.
+  `MP_HDR_SCENE=1` opts into experimental HDR scene rendering. It is default-off and only
+  applies to Remastered room-environment scenes with a valid tone curve in the Combat or Scan
+  visor, outside visor transitions; Thermal/X-ray, HUD/UI, and inventory remain LDR. This is
+  not full beam/effect parity: other legacy effects may still use inherited exposure.
   The morph ball's light is Remastered's HDR one on PBR surfaces: a hotspot
   within 2.3 units of the ball, which brightens with boost and in water (see
   `docs/REMASTERED_EFFECTS.md`, "HDR dynamic lights").

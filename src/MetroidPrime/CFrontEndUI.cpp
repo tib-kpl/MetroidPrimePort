@@ -37,6 +37,7 @@
 
 #include "port_apclient.h"
 #include "port_debug.h"
+#include "port_pointer_menu.h"
 #include "port_savestate.h"
 #ifdef MP_ENABLE_SMOKE_DRIVER
 #include "port_smoke.h"
@@ -707,6 +708,19 @@ void CFrontEndUI::SFrontEndFrame::Update(float dt) {
 CFrontEndUI::SFrontEndFrame::EAction
 CFrontEndUI::SFrontEndFrame::ProcessUserInput(const CFinalInput& input) {
   x4_action = kEA_None;
+#ifdef TARGET_PC
+  if (PortPointerMenu::Begin()) {
+    if (PortPointerMenu::Table(x18_tablegroup_mainmenu) == PortPointerMenu::Action::Advance) {
+      return x4_action;
+    }
+    CFinalInput pointerInput = input;
+    if (PortPointerMenu::TakeBack()) {
+      PortPointerMenu::PressB(pointerInput);
+    }
+    x14_loadedFrme->ProcessUserInput(pointerInput);
+    return x4_action;
+  }
+#endif
   x14_loadedFrme->ProcessUserInput(input);
   return x4_action;
 }
@@ -943,7 +957,23 @@ CFrontEndUI::SNewFileSelectFrame::ProcessUserInput(const CFinalInput& input) {
   }
 
   if (x10c_saveReady) {
+#ifdef TARGET_PC
+    bool pointerAdvanced = false;
+    CFinalInput pointerInput = input;
+    if (PortPointerMenu::Begin()) {
+      CGuiTableGroup* table = x40_tablegroup_popup->GetIsActive() ? x40_tablegroup_popup
+                                                                   : x20_tablegroup_fileselect;
+      pointerAdvanced = PortPointerMenu::Table(table) == PortPointerMenu::Action::Advance;
+      if (!pointerAdvanced && PortPointerMenu::TakeBack()) {
+        PortPointerMenu::PressB(pointerInput);
+      }
+    }
+    if (!pointerAdvanced) {
+      x1c_loadedFrame->ProcessUserInput(pointerInput);
+    }
+#else
     x1c_loadedFrame->ProcessUserInput(input);
+#endif
   }
 
   if (x10d_needsEraseToggle) {
@@ -1439,6 +1469,25 @@ CFrontEndUI::SFusionBonusFrame::ProcessUserInput(const CFinalInput& input,
   }
 
   if (x38_lastDoDraw) {
+#ifdef TARGET_PC
+    // Pointer: link pages advance on a click; the fusion suit toggle selects
+    // on click only, the option rows as in the main menu; back = B.
+    CFinalInput pointerInput = input;
+    if (PortPointerMenu::Begin()) {
+      if (x0_gbaLinkFrame.get() != nullptr) {
+        if (PortPointerMenu::TakeClick()) {
+          PortPointerMenu::PressA(pointerInput);
+        }
+      } else if (x24_loadedFrame != nullptr) {
+        PortPointerMenu::Table(x2c_tablegroup_fusionsuit, true, false);
+        PortPointerMenu::Table(x28_tablegroup_options);
+      }
+      if (PortPointerMenu::TakeBack()) {
+        PortPointerMenu::PressB(pointerInput);
+      }
+    }
+    const CFinalInput& input = pointerInput;
+#endif
     if (x0_gbaLinkFrame.get() != nullptr) {
       SGBALinkFrame::EAction action = x0_gbaLinkFrame->ProcessUserInput(input, saveUI != nullptr);
       if (action != SGBALinkFrame::kGA_None) {
@@ -2314,7 +2363,13 @@ void CFrontEndUI::UpdateMovies(float dt) {
   }
 }
 
-void CFrontEndUI::ProcessUserInput(const CFinalInput& input, CArchitectureQueue& queue) {
+void CFrontEndUI::ProcessUserInput(const CFinalInput& padInput, CArchitectureQueue& queue) {
+#ifdef TARGET_PC
+  // A click or tap on the title, attract movie or credits stands in for A.
+  CFinalInput input = padInput;
+#else
+  const CFinalInput& input = padInput;
+#endif
 #ifdef TARGET_PC
   // The resume prompt answers during loading too, and ahead of the card check.
   if (PortResumePromptInput(input)) {
@@ -2323,6 +2378,9 @@ void CFrontEndUI::ProcessUserInput(const CFinalInput& input, CArchitectureQueue&
     }
     return;
   }
+  // The whole front end but the NES emulator is a pointer screen: the touch
+  // overlay keeps its gameplay buttons hidden through loading, movies and fades.
+  const bool pointerScreen = xec_emuFrme.get() == nullptr && PortPointerMenu::Begin();
 #endif
   if (gpMain->GetCardBusy())
     return;
@@ -2334,10 +2392,28 @@ void CFrontEndUI::ProcessUserInput(const CFinalInput& input, CArchitectureQueue&
     return;
   }
 
-  if (x14_phase != kP_DisplayFrontEnd)
+  if (x14_phase != kP_DisplayFrontEnd) {
+#ifdef TARGET_PC
+    // A tap while loading or fading out must not land on the next screen.
+    if (pointerScreen) {
+      PortPointerMenu::TakeClick();
+    }
+#endif
     return;
+  }
   if (input.ControllerNumber() != 0)
     return;
+
+#ifdef TARGET_PC
+  // A click anywhere skips the attract movie and credits, and starts from the
+  // title: the screens where A has no widget to land on.
+  const bool clickIsA = x54_nextScreen == kS_AttractMovie ||
+                        (x50_curScreen == kS_OpenCredits && x54_nextScreen == kS_Title) ||
+                        (x50_curScreen == kS_Title && x54_nextScreen == kS_Title);
+  if (clickIsA && pointerScreen && PortPointerMenu::TakeClick()) {
+    PortPointerMenu::PressA(input);
+  }
+#endif
 
   if (x50_curScreen != x54_nextScreen) {
     if (x54_nextScreen == kS_AttractMovie) {

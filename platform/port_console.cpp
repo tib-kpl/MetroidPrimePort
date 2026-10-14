@@ -10,6 +10,7 @@
 #include "port_discord.h"
 #include "port_freecam.h"
 #include "port_photo.h"
+#include "port_pointer.h"
 #include "port_hd_font.h"
 #include "port_livesplit.h"
 #include "port_rando_gen.h"
@@ -589,7 +590,9 @@ void CmdHelp() {
   Out("gunoffset <r> <f> <u>      arm cannon offset in metres (+-1), as the Video row does");
   Out("window [<w> <h>]           resize the window (leaves fullscreen); prints the size");
   Out("msaa <1|4>, aniso <1..16>  anti-aliasing and anisotropic filtering, applied next frame");
+  Out("pixellight [0|1]         per-pixel lighting (1) or the original per-vertex (0); no argument prints it");
   Out("hudscale <50..100>         HUD scale in percent, as the Options row does");
+  Out("scanspread <0..100>        how far the widescreen HUD moves the scan panels out");
   Out("crosshair <25..100>        mouse/twin-stick crosshair size in percent");
   Out("helmet <0|1>, visorfx <0|1> show (1) or hide (0) the helmet and visor effects");
   Out("interp [actor|pose|particle|all <0|1>]   frame interpolation settings (F1 Video > Frame rate)");
@@ -2049,6 +2052,59 @@ void RunFrame() {
                              static_cast< float >(std::atof(sCmd.args[3].c_str()))};
     PortDebug::SetGunOffset(offset);
     Finish();
+  } else if (name == "pointer") {
+    // Coordinates are GUI (EFB) pixels, not window pixels; `pointer hits` lists the rects.
+    static const char* const kUsage =
+        "usage: pointer <x> <y> move|click|dclick|tap|dtap|down|up [l|r|touch]|drag <x1> <y1> [l|r|touch]|wheel <n>|pinch <ratio>"
+        " | pointer back | pointer where | pointer hits";
+    const std::string verb = sCmd.args.size() > 1 ? Lower(sCmd.args[1]) : std::string();
+    if (verb == "back") {
+      PortPointer::ScriptBack();
+      return Finish();
+    }
+    if (verb == "hits") {
+      OutLines(PortGuiHit::Describe(-1.f, -1.f));
+      return Finish();
+    }
+    if (verb == "where") {
+      float gx = 0.f, gy = 0.f;
+      const bool has = PortPointer::Position(gx, gy);
+      Out("pointer %s %.1f %.1f last=%s screen=%d enabled=%d", has ? "at" : "none", gx, gy,
+          PortPointer::MouseIsLast() ? "mouse" : PortPointer::TouchIsLast() ? "touch" : "other",
+          PortPointer::ScreenActive() ? 1 : 0, PortPointer::Enabled() ? 1 : 0);
+      OutLines(PortGuiHit::Describe(gx, gy));
+      return Finish();
+    }
+    if (sCmd.args.size() < 4) {
+      return Finish(kUsage);
+    }
+    const float x = static_cast< float >(std::atof(sCmd.args[1].c_str()));
+    const float y = static_cast< float >(std::atof(sCmd.args[2].c_str()));
+    const std::string action = Lower(sCmd.args[3]);
+    if (action == "move") {
+      PortPointer::ScriptMove(x, y);
+    } else if (action == "click" || action == "dclick") {
+      PortPointer::ScriptClick(x, y, action == "dclick", false);
+    } else if (action == "tap" || action == "dtap") {
+      PortPointer::ScriptClick(x, y, action == "dtap", true);
+    } else if (action == "down" || action == "up") {
+      const std::string how = sCmd.args.size() > 4 ? Lower(sCmd.args[4]) : std::string("l");
+      PortPointer::ScriptPress(x, y, action == "down",
+                               how == "r" ? PortPointer::kButtonRight : PortPointer::kButtonLeft, how == "touch");
+    } else if (action == "drag" && sCmd.args.size() >= 6) {
+      const std::string how = sCmd.args.size() > 6 ? Lower(sCmd.args[6]) : std::string("l");
+      PortPointer::ScriptDrag(x, y, static_cast< float >(std::atof(sCmd.args[4].c_str())),
+                              static_cast< float >(std::atof(sCmd.args[5].c_str())),
+                              how == "r" ? PortPointer::kButtonRight : PortPointer::kButtonLeft, how == "touch");
+    } else if (action == "wheel" && sCmd.args.size() >= 5) {
+      PortPointer::ScriptMove(x, y);
+      PortPointer::ScriptWheel(static_cast< float >(std::atof(sCmd.args[4].c_str())));
+    } else if (action == "pinch" && sCmd.args.size() >= 5) {
+      PortPointer::ScriptPinch(x, y, static_cast< float >(std::atof(sCmd.args[4].c_str())));
+    } else {
+      return Finish(kUsage);
+    }
+    Finish();
   } else if (name == "window") {
     int count = 0;
     SDL_Window** windows = SDL_GetWindows(&count);
@@ -2085,12 +2141,29 @@ void RunFrame() {
       PortDebug::SetAnisotropy(value);
     }
     Finish();
+  } else if (name == "pixellight") {
+    if (sCmd.args.size() > 1) {
+      const std::string& v = sCmd.args[1];
+      if (v != "0" && v != "1") {
+        return Finish("usage: pixellight [0|1]");
+      }
+      PortDebug::SetPerPixelLighting(v == "1");
+    }
+    Out(PortDebug::PerPixelLighting() ? "pixellight 1" : "pixellight 0");
+    Finish();
   } else if (name == "hudscale") {
     const int value = sCmd.args.size() > 1 ? std::atoi(sCmd.args[1].c_str()) : 0;
     if (value < PortDebug::kHudScaleMin || value > PortDebug::kHudScaleMax) {
       return Finish("usage: hudscale <50..100>");
     }
     PortDebug::SetHudScale(value);
+    Finish();
+  } else if (name == "scanspread") {
+    const int value = sCmd.args.size() > 1 ? std::atoi(sCmd.args[1].c_str()) : -1;
+    if (value < PortDebug::kScanSpreadMin || value > PortDebug::kScanSpreadMax) {
+      return Finish("usage: scanspread <0..100>");
+    }
+    PortDebug::SetScanSpread(value);
     Finish();
   } else if (name == "crosshair") {
     const int value = sCmd.args.size() > 1 ? std::atoi(sCmd.args[1].c_str()) : 0;
