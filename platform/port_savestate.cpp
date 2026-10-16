@@ -379,6 +379,10 @@ std::string CurrentIdentity() {
   if (PortAp::Enabled()) {
     id += "ap:" + PortAp::SaveCardDirectory() + "|" + PortAp::SoloSeedInPlay();
   }
+  const std::string shared = PortGci::CardTargetDirectory("");
+  if (!shared.empty()) {
+    id += "card:" + shared;
+  }
   if (PortRandomizer::Enabled()) {
     const char* seed = PortRandomizer::SeedName();
     id += std::string("rando:") + (seed != nullptr ? seed : "");
@@ -980,9 +984,13 @@ bool RequestResumeLoad() {
   return true;
 }
 
-void ResumeClear() {
+void ResumeDiscard() {
   DropSnapshot();
   RemoveResumeFile();
+}
+
+void ResumeClear() {
+  ResumeDiscard();
   SetMessage("Resume state deleted");
 }
 

@@ -9,6 +9,7 @@
 #include "port_debug.h"
 #include "port_discord.h"
 #include "port_freecam.h"
+#include "port_gci.h"
 #include "port_photo.h"
 #include "port_pointer.h"
 #include "port_hd_font.h"
@@ -593,6 +594,8 @@ void CmdHelp() {
   Out("window [<w> <h>]           resize the window (leaves fullscreen); prints the size");
   Out("msaa <1|4>, aniso <1..16>  anti-aliasing and anisotropic filtering, applied next frame");
   Out("pixellight [0|1]         per-pixel lighting (1) or the original per-vertex (0); no argument prints it");
+  Out("sunshadow [0|1]          the port's sun shadow in outdoor rooms (1) or off, as Remastered; no argument prints it");
+  Out("projshadow [0|1]         Remastered projected actor shadows (1) or the retail blob (0); no argument prints it");
   Out("hudscale <50..100>         HUD scale in percent, as the Options row does");
   Out("scanspread <0..100>        how far the widescreen HUD moves the scan panels out");
   Out("crosshair <25..100>        mouse/twin-stick crosshair size in percent");
@@ -609,7 +612,7 @@ void CmdHelp() {
   Out("timer <0|1>                on-screen in-game time; igt <seconds> sets the play time");
   Out("livesplit <0|1> | addr <host:port> | send <command> | status   LiveSplit Server client");
   Out("discord <0|1> | status   Discord Rich Presence");
-  Out("gci list | import <path> | export <dir or .raw> | dolphin import|export   memory card transfer");
+  Out("gci list | share on|off | emulator <folder|auto> | import <path> | export <dir or .raw> | dolphin import|export   memory card transfer");
   Out("ap [connect <server> <slot> [password] | disconnect | recent | resume <n> | say <text> | chat]   Archipelago, as the F1 Archipelago page does");
   Out("quit                       exit the game");
   Out("title                      quit the game to the title screen");
@@ -825,6 +828,8 @@ void CmdObj(CStateManager& mgr) {
   if (const CScriptSpecialFunction* func = TCastToConstPtr< CScriptSpecialFunction >(ent)) {
     Out("special function %d, locator \"%s\"", static_cast< int >(func->PortFunction()),
         func->PortLocatorName().data());
+    Out("floats %.3f %.3f %.3f %.3f, phase %.4f, push %.4f", func->PortFloat(0), func->PortFloat(1),
+        func->PortFloat(2), func->PortFloat(3), func->PortSpinnerPhase(), func->PortSpinnerPush());
   }
   if (const CScriptPlayerHint* hint = TCastToConstPtr< CScriptPlayerHint >(ent)) {
     Out("player hint flags 0x%x, priority %d, count %d", hint->GetOverrideFlags(), hint->GetPriority(),
@@ -932,6 +937,20 @@ void CmdTp(CStateManager& mgr) {
     return Finish("usage: tp <x> <y> <z>");
   }
   TeleportPlayer(mgr, CVector3f(x, y, z), mgr.GetPlayer()->GetTransform().GetForward());
+  Finish();
+}
+
+// lift <id> <dz>: moves an actor up by dz (for looking at its shadow with floor visible beside it).
+void CmdLift(CStateManager& mgr) {
+  float dz;
+  if (sCmd.args.size() < 3 || !ParseFloat(sCmd.args[2], dz)) {
+    return Finish("usage: lift <id> <dz>");
+  }
+  CActor* actor = TCastToPtr< CActor >(FindObject(mgr, sCmd.args[1]));
+  if (actor == nullptr) {
+    return Finish("no such actor");
+  }
+  actor->SetTranslation(actor->GetTranslation() + CVector3f(0.f, 0.f, dz));
   Finish();
 }
 
@@ -1861,7 +1880,7 @@ bool IsTickCommand(const std::string& name) {
     }
   }
   static const char* const names[] = {"status", "areas", "objs", "obj", "send", "give",
-                                      "take", "items", "heal", "kill", "hurt", "die", "god", "memo", "strg", "language", "tp", "room", "fx", "face", "look", "warp",
+                                      "take", "items", "heal", "kill", "hurt", "die", "god", "memo", "strg", "language", "tp", "lift", "room", "fx", "face", "look", "warp",
                                       "tracker", "enter", "visor", "beam", "photo"};
   for (const char* n : names) {
     if (name == n) {
@@ -1914,6 +1933,8 @@ void RunTick(CStateManager& mgr) {
     CmdLanguage();
   } else if (name == "tp") {
     CmdTp(mgr);
+  } else if (name == "lift") {
+    CmdLift(mgr);
   } else if (name == "room") {
     CmdRoom();
   } else if (name == "fx") {
@@ -2169,6 +2190,26 @@ void RunFrame() {
     }
     Out(PortDebug::PerPixelLighting() ? "pixellight 1" : "pixellight 0");
     Finish();
+  } else if (name == "sunshadow") {
+    if (sCmd.args.size() > 1) {
+      const std::string& v = sCmd.args[1];
+      if (v != "0" && v != "1") {
+        return Finish("usage: sunshadow [0|1]");
+      }
+      PortDebug::SetSunShadows(v == "1");
+    }
+    Out(PortDebug::SunShadows() ? "sunshadow 1" : "sunshadow 0");
+    Finish();
+  } else if (name == "projshadow") {
+    if (sCmd.args.size() > 1) {
+      const std::string& v = sCmd.args[1];
+      if (v != "0" && v != "1") {
+        return Finish("usage: projshadow [0|1]");
+      }
+      PortDebug::SetProjectedShadows(v == "1");
+    }
+    Out(PortDebug::ProjectedShadows() ? "projshadow 1" : "projshadow 0");
+    Finish();
   } else if (name == "hudscale") {
     const int value = sCmd.args.size() > 1 ? std::atoi(sCmd.args[1].c_str()) : 0;
     if (value < PortDebug::kHudScaleMin || value > PortDebug::kHudScaleMax) {
@@ -2234,6 +2275,37 @@ void RunFrame() {
           indices.empty() ? "none" : indices.c_str());
       return Finish();
     }
+    if (value == "kinds" || value == "station") {
+      const std::string sub = sCmd.args.size() > 2 ? Lower(sCmd.args[2]) : "";
+      if (sub == "on" || sub == "off") {
+        if (value == "kinds") {
+          PortDebug::SetMapPickupKinds(sub == "on");
+        } else {
+          PortDebug::SetMapStationPickups(sub == "on");
+        }
+        return Finish();
+      }
+      if (!sub.empty() || value == "station") {
+        return Finish("usage: pickups kinds|station <on|off>");
+      }
+      // This world's dots and what they hold: M major, m minor, ? unknown.
+      size_t dots = 0;
+      const PortMapPickups::Dot* list = PortMapPickups::Dots(dots);
+      const unsigned char* kinds = PortMapPickups::Kinds();
+      const uint32_t world = gpGameState != nullptr ? gpGameState->CurrentWorldAssetId() : 0;
+      std::string text;
+      for (size_t i = 0; i < dots; ++i) {
+        if (list[i].world == world) {
+          text += (text.empty() ? "" : " ") + std::to_string(i) +
+                  (kinds[i] == PortMapPickups::kK_Major   ? "M"
+                   : kinds[i] == PortMapPickups::kK_Minor ? "m"
+                                                          : "?");
+        }
+      }
+      Out("kinds %s; this world: %s", PortDebug::MapPickupKinds() ? "on" : "off",
+          text.empty() ? "none" : text.c_str());
+      return Finish();
+    }
     if (value == "0" || value == "off") {
       PortDebug::SetMapPickups(PortDebug::kMapPickups_Off);
     } else if (value == "1" || value == "all") {
@@ -2242,7 +2314,9 @@ void RunFrame() {
       PortDebug::SetMapPickups(PortDebug::kMapPickups_Rooms);
     } else {
       return Finish("usage: pickups <off|seen|rooms|all>   pickups on the map (0 and 1 are off and all)\n"
-                    "       pickups seen [clear|all]   the pickups seen so far in this save");
+                    "       pickups seen [clear|all]   the pickups seen so far in this save\n"
+                    "       pickups kinds [on|off]     major/minor shapes; no argument lists them\n"
+                    "       pickups station <on|off>   map stations show pickups in Seen");
     }
     Finish();
   } else if (name == "mods") {
@@ -2449,6 +2523,9 @@ void RunFrame() {
       } else if (arg == "bloom" && sCmd.args.size() > 2 &&
                  (Lower(sCmd.args[2]) == "on" || Lower(sCmd.args[2]) == "off")) {
         PortRoomEnv::SetBloomEnabled(Lower(sCmd.args[2]) == "on");
+      } else if (arg == "grades" && sCmd.args.size() > 2 &&
+                 (Lower(sCmd.args[2]) == "on" || Lower(sCmd.args[2]) == "off")) {
+        PortRoomEnv::SetViewGradesOn(Lower(sCmd.args[2]) == "on");
       } else if (arg == "grades") {
         OutLines(PortRoomEnv::GradeInfo());
         return Finish();
@@ -2859,8 +2936,22 @@ void RunFrame() {
     } else if (action == "dolphin" && sub == "export" && sCmd.args.size() <= 4 &&
                (sCmd.args.size() == 3 || isFormat(Lower(sCmd.args[3])))) {
       text = PortDebug::CardExportDolphin(sCmd.args.size() == 4 ? Lower(sCmd.args[3]) : "");
+    } else if (action == "share" && (sub == "on" || sub == "off") && sCmd.args.size() == 3) {
+      PortGci::SetShareEmulatorCard(sub == "on");
+      PortDebug::SaveSettingsNow();
+      std::string why;
+      if (sub == "on" && PortGci::SharedCardBase(&why).empty()) {
+        why = " (" + why + ")";
+      } else {
+        why.clear();
+      }
+      text = "sharing the emulator card: " + sub + why + "; it takes effect at the title screen";
+    } else if (action == "emulator" && !path.empty()) {
+      PortGci::SetEmulatorFolder(Lower(path) == "auto" ? "" : path);
+      PortDebug::SaveSettingsNow();
+      text = "emulator folder: " + (PortGci::EmulatorFolder().empty() ? "auto" : PortGci::EmulatorFolder());
     } else {
-      return Finish("usage: gci list | import <path> | export [usa|pal] <dir or .raw> | export trilogy "
+      return Finish("usage: gci list | share on|off | emulator <folder|auto> | import <path> | export [usa|pal] <dir or .raw> | export trilogy "
                     "<save.bin> | dolphin import | dolphin export [usa|pal|trilogy]");
     }
     size_t start = 0;

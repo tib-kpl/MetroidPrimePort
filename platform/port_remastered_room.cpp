@@ -11,6 +11,7 @@
 #include <array>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <functional>
 #include <limits>
@@ -1332,6 +1333,7 @@ struct SceneryScripts {
   std::map<int, std::vector<PortRoomGeo::Link>> links;  // by entity
   std::map<int, size_t> unresolved;                      // by entity: connections not traced
   std::map<int, std::string> unresolvedHow;              // a grade hint's: sender type/event/action
+  std::map<std::string, std::pair<size_t, std::set<int>>> missStats;  // MP_REMASTERED_MISS: class -> connections, entities
   std::map<int, const ScriptObject*> platform;           // by entity: the platform carrying it
   size_t entities = 0, matched = 0;
   // Remastered's own objects in between (camera volumes, counters, relays) and the
@@ -1816,9 +1818,23 @@ SceneryScripts MatchScripts(const Room& room, const Area& area) {
     std::vector<PortRoomGeo::Link> links;
     size_t bad = 0;
     std::string how;
+    static const bool logMisses = std::getenv("MP_REMASTERED_MISS") != nullptr;
     // One more connection not traced; a grade hint's are named in the import log.
     const auto miss = [&](const Component& sender, const Connection& c, uint32_t first, int depth) {
       ++bad;
+      if (logMisses) {
+        const int ms = entityOf(int(c.sender));
+        const bool unmatched = ms < 0 || match[size_t(ms)] < 0;
+        const bool nostate = RetailState(sender.type, c.event) < 0;
+        char key[160];
+        std::snprintf(key, sizeof key, "%s%s%s (target %08X, sender %08X event %08X action %08X, depth %d)",
+                      unmatched ? "unmatched " : "", nostate ? "nostate " : "",
+                      !unmatched && !nostate ? (depth >= 6 ? "depth " : "other ") : "", e.type, sender.type, c.event, first,
+                      depth);
+        auto& stat = result.missStats[key];
+        ++stat.first;
+        stat.second.insert(e.entity);
+      }
       if (hintEntities.count(e.entity) != 0) {
         const int s = entityOf(int(c.sender));
         char text[96];
@@ -2280,7 +2296,7 @@ private:
   };
   bool MatchRoom(const RoomData& r, const std::map<std::string, Placement>& placed, Match& out) const;
   void Tonemap(const RoomData& r, float out[5]) const;
-  void Exposure(const RoomData& r, float out[5]) const;
+  void Exposure(const RoomData& r, float out[5], std::vector<PortRoomEnv::FluidHint>* fluid = nullptr) const;
   void ReadBloom(const RoomData& r, BloomData& out) const;
   // The room's global ColorGrades in component order; `area` gives their retail layers.
   void ReadGrades(const RoomData& r, const Area* area, std::vector<GradeData>& out) const;
@@ -2310,10 +2326,6 @@ private:
   const std::vector<RoomPak>& m_others;
   const RoomIO& m_io;
   std::vector<Area> m_areas;
-  // Per LTPB block (layer, x, y, z), the world's room whose copy has the most lit points.
-  using GridKey = std::array<int32_t, 4>;
-  mutable std::map<GridKey, const RoomPak*> m_gridOwners;
-  mutable bool m_gridOwnersReady = false;
 };
 
 double Spread(const std::vector<Vec3>& a, const std::vector<Vec3>& b) {
@@ -2515,9 +2527,10 @@ void Writer::Tonemap(const RoomData& r, float out[5]) const {
 // sigma it eases by and where in the range the static exposure sits, or 0, 0, 0, 32, 0.5
 // for a room without auto exposure. A room can have several hints: the plain
 // one for the whole room is wanted, not those with a mode (they are for a state of the
-// room, such as a cutscene) or a volume of their own. A value the hint leaves out is
+// room, such as a cutscene) or a volume of their own. Hints with mode 1 or 2 (active while
+// the camera is inside a fluid / once it has left one) go to `fluid` with their mode. A value the hint leaves out is
 // SLdrAutoExposureHint's default.
-void Writer::Exposure(const RoomData& r, float out[5]) const {
+void Writer::Exposure(const RoomData& r, float out[5], std::vector<PortRoomEnv::FluidHint>* fluid) const {
   out[0] = out[1] = out[2] = 0.f;
   out[3] = 32.f;
   out[4] = 0.5f;
@@ -2539,7 +2552,22 @@ void Writer::Exposure(const RoomData& r, float out[5]) const {
     const bool whole = !r.room.Xform(*c, pos, rot, scale) ||
                        (std::fabs(scale[0] - 1.0) < 1e-3 && std::fabs(scale[1] - 1.0) < 1e-3 &&
                         std::fabs(scale[2] - 1.0) < 1e-3);
-    const int rank = f.find(kPropHintMode) != f.end() ? 1 : whole ? 3 : 2;
+    const auto modeIt = f.find(kPropHintMode);
+    const int mode = modeIt != f.end() && modeIt->second.size >= 4 ? int(ReadLE32(r.room.Bytes(modeIt->second))) : 0;
+    if (mode == 1 || mode == 2) {
+      if (fluid != nullptr) {
+        PortRoomEnv::FluidHint h;
+        h.mode = uint8_t(mode);
+        h.exposure[0] = range[0];
+        h.exposure[1] = range[1];
+        h.bias = std::isfinite(bias) ? bias : 0.f;
+        h.sigma = sigma >= 0.f && sigma < 10000.f ? sigma : 32.f;
+        h.staticLerp = lerp >= 0.f && lerp <= 1.f ? lerp : 0.5f;
+        fluid->push_back(h);
+      }
+      continue;
+    }
+    const int rank = modeIt != f.end() ? 1 : whole ? 3 : 2;
     if (rank > best) {
       best = rank;
       out[0] = range[0];
@@ -3399,20 +3427,22 @@ bool ReadGridTextures(const std::vector<uint8_t>& d, const std::function<bool(co
   return true;
 }
 
+// The room's own baked-lighting tiles (its LTPB), keyed by world tile and written as the
+// version 21 tile set of port_room_env.h. Remastered keeps one world-wide virtual texture
+// of such tiles: each loaded area registers its own copy of every tile it bakes, and which
+// copy is mapped depends on the load order (see port_room_env_tiles.h), so the runtime
+// decides that, and nothing here borrows from a neighbour.
 bool Writer::Grid(const RoomPak& rp, const Vec3& shift, const std::vector<Vec3>& check, std::vector<uint8_t>& out,
                   std::string& note) const {
   out.clear();
-  const auto ltpb = [](const RoomPak& r, std::vector<uint8_t>& d) {
-    const PakAsset* asset = r.pak != nullptr ? FirstOfType(*r.pak, Tag("LTPB")) : nullptr;
-    std::string error;
-    return asset != nullptr && r.pak->ReadAsset(*asset, d, error);
-  };
   std::vector<uint8_t> d;
-  if (FirstOfType(*rp.pak, Tag("LTPB")) == nullptr) {
+  const PakAsset* asset = rp.pak != nullptr ? FirstOfType(*rp.pak, Tag("LTPB")) : nullptr;
+  if (asset == nullptr) {
     note = "no grid";
     return false;
   }
-  if (!ltpb(rp, d)) {
+  std::string error;
+  if (!rp.pak->ReadAsset(*asset, d, error)) {
     note = "grid not decoded";
     return false;
   }
@@ -3427,10 +3457,10 @@ bool Writer::Grid(const RoomPak& rp, const Vec3& shift, const std::vector<Vec3>&
     note = "no grid";
     return false;
   }
-  int lo[3], hi[3];
+  int32_t box[6];
   for (size_t i = 0; i < 3; ++i) {
-    lo[i] = int16_t(ReadLE16(&d[phdr + 44 + 2 * i]));
-    hi[i] = int16_t(ReadLE16(&d[phdr + 50 + 2 * i]));
+    box[i] = int16_t(ReadLE16(&d[phdr + 44 + 2 * i]));
+    box[3 + i] = int16_t(ReadLE16(&d[phdr + 50 + 2 * i]));
   }
 
   std::vector<GridTexture> textures;
@@ -3442,299 +3472,168 @@ bool Writer::Grid(const RoomPak& rp, const Vec3& shift, const std::vector<Vec3>&
     return false;
   }
 
-  // Blocks of the room's PHDR box that its own LTPB lacks read 0 in the room alone, but
-  // Remastered's probe texture is world-wide: a loaded neighbour area keeps its tiles mapped
-  // (EnsureGroupIdTilesActive), so far scenery outside the room's bake is lit by theirs. Each
-  // missing block comes from the world's room whose copy has the most lit points.
-  // MP_REMASTERED_GRID_NEIGHBOURS=0 turns this off.
-  int borrowed = 0;
-  if (port::EnvFlag("MP_REMASTERED_GRID_NEIGHBOURS", true)) {
-    const auto key = [](const GridTexture& t) { return GridKey{int32_t(t.index), t.bx, t.by, t.bz}; };
-    if (!m_gridOwnersReady) {
-      m_gridOwnersReady = true;
-      std::map<GridKey, size_t> lit;
-      for (const RoomPak& other : m_rooms) {
-        std::vector<uint8_t> od;
-        std::vector<GridTexture> found;
-        std::string ignored;
-        if (other.pak == nullptr || !ltpb(other, od) ||
-            !ReadGridTextures(od, [](const GridTexture& t) { return t.index == 0; }, found, ignored)) {
-          continue;
-        }
-        for (const GridTexture& t : found) {
-          size_t n = 0;
-          for (size_t i = 0; i + 3 < t.rgba.size(); i += 4) {
-            n += (t.rgba[i] + t.rgba[i + 1]) + t.rgba[i + 2] > 0 ? 1 : 0;
-          }
-          size_t& best = lit[key(t)];
-          const RoomPak*& owner = m_gridOwners[key(t)];
-          // Ties go to the lower name, so the output doesn't hang on the room order.
-          if (owner == nullptr || n > best || (n == best && other.name < owner->name)) {
-            best = n;
-            m_gridOwners[key(t)] = &other;
-          }
-        }
-      }
-    }
-    std::set<GridKey> own;
-    for (const GridTexture& t : textures) {
-      own.insert(key(t));
-    }
-    const auto floorDiv = [](int64_t a, int64_t b) { return int32_t(a >= 0 ? a / b : -((-a + b - 1) / b)); };
-    // Per lending room, the layer-0 blocks it fills.
-    std::map<const RoomPak*, std::vector<GridKey>> lenders;
-    for (int32_t z = floorDiv(lo[2], 16); z <= floorDiv(hi[2], 16); ++z) {
-      for (int32_t y = floorDiv(lo[1], 64); y <= floorDiv(hi[1], 64); ++y) {
-        for (int32_t x = floorDiv(lo[0], 64); x <= floorDiv(hi[0], 64); ++x) {
-          const GridKey hole{0, x, y, z};
-          const auto owner = m_gridOwners.find(hole);
-          if (own.count(hole) == 0 && owner != m_gridOwners.end() && owner->second->name != rp.name) {
-            lenders[owner->second].push_back(hole);
-          }
-        }
-      }
-    }
-    // Each layer of the lender's block, where the room lacks that layer's block (layers 2..5
-    // are 128 wide, so their block holds two of layer 0's).
-    std::set<GridKey> taken;
-    for (const auto& [lender, holes] : lenders) {
-      std::vector<uint8_t> od;
-      if (!ltpb(*lender, od)) {
-        continue;
-      }
-      std::vector<GridTexture> found;
-      std::string ignored;
-      ReadGridTextures(od, [&](const GridTexture& t) {
-        const GridKey k = key(t);
-        if (own.count(k) != 0 || taken.count(k) != 0) {
-          return false;
-        }
-        for (const GridKey& hole : holes) {
-          if (t.by == hole[2] && t.bz == hole[3] && (t.w == 64 ? t.bx == hole[1] : t.bx == floorDiv(hole[1], 2))) {
-            taken.insert(k);
-            return true;
-          }
-        }
-        return false;
-      }, found, ignored);
-      for (GridTexture& t : found) {
-        textures.push_back(std::move(t));
-        ++borrowed;
-      }
-    }
-  }
-
-  // Where each texture starts, in points. A block is 64 x 64 x 16 points, and a texture
-  // 128 wide is two blocks along x, counted in its own width.
-  const auto start = [](const GridTexture& t, int axis) -> int64_t {
-    return axis == 0 ? int64_t(t.bx) * int64_t(t.w) : axis == 1 ? int64_t(t.by) * 64 : int64_t(t.bz) * 16;
-  };
-  int64_t base[3] = {INT64_MAX, INT64_MAX, INT64_MAX};
-  for (const GridTexture& t : textures) {
-    for (int i = 0; i < 3; ++i) {
-      base[i] = std::min(base[i], start(t, i));
-    }
-  }
-  // The blocks are whole tiles of the world's bake, lit well past the room's PHDR box
-  // (Main Plaza has 23k lit points outside it), and Remastered samples all of them, with
-  // unmapped tiles reading zero. So the kept part is the lit points' bounds and one empty
-  // point around them: the texture's clamped reads past it are zero too.
-  int64_t c0[3] = {INT64_MAX, INT64_MAX, INT64_MAX}, c1[3] = {INT64_MIN, INT64_MIN, INT64_MIN};
-  for (const GridTexture& t : textures) {
-    if (t.index != 0) {
-      continue;
-    }
-    const int64_t x0 = start(t, 0) - base[0], y0 = start(t, 1) - base[1], z0 = start(t, 2) - base[2];
-    for (int64_t z = 0; z < 16; ++z) {
-      for (int64_t y = 0; y < 64; ++y) {
-        for (int64_t x = 0; x < int64_t(t.w); ++x) {
-          const float* p = &t.rgba[((size_t(z) * 64 + size_t(y)) * t.w + size_t(x)) * 4];
-          if (!((p[0] + p[1]) + p[2] > 0)) {
-            continue;
-          }
-          const int64_t q[3] = {x0 + x, y0 + y, z0 + z};
-          for (int i = 0; i < 3; ++i) {
-            c0[i] = std::min(c0[i], q[i] - 1);
-            c1[i] = std::max(c1[i], q[i] + 2);
-          }
-        }
-      }
-    }
-  }
-  if (c1[0] <= c0[0] || c1[1] <= c0[1] || c1[2] <= c0[2]) {
-    note = "grid empty";
-    return false;
-  }
-  int64_t size[3] = {c1[0] - c0[0], c1[1] - c0[1], c1[2] - c0[2]};
-  const int64_t origin[3] = {base[0] + c0[0], base[1] + c0[1], base[2] + c0[2]};
-  size_t points = size_t(size[0]) * size_t(size[1]) * size_t(size[2]);
-  if (size[0] > 1024 || size[1] > 1024 || size[2] > 1024 || points * 18 > kMaxVolumeFloats) {
-    note = "grid too large";
-    return false;
-  }
-
-  // Only the cropped part of the room's volume is kept: [index][z][y][x][rgb].
-  std::vector<float> g(points * 18, 0.f);
-  for (const GridTexture& t : textures) {
-    const int64_t x0 = start(t, 0) - base[0], y0 = start(t, 1) - base[1], z0 = start(t, 2) - base[2];
-    for (int64_t z = std::max(z0, c0[2]); z < std::min(z0 + 16, c1[2]); ++z) {
-      for (int64_t y = std::max(y0, c0[1]); y < std::min(y0 + 64, c1[1]); ++y) {
-        for (int64_t x = std::max(x0, c0[0]); x < std::min(x0 + int64_t(t.w), c1[0]); ++x) {
-          const float* src = &t.rgba[((size_t(z - z0) * 64 + size_t(y - y0)) * t.w + size_t(x - x0)) * 4];
-          float* dst = &g[((size_t(t.index) * size_t(size[2]) + size_t(z - c0[2])) * size_t(size[1]) +
-                           size_t(y - c0[1])) * size_t(size[0]) * 3 + size_t(x - c0[0]) * 3];
-          dst[0] = src[0];
-          dst[1] = src[1];
-          dst[2] = src[2];
-        }
-      }
-    }
-  }
-  // Point k sits at 2k metres in Remastered's axes, not in the middle of a 2 m cell:
-  // CBakedLightingProbeTexture::Initialize (0x1c8cbc) rounds the box to points
-  // (floor(x * 0.5 + 0.5)) and maps to texels by Scale(1 / size) * Translate(0.5 - lo) *
-  // Scale(0.5), so texel k's middle is point lo + k.
-  double m[3][4];
-  const Vec3 shifted = MulR2G(shift);  // R2G is its own transpose
-  for (int i = 0; i < 3; ++i) {
-    for (int j = 0; j < 3; ++j) {
-      m[i][j] = kR2G[j][i] / 2;
-    }
-    m[i][3] = -shifted[size_t(i)] / 2 - double(origin[i]);
-  }
-  // Android only (see kMaxGridPoints): the largest rooms have millions of points and
-  // ambient light varies slowly, so those are kept at half the resolution, each point
-  // the average of its lit ones.
-  while (points > kMaxGridPoints) {
-    const int64_t half[3] = {(size[0] + 1) / 2, (size[1] + 1) / 2, (size[2] + 1) / 2};
-    const size_t fewer = size_t(half[0]) * size_t(half[1]) * size_t(half[2]);
-    std::vector<float> coarse(fewer * 18, 0.f);
-    std::vector<float> sum(18);
-    for (int64_t z = 0; z < half[2]; ++z) {
-      for (int64_t y = 0; y < half[1]; ++y) {
-        for (int64_t x = 0; x < half[0]; ++x) {
-          std::fill(sum.begin(), sum.end(), 0.f);
-          int count = 0;
-          for (int corner = 0; corner < 8; ++corner) {
-            const int64_t fx = 2 * x + (corner & 1), fy = 2 * y + ((corner >> 1) & 1), fz = 2 * z + (corner >> 2);
-            if (fx >= size[0] || fy >= size[1] || fz >= size[2]) {
-              continue;
-            }
-            const size_t p = (size_t(fz) * size_t(size[1]) + size_t(fy)) * size_t(size[0]) + size_t(fx);
-            const float* mean = &g[p * 3];
-            if (!((mean[0] + mean[1]) + mean[2] > 0)) {
-              continue;
-            }
-            bool finite = true;
-            for (size_t k = 0; k < 18; ++k) {
-              finite = finite && std::isfinite(g[(k / 3) * points * 3 + p * 3 + k % 3]);
-            }
-            if (!finite) {
-              continue;
-            }
-            for (size_t k = 0; k < 18; ++k) {
-              sum[k] += g[(k / 3) * points * 3 + p * 3 + k % 3];
-            }
-            ++count;
-          }
-          if (count == 0) {
-            continue;
-          }
-          const size_t q = (size_t(z) * size_t(half[1]) + size_t(y)) * size_t(half[0]) + size_t(x);
-          for (size_t k = 0; k < 18; ++k) {
-            coarse[(k / 3) * fewer * 3 + q * 3 + k % 3] = sum[k] / float(count);
-          }
-        }
-      }
-    }
-    g = std::move(coarse);
-    points = fewer;
-    for (int i = 0; i < 3; ++i) {
-      size[i] = half[i];
-      for (int j = 0; j < 3; ++j) {
-        m[i][j] /= 2;
-      }
-      // Point k of the coarse grid sits between points 2k and 2k + 1 of the fine one.
-      m[i][3] = (m[i][3] - 0.5) / 2;
-    }
-  }
-
-  const size_t plane = points * 3;
-  auto at = [&](size_t index, size_t point) { return &g[index * plane + point * 3]; };
   auto clip = [](float v) { return std::isnan(v) ? v : std::min(std::max(v, 0.f), 60000.f); };
   auto u8 = [](float v) {
     const float r = std::nearbyint(v * 255.f);
     return std::isnan(r) ? uint8_t(0) : uint8_t(std::min(std::max(r, 0.f), 255.f));
   };
-
-  std::vector<uint8_t> grid;
-  grid.reserve(60 + points * 24);
-  std::vector<bool> lit(points);
-  size_t litCount = 0;
-  std::vector<uint8_t> pts(points * 24, 0);
   const float floor = 1e-4f;
-  for (size_t i = 0; i < points; ++i) {
-    float mean[3], lobe[3];
-    for (int k = 0; k < 3; ++k) {
-      mean[k] = clip(at(0, i)[k]);
-      lobe[k] = clip(at(1, i)[k]);
+
+  struct Built {
+    PortRoomEnvTiles::Tile tile;
+    std::vector<uint8_t> bytes;
+  };
+  std::vector<Built> built;
+  size_t litCount = 0, litTotal = 0;
+  for (const GridTexture& t : textures) {
+    const int layer = int(t.index);
+    const int w = int(t.w), bytes = PortRoomEnvTiles::TileBytes(layer);
+    if (w != PortRoomEnvTiles::TileWidth(layer)) {
+      note = "grid texture " + std::to_string(t.w) + " wide at layer " + std::to_string(layer);
+      return false;
     }
-    if (!((mean[0] + mean[1]) + mean[2] > 0)) {
-      continue;
-    }
-    lit[i] = true;
-    ++litCount;
-    uint8_t* p = &pts[i * 24];
-    for (int k = 0; k < 3; ++k) {
-      // So a lit point never packs as an empty one.
-      const float m = std::isnan(mean[k]) ? mean[k] : std::max(mean[k], floor);
-      const uint16_t hm = FloatToHalf(m), hl = FloatToHalf(lobe[k]);
-      p[2 * k] = uint8_t(hm);
-      p[2 * k + 1] = uint8_t(hm >> 8);
-      p[6 + 2 * k] = uint8_t(hl);
-      p[6 + 2 * k + 1] = uint8_t(hl >> 8);
-      p[12 + k] = u8(at(2, i)[k]);
-      for (int ch = 0; ch < 3; ++ch) {
-        p[15 + ch * 3 + k] = u8(at(size_t(3 + ch), i)[k]);
+    std::vector<uint8_t> full(size_t(w) * 64 * 16 * size_t(bytes), 0);
+    int32_t lo[3] = {INT32_MAX, INT32_MAX, INT32_MAX}, hi[3] = {INT32_MIN, INT32_MIN, INT32_MIN};
+    for (int z = 0; z < 16; ++z) {
+      for (int y = 0; y < 64; ++y) {
+        for (int x = 0; x < w; ++x) {
+          const size_t n = (size_t(z) * 64 + size_t(y)) * size_t(w) + size_t(x);
+          const float* src = &t.rgba[n * 4];
+          uint8_t* p = &full[n * size_t(bytes)];
+          if (layer == 0) {
+            float mean[3] = {clip(src[0]), clip(src[1]), clip(src[2])};
+            const bool lit = (mean[0] + mean[1]) + mean[2] > 0;
+            ++litTotal;
+            if (!lit) {
+              continue;
+            }
+            ++litCount;
+            for (int k = 0; k < 3; ++k) {
+              // So a lit point never packs as an empty one.
+              const float m = std::isnan(mean[k]) ? mean[k] : std::max(mean[k], floor);
+              const uint16_t h = FloatToHalf(m);
+              p[2 * k] = uint8_t(h);
+              p[2 * k + 1] = uint8_t(h >> 8);
+            }
+          } else if (layer == 1) {
+            for (int k = 0; k < 3; ++k) {
+              const uint16_t h = FloatToHalf(clip(src[k]));
+              p[2 * k] = uint8_t(h);
+              p[2 * k + 1] = uint8_t(h >> 8);
+            }
+          } else {
+            for (int k = 0; k < 3; ++k) {
+              p[k] = u8(src[k]);
+            }
+          }
+          bool any = false;
+          for (int k = 0; k < bytes; ++k) {
+            any = any || p[k] != 0;
+          }
+          if (any) {
+            const int32_t q[3] = {x, y, z};
+            for (int i = 0; i < 3; ++i) {
+              lo[i] = std::min(lo[i], q[i]);
+              hi[i] = std::max(hi[i], q[i] + 1);
+            }
+          }
+        }
       }
     }
+    Built b;
+    b.tile.key = PortRoomEnvTiles::TileKey{layer, t.bx, t.by, t.bz};
+    if (hi[0] > lo[0]) {
+      for (int i = 0; i < 3; ++i) {
+        b.tile.lo[i] = lo[i];
+        b.tile.size[i] = hi[i] - lo[i];
+      }
+      for (int z = lo[2]; z < hi[2]; ++z) {
+        for (int y = lo[1]; y < hi[1]; ++y) {
+          const uint8_t* row = &full[((size_t(z) * 64 + size_t(y)) * size_t(w) + size_t(lo[0])) * size_t(bytes)];
+          b.bytes.insert(b.bytes.end(), row, row + size_t(hi[0] - lo[0]) * size_t(bytes));
+        }
+      }
+    }
+    built.push_back(std::move(b));
   }
   if (litCount == 0) {
     note = "grid empty";
     return false;
   }
+  std::stable_sort(built.begin(), built.end(), [](const Built& a, const Built& b) { return a.tile.key < b.tile.key; });
+  built.erase(std::unique(built.begin(), built.end(),
+                          [](const Built& a, const Built& b) { return a.tile.key == b.tile.key; }),
+              built.end());
 
+  // Point k sits at 2k metres in Remastered's axes, not in the middle of a 2 m cell:
+  // CBakedLightingProbeTexture::Initialize (0x1c8cbc) rounds the box to points
+  // (floor(x * 0.5 + 0.5)) and maps to texels by Scale(1 / size) * Translate(0.5 - lo) *
+  // Scale(0.5), so texel k's middle is point lo + k. Tiles are keyed by world point, so
+  // there is no crop origin here.
+  float m[12];
+  const Vec3 shifted = MulR2G(shift);  // R2G is its own transpose
   for (int i = 0; i < 3; ++i) {
-    for (int j = 0; j < 4; ++j) {
-      AppendLEFloat(out, m[i][j]);
+    for (int j = 0; j < 3; ++j) {
+      m[i * 4 + j] = float(kR2G[j][i] / 2);
     }
+    m[i * 4 + 3] = float(-shifted[size_t(i)] / 2);
   }
-  for (int i = 0; i < 3; ++i) {
-    AppendLE32(out, uint32_t(size[i]));
+  for (float v : m) {
+    AppendLEFloat(out, v);
   }
-  out.insert(out.end(), pts.begin(), pts.end());
+  for (int32_t v : box) {
+    AppendLE32(out, uint32_t(v));
+  }
+  uint32_t dataBytes = 0;
+  for (const Built& b : built) {
+    dataBytes += uint32_t(b.bytes.size());
+  }
+  AppendLE32(out, uint32_t(built.size()));
+  AppendLE32(out, dataBytes);
+  uint32_t offset = 0;
+  for (const Built& b : built) {
+    AppendLE32(out, uint32_t(b.tile.key.layer));
+    AppendLE32(out, uint32_t(b.tile.key.x));
+    AppendLE32(out, uint32_t(b.tile.key.y));
+    AppendLE32(out, uint32_t(b.tile.key.z));
+    for (int i = 0; i < 3; ++i) {
+      AppendLE32(out, uint32_t(b.tile.lo[i]));
+    }
+    for (int i = 0; i < 3; ++i) {
+      AppendLE32(out, uint32_t(b.tile.size[i]));
+    }
+    AppendLE32(out, offset);
+    offset += uint32_t(b.bytes.size());
+  }
+  for (const Built& b : built) {
+    out.insert(out.end(), b.bytes.begin(), b.bytes.end());
+  }
 
   char buf[96];
-  std::snprintf(buf, sizeof buf, "grid %lldx%lldx%lld %.0f%% lit", (long long)size[0], (long long)size[1],
-                (long long)size[2], 100.0 * double(litCount) / double(points));
+  std::snprintf(buf, sizeof buf, "grid %zu tiles, %zu lit points", built.size(), litCount);
   note = buf;
-  if (borrowed > 0) {
-    note += ", " + std::to_string(borrowed) + " borrowed blocks";
-  }
   if (!check.empty()) {
+    PortRoomEnvTiles::TileSet set;
+    for (const Built& b : built) {
+      PortRoomEnvTiles::Tile t = b.tile;
+      t.offset = uint32_t(set.data.size());
+      set.tiles.push_back(t);
+      set.data.insert(set.data.end(), b.bytes.begin(), b.bytes.end());
+    }
     int ok = 0;
     for (const Vec3& c : check) {
       int64_t q[3];
       for (int i = 0; i < 3; ++i) {
-        q[i] = int64_t(std::nearbyint((c[0] * m[i][0] + c[1] * m[i][1] + c[2] * m[i][2]) + m[i][3]));
+        q[i] = int64_t(std::nearbyint(double(c[0]) * m[i * 4] + double(c[1]) * m[i * 4 + 1] +
+                                      double(c[2]) * m[i * 4 + 2] + double(m[i * 4 + 3])));
       }
-      const bool inside = q[0] >= 0 && q[1] >= 0 && q[2] >= 0 && q[0] < size[0] && q[1] < size[1] && q[2] < size[2];
-      if (inside && lit[(size_t(q[2]) * size_t(size[1]) + size_t(q[1])) * size_t(size[0]) + size_t(q[0])]) {
+      if (set.Lit(q[0], q[1], q[2])) {
         ++ok;
       }
     }
     note += ", " + std::to_string(ok) + "/" + std::to_string(check.size()) + " doors on lit points";
   }
+  (void)litTotal;
   return true;
 }
 
@@ -3829,6 +3728,10 @@ void Writer::WriteGeometry(const RoomData& r, uint32_t mrea, const Area& area) {
   std::vector<PortRoomGeo::Instance> instances;
   size_t dropped = 0;
   SceneryScripts scripts = MatchScripts(r.room, area);  // `pieces` adds the objects hidden
+  for (const auto& [key, stat] : scripts.missStats) {
+    Log("  " + r.name + ": untraced " + std::to_string(stat.first) + " connection(s) on " +
+        std::to_string(stat.second.size()) + " entities: " + key);
+  }
   // Whether an entity that starts inactive can be shown: by a retail object (links) or by
   // Remastered's own script. One that cannot is never seen: the ships of the landing
   // cutscene sit in the sky and on the pad, where retail's own ship already is.
@@ -3838,6 +3741,17 @@ void Writer::WriteGeometry(const RoomData& r, uint32_t mrea, const Area& area) {
            (links != scripts.links.end() &&
             std::any_of(links->second.begin(), links->second.end(),
                         [](const PortRoomGeo::Link& l) { return l.action != PortRoomGeo::kHide; }));
+  };
+  // Whether a link shows the entity and another hides it again, the hide carrying its Timer's
+  // delay: the hangar's boundary shield flashes for 0.25 s when a hit is blocked.
+  auto showsAndHides = [&](int entity) {
+    const auto links = scripts.links.find(entity);
+    if (links == scripts.links.end()) {
+      return false;
+    }
+    const auto& v = links->second;
+    return std::any_of(v.begin(), v.end(), [](const PortRoomGeo::Link& l) { return l.action == PortRoomGeo::kShow; }) &&
+           std::any_of(v.begin(), v.end(), [](const PortRoomGeo::Link& l) { return l.action == PortRoomGeo::kHide; });
   };
   size_t gated = 0, linked = 0, grouped = 0, inactive = 0, unresolved = 0;
   // What the entity's scripts make of an instance: its layer, whether it starts shown, and
@@ -4029,7 +3943,8 @@ void Writer::WriteGeometry(const RoomData& r, uint32_t mrea, const Area& area) {
   // the waterfalls of Ice Shorelines and the Hive Totem pour for 17 and 6.25 s and fade with
   // their Waterfalls.GRDU driver, and pieces of the Frigate's hangar flash for 0.25 s. Their
   // links keep the timers' delays (Link::delay); those with a float driver that moves a
-  // parameter of their material (driverOf) are kept with the driver, the others are left out. An
+  // parameter of their material (driverOf) are kept with the driver, those with both a show and
+  // a hide link (the hangar's boundary shield) are kept with the links, the others are left out. An
   // animated actor is drawn: the Mines turbine's explosion, shown 5.5 s after its pickup is
   // taken and hidden 2.5 s later, partway through its clip.
   std::set<int> timedOff;
@@ -4098,10 +4013,18 @@ void Writer::WriteGeometry(const RoomData& r, uint32_t mrea, const Area& area) {
         clips.push_back({anim, loop != f.end() && loop->second.size == 1 && r.room.Bytes(loop->second)[0] != 0});
       }
     }
-    // Per clip, per frame, the joints' skin matrices in GC axes (R' = A R A^T, t' = A t for the
-    // axis change A), as rotation quaternions and translations. A matrix that is not a
-    // rotation (a joint that scales or shears) cannot be a rigid piece's pose.
-    std::vector<std::map<int, std::vector<float>>> keys(clips.size());
+    // Per clip, per frame, the joints' skin matrices in GC axes (M' = A M A^T, t' = A t for the
+    // axis change A). A joint whose matrices are all rotations bakes as rotation quaternions
+    // and translations. One that scales (Remastered keys joint scale, inherited down the
+    // chain as abs_bone_rel does, 0xba19a0) bakes M = R U per frame: R the rotation of the
+    // polar decomposition as a quaternion, U = R^T M the stretch (kept in `stretch`, nine per
+    // frame). Only a reflection or a collapsed matrix cannot be a piece's pose.
+    struct Frame {
+      double m[3][3];
+      double t[3];
+    };
+    std::vector<std::map<int, std::vector<Frame>>> frames(clips.size());
+    std::vector<std::map<int, std::vector<float>>> keys(clips.size()), stretch(clips.size());
     std::vector<std::array<float, 12>> skin;
     for (size_t i = 0; i < clips.size(); ++i) {
       for (uint32_t frame = 0; frame < clips[i].anim->frames; ++frame) {
@@ -4111,13 +4034,21 @@ void Writer::WriteGeometry(const RoomData& r, uint32_t mrea, const Area& area) {
         }
         for (const int j : joints) {
           const std::array<float, 12>& s = skin[size_t(j)];
-          double m[3][3], t[3];
+          Frame fr;
           for (int row = 0; row < 3; ++row) {
             for (int col = 0; col < 3; ++col) {
-              m[row][col] = kSign[row] * kSign[col] * double(s[4 * kAxis[row] + kAxis[col]]);
+              fr.m[row][col] = kSign[row] * kSign[col] * double(s[4 * kAxis[row] + kAxis[col]]);
             }
-            t[row] = kSign[row] * double(s[4 * kAxis[row] + 3]);
+            fr.t[row] = kSign[row] * double(s[4 * kAxis[row] + 3]);
           }
+          frames[i][j].push_back(fr);
+        }
+      }
+      for (const int j : joints) {
+        const std::vector<Frame>& list = frames[i][j];
+        bool rigid = true;
+        for (const Frame& fr : list) {
+          const double(&m)[3][3] = fr.m;
           double worst = 0;
           for (int a = 0; a < 3; ++a) {
             for (int b = 0; b < 3; ++b) {
@@ -4128,9 +4059,57 @@ void Writer::WriteGeometry(const RoomData& r, uint32_t mrea, const Area& area) {
           const double det = m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) -
                              m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0]) +
                              m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
-          if (!(worst < 0.02) || !(det > 0)) {
-            Log("  " + r.name + ": animation \"" + clips[i].anim->name + "\" scales joint " + std::to_string(j));
+          if (!(det > 0)) {
+            Log("  " + r.name + ": animation \"" + clips[i].anim->name + "\" reflects joint " + std::to_string(j));
             return false;
+          }
+          rigid = rigid && worst < 0.02;
+        }
+        std::vector<float>& out = keys[i][j];
+        std::vector<float>& st = stretch[i][j];
+        for (const Frame& fr : list) {
+          double m[3][3];
+          std::memcpy(m, fr.m, sizeof m);
+          double rot[3][3];
+          std::memcpy(rot, m, sizeof rot);
+          if (!rigid) {
+            // Polar decomposition: R <- (R + R^-T) / 2 until it settles.
+            bool settled = false;
+            for (int it = 0; it < 64 && !settled; ++it) {
+              const double det = rot[0][0] * (rot[1][1] * rot[2][2] - rot[1][2] * rot[2][1]) -
+                                 rot[0][1] * (rot[1][0] * rot[2][2] - rot[1][2] * rot[2][0]) +
+                                 rot[0][2] * (rot[1][0] * rot[2][1] - rot[1][1] * rot[2][0]);
+              if (!(det > 1e-12)) {
+                Log("  " + r.name + ": animation \"" + clips[i].anim->name + "\" collapses joint " + std::to_string(j));
+                return false;
+              }
+              double inv[3][3];  // the inverse transpose = the cofactor matrix / det
+              for (int a = 0; a < 3; ++a) {
+                for (int b = 0; b < 3; ++b) {
+                  const int a1 = (a + 1) % 3, a2 = (a + 2) % 3, b1 = (b + 1) % 3, b2 = (b + 2) % 3;
+                  inv[a][b] = (rot[a1][b1] * rot[a2][b2] - rot[a1][b2] * rot[a2][b1]) / det;
+                }
+              }
+              double change = 0;
+              for (int a = 0; a < 3; ++a) {
+                for (int b = 0; b < 3; ++b) {
+                  const double next = 0.5 * (rot[a][b] + inv[a][b]);
+                  change = std::max(change, std::fabs(next - rot[a][b]));
+                  rot[a][b] = next;
+                }
+              }
+              settled = change < 1e-13;
+            }
+            if (!settled) {
+              Log("  " + r.name + ": animation \"" + clips[i].anim->name + "\" has no rotation for joint " + std::to_string(j));
+              return false;
+            }
+            for (int a = 0; a < 3; ++a) {
+              for (int b = 0; b < 3; ++b) {
+                st.push_back(float(rot[0][a] * m[0][b] + rot[1][a] * m[1][b] + rot[2][a] * m[2][b]));
+              }
+            }
+            std::memcpy(m, rot, sizeof m);
           }
           // The quaternion of m, from its largest component.
           double q[4];
@@ -4157,15 +4136,15 @@ void Writer::WriteGeometry(const RoomData& r, uint32_t mrea, const Area& area) {
             q[3] = (m[d][b] - m[b][d]) / w;
           }
           const double len = std::sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
-          std::vector<float>& out = keys[i][j];
           for (int k = 0; k < 4; ++k) {
             out.push_back(float(q[k] / len));
           }
           for (int k = 0; k < 3; ++k) {
-            out.push_back(float(t[k]));
+            out.push_back(float(fr.t[k]));
           }
         }
       }
+      frames[i].clear();
     }
     // Each piece's bounds as its first clip starts, in world space, and the retail objects in
     // them it stands for (Script::hidden): debris, and Actors in the same Active state - the
@@ -4263,6 +4242,7 @@ void Writer::WriteGeometry(const RoomData& r, uint32_t mrea, const Area& area) {
         clip.fps = clips[i].anim->fps;
         clip.loop = clips[i].loop;
         clip.keys = std::move(keys[i][j]);
+        clip.stretch = std::move(stretch[i][j]);
       }
       script(inst, c.entity, active);
       ++made;
@@ -4369,7 +4349,7 @@ void Writer::WriteGeometry(const RoomData& r, uint32_t mrea, const Area& area) {
     const bool active = r.room.Active(*c);
     PortRoomGeo::Instance::Driver driver;
     const bool driven = hasModel && driverOf(*c, r.room.Bytes(prop->second), driver);
-    if (!active && (!canShow(c->entity) || (timedOff.count(c->entity) != 0 && !hasAnim && !driven))) {
+    if (!active && (!canShow(c->entity) || (timedOff.count(c->entity) != 0 && !hasAnim && !driven && !showsAndHides(c->entity)))) {
       ++inactive;
       continue;
     }
@@ -4979,7 +4959,7 @@ std::string Writer::WriteRoom(const RoomData& r, const std::map<std::string, Pla
   }
 
   std::vector<uint8_t> out = {'M', 'P', 'E', 'V'};
-  AppendLE32(out, 19);
+  AppendLE32(out, 21);
   float tone[5];
   std::copy(tonemap, tonemap + 5, tone);
   Tonemap(r, tone);
@@ -4995,7 +4975,8 @@ std::string Writer::WriteRoom(const RoomData& r, const std::map<std::string, Pla
   AppendLE32(out, grid.empty() ? 0 : 1);
   out.insert(out.end(), grid.begin(), grid.end());
   float exposure[5];
-  Exposure(r, exposure);
+  std::vector<PortRoomEnv::FluidHint> fluidHints;
+  Exposure(r, exposure, &fluidHints);
   AppendLEFloat(out, exposure[0]);
   AppendLEFloat(out, exposure[1]);
   AppendLEFloat(out, exposure[2]);
@@ -5244,6 +5225,16 @@ std::string Writer::WriteRoom(const RoomData& r, const std::map<std::string, Pla
       out.insert(out.end(), spline.begin(), spline.end());
       out.insert(out.end(), (4 - spline.size() % 4) % 4, 0);
     }
+  }
+  AppendLE32(out, uint32_t(fluidHints.size()));
+  for (const PortRoomEnv::FluidHint& h : fluidHints) {
+    out.push_back(h.mode);
+    out.insert(out.end(), 3, 0);
+    AppendLEFloat(out, h.exposure[0]);
+    AppendLEFloat(out, h.exposure[1]);
+    AppendLEFloat(out, h.bias);
+    AppendLEFloat(out, h.sigma);
+    AppendLEFloat(out, h.staticLerp);
   }
   if (!fogs.empty() || !regions.empty()) {
     Log("  " + r.name + ": " + std::to_string(fogs.size()) + " fog hint(s), " + std::to_string(regions.size()) +

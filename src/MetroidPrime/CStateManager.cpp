@@ -1,5 +1,6 @@
 #define CSTATEMANAGER_OUT_OF_LINE_GETPLAYER
 #include "MetroidPrime/CStateManager.hpp"
+#include "port_actor_shadow.h"
 #include "port_apclient.h"
 #include "port_collision_view.h"
 #include "port_debug.h"
@@ -2873,7 +2874,7 @@ static bool PortSetupShadow(const CTransform4f& view, const CGameArea* area, CSc
   float dir[3] = {0.f, 0.f, 0.f};
   float color[3] = {0.f, 0.f, 0.f};
   float distance = 0.f;
-  if (sOn && enabled) {
+  if (sOn && enabled && PortDebug::SunShadows()) {
     static const char* sDirEnv = getenv("MP_SHADOW_DIR");
     static const char* sColorEnv = getenv("MP_SHADOW_COLOR");
     float envDir[3];
@@ -3287,6 +3288,11 @@ void CStateManager::DrawWorld() const {
   }
 
   const CPlayerState::EPlayerVisor visor = x8b8_playerState->GetActiveVisor(*this);
+#ifdef TARGET_PC
+  // Remastered's per-visor mesh filter for everything this frame draws, thermal's extra passes
+  // included (CCubeModel, PortVisorMesh).
+  CCubeModel::PortSetActiveVisor(static_cast< int >(visor));
+#endif
   uint mask;
   bool thermal = visor == CPlayerState::kPV_Thermal;
   uint targetMask;
@@ -3320,6 +3326,8 @@ void CStateManager::DrawWorld() const {
                       x870_cameraManager->IsInCinematicCamera(), !thermal && visor != CPlayerState::kPV_XRay && !portCollisionOnly,
                       !thermal && visor != CPlayerState::kPV_XRay);
   GXPortSetShadowCaster(portShadow);
+  PortActorShadow::BeginFrame();
+  PortRoomGeo::ClearShadowReceivers();
 #endif
   for (int i = areas.size() - 1; i >= 0; --i) {
     const CGameArea& area = *areas[i];
@@ -3428,6 +3436,13 @@ void CStateManager::DrawWorld() const {
     }
   };
 #endif
+#ifdef TARGET_PC
+  // The actors an area registered get their shadow maps and decals just before that area's sorted draws:
+  // the decals land on the opaque world and under the transparent surfaces, as in Remastered, while the
+  // buckets are still drawn per area with that area's own fog and light fade.
+  const bool flushShadows = PortActorShadow::Active() && !thermal && visor != CPlayerState::kPV_XRay &&
+                            !portCollisionOnly;
+#endif
   for (int i = 0; i < areas.size(); ++i) {
     const CGameArea& area = *areas[i];
     const CPVSVisSet& set = visibility[i];
@@ -3515,6 +3530,11 @@ void CStateManager::DrawWorld() const {
       xf7c_projectedShadow->Render(*this);
     }
 #endif
+#ifdef TARGET_PC
+    if (flushShadows) {
+      PortActorShadow::RenderFrame(*this, backupViewMatrix);
+    }
+#endif
     gpRender->EnablePVS(&set, area.GetId().Value());
 #ifdef TARGET_PC
     // The actors still go through the buckets; only the area's own surfaces stay out.
@@ -3531,6 +3551,14 @@ void CStateManager::DrawWorld() const {
     fprintf(stderr, "shadow-actor-check: frame %u offscreen eligible=%u model draws=%u\n",
             static_cast< uint >(CGraphics::GetFrameCounter()), portShadowEligible,
             portShadowDrawn);
+  }
+  static const bool sVisorMeshLog = getenv("MP_VISORMESH_LOG") != nullptr;
+  if (sVisorMeshLog && !portZoomed && CGraphics::GetFrameCounter() % 60 == 0) {
+    unsigned visorSkipped = 0, shadowSkipped = 0;
+    CCubeModel::PortTakeVisorSkipCounts(visorSkipped, shadowSkipped);
+    fprintf(stderr, "visor-mesh: frame %u visor %d skipped surfaces: visor bit %u, shadow bit %u\n",
+            static_cast< uint >(CGraphics::GetFrameCounter()), static_cast< int >(visor), visorSkipped,
+            shadowSkipped);
   }
   if (portShadow) {
     GXPortSetShadowCaster(false);

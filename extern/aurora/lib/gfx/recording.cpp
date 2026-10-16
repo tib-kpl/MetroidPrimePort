@@ -738,6 +738,20 @@ RecordedFrame end_recording() {
   frame.stats.lastIndexSize = frame.indices.size();
   frame.stats.lastStorageSize = frame.storage.size();
   frame.stats.lastTextureUploadSize = frame.textureUpload.size();
+  {
+    // AURORA_FRAME_PEAKS=1 logs each new high-water mark of a frame's buffer use.
+    static const bool enabled = std::getenv("AURORA_FRAME_PEAKS") != nullptr;
+    static uint64_t peakVert, peakUniform, peakIndex, peakStorage;
+    if (enabled && (frame.verts.size() > peakVert || frame.uniforms.size() > peakUniform ||
+                    frame.indices.size() > peakIndex || frame.storage.size() > peakStorage)) {
+      peakVert = std::max<uint64_t>(peakVert, frame.verts.size());
+      peakUniform = std::max<uint64_t>(peakUniform, frame.uniforms.size());
+      peakIndex = std::max<uint64_t>(peakIndex, frame.indices.size());
+      peakStorage = std::max<uint64_t>(peakStorage, frame.storage.size());
+      Log.info("frame peaks: vertex {} uniform {} index {} storage {} (bytes)", peakVert, peakUniform, peakIndex,
+               peakStorage);
+    }
+  }
 
   for (auto& array : gx::g_gxState.arrays) {
     array.cachedRange = {};
@@ -1438,12 +1452,25 @@ void push_draw_command(rmlui::DrawData data) {
 }
 #endif
 
+// A GX draw's pipeline: blocking when the caller must not lose its draw (gx::blocking_pipelines).
+static PipelineRef gx_pipeline_ref(const gx::PipelineConfig& config, bool blocking) {
+  return find_pipeline(
+      ShaderType::GX, config,
+      [=] {
+        phase::Scope compiling(render_worker::is_worker_thread() ? phase::Render : phase::Main,
+                               "compiling a GX pipeline");
+        return create_pipeline(config);
+      },
+      blocking ? PipelinePriority::Blocking : PipelinePriority::Normal);
+}
+
 template <>
 PipelineRef pipeline_ref(const gx::PipelineConfig& config) {
-  return find_pipeline(ShaderType::GX, config, [=] {
-    phase::Scope compiling(render_worker::is_worker_thread() ? phase::Render : phase::Main, "compiling a GX pipeline");
-    return create_pipeline(config);
-  });
+  return gx_pipeline_ref(config, false);
+}
+
+PipelineRef pipeline_ref(const gx::PipelineConfig& config, bool blocking) {
+  return gx_pipeline_ref(config, blocking);
 }
 
 #ifdef AURORA_ENABLE_RMLUI
@@ -1537,7 +1564,12 @@ Range push_storage(const uint8_t* data, size_t length) {
   if (!check_recording("push_storage")) {
     return {};
   }
-  return push(current_frame_packet().storage, data, length, resources().limits.minStorageBufferOffsetAlignment);
+  const auto range =
+      push(current_frame_packet().storage, data, length, resources().limits.minStorageBufferOffsetAlignment);
+  if (overflowed(range)) {
+    request_storage_growth();
+  }
+  return range;
 }
 
 Range push_texture_data(const uint8_t* data, u32 bytesPerRow, u32 rowsPerImage) {

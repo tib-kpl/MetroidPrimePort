@@ -263,6 +263,14 @@ void SetMapPickups(EMapPickups mode);
 // grey checked). On by default; off gives the plain white dots.
 bool MapLogicColors();
 void SetMapLogicColors(bool enabled);
+// The dot's shape tells a major item from a minor one, and a collected pickup
+// stays as a grey cross (PortMapPickups::Kinds). On by default.
+bool MapPickupKinds();
+void SetMapPickupKinds(bool enabled);
+// In Seen, rooms a map station (or Reveal map) maps show all their pickups.
+// On by default.
+bool MapStationPickups();
+void SetMapStationPickups(bool enabled);
 // The apworld's staggered_suit_damage, which the server doesn't send: 0 the
 // game's rule, 1 progressive (the apworld's default, and the port's), 2
 // additive. Only an Archipelago seed uses it.
@@ -319,6 +327,14 @@ void SetAnisotropy(int level);
 // lights summed per pixel instead of per vertex. Lit pipelines rebuild on next use.
 bool PerPixelLighting();
 void SetPerPixelLighting(bool enabled);
+// Setting `sun_shadows` (default on): the 4-cascade sun shadow in outdoor rooms. Remastered
+// draws none; off gives PortSetupShadow distance 0, as in a room with no sun.
+bool SunShadows();
+void SetSunShadows(bool enabled);
+// Setting `projected_shadows` (default on): Remastered's projected actor shadows (CSimpleShadow decal
+// mode); only active with Remastered world geometry, else the retail blob quad is drawn.
+bool ProjectedShadows();
+void SetProjectedShadows(bool enabled);
 // Setting `opengles`: start on Dawn's OpenGL ES backend instead of Vulkan, for
 // drivers that draw wrong on Vulkan (Adreno 7xx, issue #7). Read at window
 // creation, so it takes a restart; aurora falls back to Vulkan if it fails.

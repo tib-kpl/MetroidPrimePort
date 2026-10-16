@@ -5,6 +5,7 @@
 #include "../../gfx/pipeline_cache.hpp"
 #include "../../gfx/probe.hpp"
 #include "../../gfx/shadow.hpp"
+#include "../../gfx/actor_shadow.hpp"
 #include "../../gfx/volfog.hpp"
 #include "../../gfx/thermal.hpp"
 #include "../../gfx/xray.hpp"
@@ -257,15 +258,22 @@ GXBool GXPortSceneHdr(GXBool on) {
   return true;
 }
 
+// The mode last written, for the game thread (the FIFO state is read on the render thread).
+static u8 sShadowCasterMode = 0;
+
 void GXPortSetShadowCaster(GXBool on) {
+  sShadowCasterMode = on ? 1 : 0;
   GX_WRITE_AURORA(GX_AURORA_PORT_SHADOW_CASTER);
   GX_WRITE_U8(on ? 1 : 0);
 }
 
 void GXPortSetShadowCasterOnly(GXBool on) {
+  sShadowCasterMode = on ? 2 : 1;
   GX_WRITE_AURORA(GX_AURORA_PORT_SHADOW_CASTER);
   GX_WRITE_U8(on ? 2 : 1);
 }
+
+u8 GXPortGetShadowCasterMode() { return sShadowCasterMode; }
 
 // The last shadow frame, for GXPortShadowBoxCasts and GXPortGetShadowInfo on the game thread.
 static struct {
@@ -332,6 +340,38 @@ GXBool GXPortRenderShadowMap() {
     return false;
   }
   GX_WRITE_AURORA(GX_AURORA_PORT_SHADOW_RENDER);
+  return true;
+}
+
+void GXPortActorShadowCasters(u32 layer, const f32 clip[16]) {
+  GX_WRITE_AURORA(GX_AURORA_PORT_ACTOR_SHADOW);
+  GX_WRITE_U8(1);
+  GX_WRITE_U8(static_cast<u8>(layer));
+  for (u32 i = 0; i < 64; ++i) {
+    GX_WRITE_F32(i < 16 ? clip[i] : 0.f);
+  }
+}
+
+void GXPortActorShadowDecal(u32 layer, const f32 params[64]) {
+  GX_WRITE_AURORA(GX_AURORA_PORT_ACTOR_SHADOW);
+  GX_WRITE_U8(2);
+  GX_WRITE_U8(static_cast<u8>(layer));
+  for (u32 i = 0; i < 64; ++i) {
+    GX_WRITE_F32(params[i]);
+  }
+}
+
+void GXPortActorShadowEnd() {
+  GX_WRITE_AURORA(GX_AURORA_PORT_ACTOR_SHADOW);
+  GX_WRITE_U8(0);
+}
+
+GXBool GXPortActorShadowRender() {
+  if (sDrawIdMode || !aurora::gfx::actor_shadow::ensure_task()) {
+    return false;
+  }
+  GX_WRITE_AURORA(GX_AURORA_PORT_ACTOR_SHADOW);
+  GX_WRITE_U8(3);
   return true;
 }
 
@@ -576,6 +616,15 @@ void GXCreatePBRVolume(u32 id, u32 sizeX, u32 sizeY, u32 sizeZ, const void* texe
   GX_WRITE_U32(sizeY);
   GX_WRITE_U32(sizeZ);
   GX_WRITE_U64(reinterpret_cast<u64>(copy));
+}
+
+extern "C++" void GXCreatePBRVolumeOwned(u32 id, u32 sizeX, u32 sizeY, u32 sizeZ, void* owned) {
+  GX_WRITE_AURORA(GX_AURORA_CREATE_PBR_VOLUME);
+  GX_WRITE_U32(id);
+  GX_WRITE_U32(sizeX);
+  GX_WRITE_U32(sizeY);
+  GX_WRITE_U32(sizeZ);
+  GX_WRITE_U64(reinterpret_cast<u64>(owned));
 }
 
 void GXDestroyPBRVolume(u32 id) {

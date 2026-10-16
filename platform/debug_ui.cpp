@@ -231,6 +231,10 @@ bool sHideVisorEffects = false;
 bool sRevealMap = false;
 int sMapPickups = PortDebug::kMapPickups_Off;
 bool sMapLogicColors = true;
+// Off by default: it says what kind of item a pickup holds, which spoils a
+// first playthrough.
+bool sMapPickupKinds = false;
+bool sMapStationPickups = true;
 // The Tracker tab's item, scan and room counts. Off so the tab doesn't spoil
 // what is left to find until asked.
 bool sTrackerProgress = false;
@@ -266,6 +270,8 @@ float sGunOffset[3] = {};
 int sMsaa = 1;
 int sAnisotropy = 16;
 bool sPerPixelLighting = false;
+bool sSunShadows = true;
+bool sProjectedShadows = true;
 // Setting `opengles`; sOpenGlesAtStart is what this run was started with.
 bool sOpenGles = false;
 bool sOpenGlesAtStart = false;
@@ -633,11 +639,19 @@ void ApplySetting(const std::string& key, const std::string& value) {
     sTrackerProgress = ParseBool(value);
   } else if (key == "map_logic_colors") {
     sMapLogicColors = ParseBool(value);
+  } else if (key == "map_pickup_kinds") {
+    sMapPickupKinds = ParseBool(value);
+  } else if (key == "map_station_pickups") {
+    sMapStationPickups = ParseBool(value);
   } else if (key == "ap_suit_damage") {
     const int mode = std::atoi(value.c_str());
     sApSuitDamage = mode >= 0 && mode <= 2 ? mode : 1;
   } else if (key == "cheats") {
     sCheats = ParseBool(value);
+  } else if (key == "emulator_folder") {
+    PortGci::SetEmulatorFolder(value);
+  } else if (key == "share_emulator_card") {
+    PortGci::SetShareEmulatorCard(ParseBool(value));
   } else if (key == "text_language") {
     sTextLanguage = value;
     sTextLanguageSaved = true;
@@ -679,6 +693,10 @@ void ApplySetting(const std::string& key, const std::string& value) {
     const int v = std::atoi(value.c_str());
     sStorageClamp = v < 0 ? -1 : (v > 0 ? 1 : 0);
     sStorageClampAtStart = sStorageClamp;
+  } else if (key == "sun_shadows") {
+    sSunShadows = ParseBool(value);
+  } else if (key == "projected_shadows") {
+    sProjectedShadows = ParseBool(value);
   } else if (key == "per_pixel_lighting") {
     sPerPixelLighting = ParseBool(value);
   } else if (key == "anisotropy") {
@@ -871,10 +889,14 @@ std::string SettingsText() {
   file << "map_pickups=" << sMapPickups << '\n';
   file << "tracker_progress=" << (sTrackerProgress ? 1 : 0) << '\n';
   file << "map_logic_colors=" << (sMapLogicColors ? 1 : 0) << '\n';
+  file << "map_pickup_kinds=" << (sMapPickupKinds ? 1 : 0) << '\n';
+  file << "map_station_pickups=" << (sMapStationPickups ? 1 : 0) << '\n';
   file << "ap_suit_damage=" << sApSuitDamage << '\n';
   file << "cheats=" << (sCheats ? 1 : 0) << '\n';
   file << "skippable_cutscenes=" << (sSkippableCutscenes ? 1 : 0) << '\n';
   file << "revision_100_compatibility=" << (sRevision100Compatibility ? 1 : 0) << '\n';
+  file << "emulator_folder=" << PortGci::EmulatorFolder() << '\n';
+  file << "share_emulator_card=" << (PortGci::ShareEmulatorCard() ? 1 : 0) << '\n';
   file << "text_language=" << sTextLanguage << '\n';
   file << "elevator_ride=" << sElevatorRide << '\n';
   file << "boot_logos=" << sBootLogos << '\n';
@@ -888,6 +910,8 @@ std::string SettingsText() {
   file << "gpu_driver=" << sGpuDriver << '\n';
   file << "anisotropy=" << sAnisotropy << '\n';
   file << "per_pixel_lighting=" << (sPerPixelLighting ? 1 : 0) << '\n';
+  file << "sun_shadows=" << (sSunShadows ? 1 : 0) << '\n';
+  file << "projected_shadows=" << (sProjectedShadows ? 1 : 0) << '\n';
   file << "unlock_hard_mode=" << (sUnlockHardMode ? 1 : 0) << '\n';
   file << "unlock_fusion_suit=" << (sUnlockFusionSuit ? 1 : 0) << '\n';
   file << "unlock_galleries=" << (sUnlockGalleries ? 1 : 0) << '\n';
@@ -1782,6 +1806,28 @@ void SetMapLogicColors(bool enabled) {
   MarkDirty();
 }
 
+bool MapPickupKinds() {
+  EnsureInitialized();
+  return sMapPickupKinds;
+}
+
+void SetMapPickupKinds(bool enabled) {
+  EnsureInitialized();
+  sMapPickupKinds = enabled;
+  MarkDirty();
+}
+
+bool MapStationPickups() {
+  EnsureInitialized();
+  return sMapStationPickups;
+}
+
+void SetMapStationPickups(bool enabled) {
+  EnsureInitialized();
+  sMapStationPickups = enabled;
+  MarkDirty();
+}
+
 int ApSuitDamage() {
   EnsureInitialized();
   return sApSuitDamage;
@@ -1961,6 +2007,30 @@ void SetPerPixelLighting(bool enabled) {
   if (sPerPixelLighting != enabled) {
     sPerPixelLighting = enabled;
     ApplyGraphicsQuality();
+    MarkDirty();
+  }
+}
+
+bool SunShadows() {
+  EnsureInitialized();
+  return sSunShadows;
+}
+void SetSunShadows(bool enabled) {
+  EnsureInitialized();
+  if (sSunShadows != enabled) {
+    sSunShadows = enabled;
+    MarkDirty();
+  }
+}
+
+bool ProjectedShadows() {
+  EnsureInitialized();
+  return sProjectedShadows;
+}
+void SetProjectedShadows(bool enabled) {
+  EnsureInitialized();
+  if (sProjectedShadows != enabled) {
+    sProjectedShadows = enabled;
     MarkDirty();
   }
 }
@@ -4243,7 +4313,7 @@ void RequestGpuSelfTest() { sGpuSelfTestRequested.store(true, std::memory_order_
 
 void RunGpuSelfTestIfRequested() {
   // Pipelines compile asynchronously and a draw is skipped until its pipeline is ready, so a request first
-  // runs a silent warm-up pass, waits for the compile queue to drain, then runs the logged pass.
+  // runs a silent warm-up pass that waits for the test's own pipelines (selftest.cpp), then the logged pass.
   enum class Stage { Idle, WarmingUp };
   static Stage stage = Stage::Idle;
   static unsigned waited = 0;
@@ -4257,9 +4327,9 @@ void RunGpuSelfTestIfRequested() {
     if (aurora_gpu_selftest_pending()) {
       return;
     }
-    // Let the pipelines the warm-up queued finish (a few frames at least, and not forever).
-    const bool drained = aurora_get_stats()->queuedPipelines == 0;
-    if (++waited < 3 || (!drained && waited < 1800)) {
+    // The warm-up's lookups waited for every case's pipeline, so the logged pass cannot lose a draw:
+    // a couple of frames between the passes is all that is left to do.
+    if (++waited < 2) {
       return;
     }
     stage = Stage::Idle;
@@ -4506,7 +4576,14 @@ void DrawPerformanceTab() {
 // file dialogs answer on another one, so their picks wait in sCardPicks.
 namespace {
 // kCardPick_Trilogy: the Trilogy save.bin to write the save into.
-enum CardPick { kCardPick_Import, kCardPick_ExportFolder, kCardPick_ExportFile, kCardPick_Trilogy };
+// kCardPick_Emulator: the Dolphin/PrimeHack user folder.
+enum CardPick {
+  kCardPick_Import,
+  kCardPick_ExportFolder,
+  kCardPick_ExportFile,
+  kCardPick_Trilogy,
+  kCardPick_Emulator
+};
 std::mutex sCardPickMutex;
 std::vector<std::pair<CardPick, std::string>> sCardPicks;
 std::atomic<bool> sCardDialogOpen{false};
@@ -4651,10 +4728,13 @@ std::string CardImportDolphin() {
     return refusal;
   }
   const PortGci::DolphinCard dolphin = PortGci::FindDolphinCard();
+  std::error_code same;
+  if (!dolphin.gciFolder.empty() && std::filesystem::equivalent(dolphin.gciFolder, folder, same)) {
+    return "The port already uses the emulator's card (sharing is on); nothing to import.";
+  }
   if (!dolphin.Found()) {
-    return std::string("No Dolphin memory card found (GC/") + PortGci::CardRegion() + "/Card A or GC/MemoryCardA." +
-           PortGci::CardRegion() + ".raw in "
-           "Dolphin's user folder).";
+    return std::string("No Dolphin or PrimeHack memory card found (GC/") + PortGci::CardRegion() +
+           "/Card A or GC/MemoryCardA." + PortGci::CardRegion() + ".raw in the emulator's user folder).";
   }
   // Dolphin uses one or the other, per its settings: try the one written last.
   std::error_code ec;
@@ -4679,7 +4759,7 @@ std::string CardImportDolphin() {
       return "From " + PortGci::PathString(source) + ": " + FinishCardImport(report);
     }
   }
-  return "Dolphin's memory card holds no Metroid Prime saves.";
+  return "The emulator's memory card holds no Metroid Prime saves.";
 }
 
 std::string CardExportDolphin(const std::string& format) {
@@ -4695,18 +4775,23 @@ std::string CardExportDolphin(const std::string& format) {
   if (to == PortGci::ExportFormat::WiiSave) {
     const std::filesystem::path bin = PortGci::FindDolphinTrilogy();
     if (bin.empty()) {
-      return "No Trilogy save in Dolphin (Wii/title/00010000/52334d45 or 52334d50/data/save.bin in its user "
-             "folder); start Metroid Prime Trilogy in Dolphin once to create it.";
+      return "No Trilogy save in Dolphin or PrimeHack (Wii/title/00010000/52334d45 or 52334d50/data/save.bin in "
+             "its user folder); start Metroid Prime Trilogy there once to create it.";
     }
     return "To " + PortGci::PathString(bin) + ": " + PortGci::ExportTrilogy(folder, bin).Summary("Exported");
   }
   const char* region = PortGci::CardRegionOf(to);
   const PortGci::DolphinCard dolphin = PortGci::FindDolphinCard(region);
   if (!dolphin.Found()) {
-    return std::string("No Dolphin memory card found (GC/") + region + "/Card A or GC/MemoryCardA." + region +
-           ".raw in Dolphin's user folder); start a GameCube game of that region in Dolphin once to create it.";
+    return std::string("No Dolphin or PrimeHack memory card found (GC/") + region + "/Card A or GC/MemoryCardA." +
+           region + ".raw in the emulator's user folder); start a GameCube game of that region there once to "
+           "create it.";
   }
   std::string text;
+  std::error_code same;
+  if (!dolphin.gciFolder.empty() && std::filesystem::equivalent(dolphin.gciFolder, folder, same)) {
+    return "The port already uses the emulator's card (sharing is on); nothing to export.";
+  }
   if (!dolphin.gciFolder.empty()) {
     text = "To " + PortGci::PathString(dolphin.gciFolder) + ": " +
            PortGci::ExportFolder(folder, dolphin.gciFolder, to).Summary("Exported");
@@ -4796,6 +4881,7 @@ void OpenCardDialog(CardPick pick) {
     break;
   }
   case kCardPick_ExportFolder:
+  case kCardPick_Emulator:
     SDL_ShowOpenFolderDialog(done, userdata, window, nullptr, false);
     break;
   case kCardPick_Trilogy: {
@@ -4918,6 +5004,11 @@ void ProcessCardPicks() {
     case kCardPick_Import:
       sCardStatus = CardImport(path);
       break;
+    case kCardPick_Emulator:
+      PortGci::SetEmulatorFolder(path);
+      sCardStatus = "Emulator folder: " + PortGci::EmulatorFolder();
+      SaveSettings();
+      break;
     case kCardPick_ExportFolder:
       sCardStatus = CardExport(path, kCardExportWords[sCardExportChoice]);
       break;
@@ -4944,8 +5035,106 @@ void ProcessCardPicks() {
   }
 }
 
+#if !defined(__ANDROID__)
+// Emulator folder and card sharing (port_gci.h SharedCardBase).
+void DrawEmulatorCard() {
+  const bool inGame = sStateManager != nullptr;
+  const std::string chosen = PortGci::EmulatorFolder();
+  std::string found = "none found";
+  if (chosen.empty()) {
+    const PortGci::DolphinCard card = PortGci::FindDolphinCard();
+    if (card.Found()) {
+      // <root>/GC/<region>/Card A or <root>/GC/MemoryCardA.<region>.raw.
+      found = PortGci::PathString(card.gciFolder.empty()
+                                      ? card.rawImage.parent_path().parent_path()
+                                      : card.gciFolder.parent_path().parent_path().parent_path());
+    }
+  }
+  ImGui::TextUnformatted("Emulator folder");
+  ImGui::SameLine(0.0f, 0.0f);
+  ImGui::TextWrapped(": %s", chosen.empty() ? ("Auto (" + found + ")").c_str() : chosen.c_str());
+  ImGui::BeginDisabled(sCardDialogOpen);
+  if (ImGui::Button("Choose...")) {
+    OpenCardDialog(kCardPick_Emulator);
+  }
+  ImGui::EndDisabled();
+  ItemHelp("The Dolphin or PrimeHack user folder, the one that contains GC/. Needed for portable installs; "
+           "otherwise it is found by itself. A GC folder or a card folder works too.");
+  ImGui::SameLine();
+  ImGui::BeginDisabled(chosen.empty());
+  if (ImGui::Button("Auto")) {
+    PortGci::SetEmulatorFolder("");
+    SaveSettings();
+  }
+  ImGui::EndDisabled();
+  // Issue #115: with Dolphin and PrimeHack both installed, Auto takes Dolphin,
+  // and the folder dialog may hide PrimeHack's ~/.var folder.
+  const std::vector<std::filesystem::path> detected = PortGci::DetectedEmulatorFolders();
+  if (!detected.empty()) {
+    auto label = [](const std::filesystem::path& root) {
+      const std::string path = PortGci::PathString(root);
+      return (path.find("primehack") != std::string::npos ? "PrimeHack: " : "Dolphin: ") + path;
+    };
+    const std::string preview = chosen.empty() ? "Auto" : chosen;
+    if (ImGui::BeginCombo("Installed emulators", preview.c_str())) {
+      for (const std::filesystem::path& root : detected) {
+        const std::string path = PortGci::PathString(root);
+        if (ImGui::Selectable(label(root).c_str(), path == chosen)) {
+          PortGci::SetEmulatorFolder(path);
+          SaveSettings();
+        }
+      }
+      ImGui::EndCombo();
+    }
+    ItemHelp("Dolphin and PrimeHack installs found on this computer. Pick one to use it instead of the "
+             "automatic choice.");
+  }
+  bool share = PortGci::ShareEmulatorCard();
+  ImGui::BeginDisabled(inGame);
+  if (ImGui::Checkbox("Share memory card with emulator", &share)) {
+    PortGci::SetShareEmulatorCard(share);
+    SaveSettings();
+  }
+  ImGui::EndDisabled();
+  ItemHelp("The port and the emulator read and write the same save files. Never run both at the same time: "
+           "one overwrites the other's saves. GameCube Metroid Prime only; the Wii Trilogy save cannot be "
+           "shared (use Export as Wii Trilogy). Randomizer and Archipelago keep their own cards. Takes "
+           "effect at the title screen.");
+  if (!share) {
+    return;
+  }
+  std::string why;
+  const std::filesystem::path base = PortGci::SharedCardBase(&why);
+  if (base.empty()) {
+    ImGui::TextColored(ThemeWarnColor(), "%s", why.c_str());
+    return;
+  }
+  ImGui::BeginDisabled(inGame || sCardDialogOpen);
+  if (ImGui::Button("Copy port saves into shared card")) {
+    const std::filesystem::path own =
+        PortGci::PathFromString(PortPaths::CardFolder()) / PortGci::CardRegion() / "Card A";
+    std::error_code same;
+    if (std::filesystem::equivalent(own, base / PortGci::CardRegion() / "Card A", same)) {
+      sCardStatus = "The port's own card is the shared one.";
+    } else {
+      const PortGci::Report report = PortGci::ExportFolder(own, base / PortGci::CardRegion() / "Card A");
+      if (report.copied > 0) {
+        PortGci::MarkCardChanged();
+      }
+      sCardStatus = report.Summary("Copied");
+    }
+  }
+  ImGui::EndDisabled();
+  ItemHelp("Copies the saves of the port's own card into the shared card; the shared card's own saves move to "
+           "_replaced first.");
+}
+#endif
+
 void DrawMemoryCard() {
   ImGui::SeparatorText("Memory card");
+#if !defined(__ANDROID__)
+  DrawEmulatorCard();
+#endif
   const std::filesystem::path folder = PortGci::MountedCardFolder();
   if (folder.empty()) {
     ImGui::TextDisabled("The card is not a GCI folder; nothing to import to or export.");
@@ -4965,10 +5154,10 @@ void DrawMemoryCard() {
            "the card's saves; the old ones move to _replaced in the card folder.");
 #if !defined(__ANDROID__)
   ImGui::SameLine();
-  if (ImGui::Button("Import from Dolphin")) {
+  if (ImGui::Button("Import from Dolphin/PrimeHack")) {
     sCardStatus = CardImportDolphin();
   }
-  ItemHelp((std::string("Dolphin's card is looked for in its user folder (GC/") + PortGci::CardRegion() +
+  ItemHelp((std::string("The emulator's card is looked for in its user folder (GC/") + PortGci::CardRegion() +
             "/Card A, GC/MemoryCardA." + PortGci::CardRegion() + ".raw).")
                .c_str());
 #endif
@@ -5010,12 +5199,12 @@ void DrawMemoryCard() {
     OpenCardDialog(trilogy ? kCardPick_Trilogy : kCardPick_ExportFolder);
   }
   ImGui::SameLine();
-  if (ImGui::Button("Export to Dolphin")) {
+  if (ImGui::Button("Export to Dolphin/PrimeHack")) {
     sCardStatus = CardExportDolphin(format);
   }
-  ItemHelp(trilogy ? "Close Dolphin first. Goes to Dolphin's Trilogy save (Wii/title/00010000/52334d45/data/"
+  ItemHelp(trilogy ? "Close the emulator first. Goes to its Trilogy save (Wii/title/00010000/52334d45/data/"
                      "save.bin); the old one is kept as save.bin.bak."
-                   : (std::string("Close Dolphin first. Goes to Dolphin's ") +
+                   : (std::string("Close the emulator first. Goes to its ") +
                       PortGci::CardRegionOf(CardExportFormat(format)) +
                       " card; a raw card is backed up to .raw.bak before it is written.")
                          .c_str());
@@ -6804,6 +6993,19 @@ void DrawVideoQuality() {
     ImGui::SetItemTooltip("Sums the game's lights per pixel instead of per vertex, like Dolphin's option:\n"
                           "smoother lighting on low-poly models. Not the original look. Remastered models\n"
                           "shade per pixel already.");
+    bool sunShadows = sSunShadows;
+    if (ImGui::Checkbox("Sun shadows", &sunShadows)) {
+      SetSunShadows(sunShadows);
+    }
+    ImGui::SetItemTooltip("Sun shadows: the port's shadow from the sun (outdoor rooms). Remastered does not\n"
+                          "draw sun shadows; turn off for the Remastered look.");
+    bool projShadows = sProjectedShadows;
+    if (ImGui::Checkbox("Projected actor shadows", &projShadows)) {
+      SetProjectedShadows(projShadows);
+    }
+    ImGui::SetItemTooltip("Remastered's actor shadow: each actor casts a depth map straight down onto the\n"
+                          "floor, multiplied over it. Needs the Remastered world geometry; otherwise the\n"
+                          "original blob shadow is drawn.");
   }
 
   bool autoScale = sRenderScale <= 0.f;
@@ -7535,7 +7737,8 @@ void DrawArchipelagoConnect() {
   for (size_t i = 0; i < sRecent.size(); ++i) {
     const PortAp::ConnectionDetails& game = sRecent[i];
     const bool isCurrent = PortAp::Enabled() && current.server == game.server &&
-                           current.slot == game.slot && current.seed == game.seed;
+                           current.slot == game.slot && current.seed == game.seed &&
+                           current.room == game.room;
     ImGui::PushID(static_cast<int>(i));
     ImGui::BeginDisabled(inGame || isCurrent);
     if (ImGui::Button(isCurrent ? "Current" : "Resume")) {
@@ -7775,6 +7978,12 @@ void DrawArchipelagoSession() {
     }
     ImGui::SameLine();
     ImGui::TextWrapped("%s", PortAp::StatusText());
+    const char* switchNotice = PortAp::SwitchNotice();
+    if (switchNotice[0] != '\0') {
+      ImGui::PushStyleColor(ImGuiCol_Text, ThemeBadColor());
+      ImGui::TextWrapped("%s", switchNotice);
+      ImGui::PopStyleColor();
+    }
     const char* seedName = PortAp::SeedName();
     if (seedName != nullptr && seedName[0] != '\0')
       ImGui::TextWrapped("Seed: %s", seedName);
@@ -8762,9 +8971,30 @@ void DrawTrackerTab() {
   ItemHelp("Marks item pickups on the map and minimap, until you collect them. Seen: a white dot "
            "once you have seen the pickup, in the room or through a gap. Rooms: no dots; each "
            "room the map shows that still holds an uncollected pickup is tinted amber. All: a dot "
-           "for every pickup in the rooms the map shows. Every item gets the same dot, so it "
-           "doesn't give away what a pickup holds. In Seen and All an Archipelago game colours the "
-           "dots by what its logic lets you reach.");
+           "for every pickup in the rooms the map shows. In Seen and All an Archipelago game "
+           "colours the dots by what its logic lets you reach.");
+  const bool dots = sMapPickups == kMapPickups_Seen || sMapPickups == kMapPickups_All;
+  ImGui::BeginDisabled(!dots);
+  bool kinds = sMapPickupKinds;
+  if (ImGui::Checkbox("Show major and minor items", &kinds)) {
+    SetMapPickupKinds(kinds);
+  }
+  ImGui::EndDisabled();
+  ItemHelp("A filled dot for a major item (a beam, visor, suit, ball upgrade, artifact, the main "
+           "Power Bomb, or an Archipelago Missile Launcher), a ring for a minor one (a missile or "
+           "power bomb expansion or an energy tank), and a grey cross where a pickup was "
+           "collected. In a randomized game this tells what kind of item each pickup holds. "
+           "Otherwise the Missile Launcher is an ordinary missile pickup, so it shows as minor; in "
+           "Archipelago an item for another game is major when it is progression, and a pickup "
+           "not scouted yet is a dot. Off: one white dot for every item, gone once collected.");
+  ImGui::BeginDisabled(sMapPickups != kMapPickups_Seen);
+  bool station = sMapStationPickups;
+  if (ImGui::Checkbox("Map stations show pickups", &station)) {
+    SetMapStationPickups(station);
+  }
+  ImGui::EndDisabled();
+  ItemHelp("In Seen, a map station also marks every pickup in the rooms it maps, as a hint does "
+           "for its room. With Reveal map on, that is every room, as in All.");
 
   DrawTrackerLogic();
 

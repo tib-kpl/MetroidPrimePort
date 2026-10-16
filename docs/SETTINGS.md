@@ -299,6 +299,20 @@
   does, instead of per vertex. Remastered (PBR) models are per pixel already
   and unchanged. Lit pipelines rebuild on their next draw, so turning it on
   hitches once. Console: `pixellight [0|1]`.
+- Sun shadows (Video > Quality, persisted as `sun_shadows`, default on, not
+  forced by the original experience): the port's 4-cascade shadow from the sun
+  in outdoor rooms. Remastered does not draw sun shadows; turn off for the
+  Remastered look. Off behaves like a room with no sun (no cascades, no
+  receiver sampling); room point/spot lights are unaffected. Console:
+  `sunshadow [0|1]`.
+- Projected actor shadows (Video > Quality, persisted as `projected_shadows`,
+  default on): Remastered's actor shadow. Each shadowed actor renders depth
+  only into a 256x256 map looking straight down, and the room geometry under it
+  is redrawn with a multiply decal (fades towards the top of the shadow box).
+  Only with Remastered room geometry loaded; otherwise (and when off) the
+  retail blob quad is drawn. Known gaps: dynamic receivers (platforms) and
+  sorted/cutout geometry are not decaled; at most 16 actors per frame.
+  Console: `projshadow [0|1]`.
 - HUD scale (Video > Display and pause Options > Display, persisted as `hud_scale`,
   50-100 percent, default 100): shrinks the combat HUD, radar, beam and visor
   menus and the minimap toward the screen centre, each frame as a whole so the
@@ -385,11 +399,22 @@
   default; Tracker page: Off, Seen, Rooms, All; the pause row cycles Off, Seen
   and All, with Rooms shown as the third value when set elsewhere): All draws a
   plain white dot on the map and minimap for every pickup not yet collected, in
-  rooms the map shows; Seen draws the dot only once you have had that pickup in
-  view (within 40 units, in the view cone, with a clear line from the eye;
-  kept per save, `pickups seen`); Rooms draws no dots but tints the rooms that
-  still hold an uncollected pickup amber. An old saved `1` stays All. The dots
-  never tell what the item is; an Archipelago game colours them by its logic
+  rooms the map shows; Seen draws the dot only once you have looked at that
+  pickup for half a second (within 40 units, in the middle half of the view,
+  with a clear line from the eye; see-through surfaces such as gratings don't
+  block it; kept per save, `pickups seen`); Rooms draws no dots but tints the rooms that
+  still hold an uncollected pickup amber. An old saved `1` stays All. In Seen,
+  Map stations show pickups (`map_station_pickups`, on by default) also marks
+  every pickup in the rooms a map station has mapped (or a hint, or Reveal map,
+  which makes Seen show as much as All). Show major and minor items
+  (`map_pickup_kinds`, off by default) draws a major item as a filled dot, a
+  minor one (missile or power bomb expansion, energy tank) as a ring, and a
+  collected pickup as a grey cross; in a randomized game it tells what kind of
+  item a pickup holds (from the seed; in Archipelago an item for another game is
+  major when it is progression, an unscouted pickup is a dot). The disc's Missile
+  Launcher is an ordinary missile pickup, so it shows minor (also in a legacy
+  seed); only an Archipelago launcher item is major. Off, every dot is the same
+  plain white and a collected pickup's goes away. An Archipelago game colours them by its logic
   (`map_logic_colors`, see `ARCHIPELAGO.md`). The positions come from
   `tools/gen_map_pickups.py` (`platform/port_map_pickups.inc`). With Show
   progress on (`tracker_progress`, off by default so it spoils nothing), the
@@ -397,7 +422,7 @@
   capacity (in packs of 5, launcher included), power bombs, artifacts, missing
   upgrades, logbook scans per category (artifacts count at the game's 50%),
   rooms visited per world and the current world's unvisited rooms (their names
-  load on first view). Console: `reveal <0|1>`, `pickups <0|1>`, `tracker`.
+  load on first view). Console: `reveal <0|1>`, `pickups <off|seen|rooms|all>`, `pickups kinds|station <on|off>`, `tracker`.
 - Skippable cutscenes (F1 > Game > Cutscenes, pause Options > Visor,
   `skippable_cutscenes`, off by default; always on in randomizer and
   Archipelago games) lets Start skip every cutscene, including the ones retail
@@ -547,7 +572,20 @@ other `X:\Users\<name>`: `X:\Users\<user>`); the
   `save.bin.bak`): the newest save replaces the Metroid Prime game the Trilogy
   last used (it shows one per Mii, so start one there and save once first);
   Echoes/Corruption are kept. A Wii `data.bin` is console-signed and
-  cannot be written. Logic in `platform/port_gci.cpp` and
+  cannot be written. The buttons also work with PrimeHack (its Flatpak's
+  `~/.var/app/io.github.shiiion.primehack/data/dolphin-emu` is searched too).
+  `emulator_folder` (empty = auto) names the Dolphin/PrimeHack user folder (the
+  one with `GC/`; a `GC`, region or `Card A` folder is accepted too) for portable
+  installs; when set it is the only folder looked at. `share_emulator_card`
+  (default off, desktop, console `gci share on|off`, `gci emulator <folder|auto>`)
+  mounts the emulator's `GC/<region>/Card A` as the port's card, so both read and
+  write the same files live; it applies at the title screen (and at boot, so
+  quick resume saves there too) and is refused in game. Never run both at once:
+  one overwrites the other's saves. GameCube Metroid Prime only; the Trilogy save
+  cannot be shared. The card needs to exist (set the emulator's Slot A to "GCI
+  Folder", start the game once). Randomizer/Archipelago keep their own cards.
+  "Copy port saves into shared card" copies the port's own card over (its old
+  files move to `_replaced`). Logic in `platform/port_gci.cpp` and
   `platform/port_save_convert.cpp`, covered by `port_gci_tests` and
   `port_save_convert`. Console: `gci list | import <path> | export [usa|pal]
   <dir or .raw> | export trilogy <save.bin> | dolphin import | dolphin export

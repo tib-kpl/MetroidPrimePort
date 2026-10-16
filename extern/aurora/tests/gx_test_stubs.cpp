@@ -84,6 +84,7 @@ void configure(const GXRenderModeObj*) noexcept {}
 // --- get_texture ---
 namespace aurora::gx {
 const gfx::TextureBind& get_texture(GXTexMapID id) noexcept { return g_gxState.textures[id]; }
+bool shader_has_cut_caster(const ShaderConfig&) noexcept { return false; }
 namespace texture {
 void invalidate_bindings() noexcept {}
 uint64_t current_bind_generation() noexcept { return 1; }
@@ -141,6 +142,8 @@ void populate_pipeline_config(PipelineConfig& config, GXPrimitive primitive, GXV
   config.shaderConfig.sceneHdr = gfx::scene_hdr_pass_active();
 }
 bool per_pixel_lighting() noexcept { return false; }
+// The GPU self-test is not linked here; its blocking lookups stay off.
+bool blocking_pipelines() noexcept { return false; }
 GXBindGroups build_bind_groups(const ShaderInfo& info) noexcept { return {}; }
 ShaderInfo build_shader_info(const ShaderConfig& config) noexcept { return {}; }
 gfx::Range build_uniform(const ShaderInfo& info) noexcept { return {.size = 1}; }
@@ -234,6 +237,7 @@ template <>
 PipelineRef pipeline_ref<gx::PipelineConfig>(const gx::PipelineConfig& config) {
   return 0;
 }
+PipelineRef pipeline_ref(const gx::PipelineConfig& config, bool blocking) { return 0; }
 // Never live, so the shader-info memo is rebuilt on every draw.
 bool touch_pipeline(PipelineRef ref) { return false; }
 gx::DrawData g_testLastDraw{};
@@ -401,6 +405,21 @@ const wgpu::Sampler& sampler() {
 }
 void shutdown() {}
 } // namespace aurora::gfx::shadow
+
+namespace aurora::gfx::actor_shadow {
+bool ensure_task() { return false; }
+void add_caster(uint32_t layer, const gx::DrawData& draw) {}
+bool record() { return false; }
+const wgpu::TextureView& map_view() {
+  static const wgpu::TextureView view;
+  return view;
+}
+const wgpu::Sampler& sampler() {
+  static const wgpu::Sampler sampler;
+  return sampler;
+}
+void shutdown() {}
+} // namespace aurora::gfx::actor_shadow
 
 namespace aurora::gfx::depth_peek {
 namespace {

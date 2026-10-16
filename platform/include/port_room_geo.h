@@ -139,6 +139,9 @@ struct Instance {
     float fps = 0.f;
     bool loop = true;
     std::vector<float> keys; // 7 per frame: rotation x, y, z, w, translation x, y, z
+    // Version 12: a joint that scales poses as rotation * stretch. 9 per frame, row-major
+    // 3x3 applied first (before the rotation); empty: no stretch (the identity).
+    std::vector<float> stretch;
   };
   std::vector<AnimClip> anim;
   bool animOnShow = false;
@@ -259,6 +262,11 @@ bool Draw(const CStateManager& mgr, const CGameArea& area, const CFrustumPlanes&
 enum { kDrawableType = 3 };
 void AddSorted(const CGameArea& area);
 void DrawSorted(const void* drawable);
+// The opaque, non-cutout models Draw drew this frame are what an actor's projected shadow lands
+// on (port_actor_shadow.h). Cleared at the start of the world draw; DrawShadowReceivers redraws
+// the ones whose bounds meet the box in the caller's decal state.
+void ClearShadowReceivers();
+void DrawShadowReceivers(const float lo[3], const float hi[3]);
 // Set around the renderer's sorted pass for an area Draw stood in for, so that pass
 // draws the actors and leaves the area's own surfaces out.
 extern bool sReplacingArea;

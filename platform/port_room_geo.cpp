@@ -922,10 +922,25 @@ CTransform4f Pose(const Instance::AnimClip& clip, double seconds) {
   }
   n = n > 0.f ? 1.f / std::sqrt(n) : 0.f;
   const float x = q[0] * n, y = q[1] * n, z = q[2] * n, s = q[3] * n;
-  return CTransform4f(1.f - 2.f * (y * y + z * z), 2.f * (x * y - s * z), 2.f * (x * z + s * y),
-                      a[4] + (b[4] - a[4]) * w, 2.f * (x * y + s * z), 1.f - 2.f * (x * x + z * z),
-                      2.f * (y * z - s * x), a[5] + (b[5] - a[5]) * w, 2.f * (x * z - s * y),
-                      2.f * (y * z + s * x), 1.f - 2.f * (x * x + y * y), a[6] + (b[6] - a[6]) * w);
+  float r[9] = {1.f - 2.f * (y * y + z * z), 2.f * (x * y - s * z), 2.f * (x * z + s * y),
+                2.f * (x * y + s * z), 1.f - 2.f * (x * x + z * z), 2.f * (y * z - s * x),
+                2.f * (x * z - s * y), 2.f * (y * z + s * x), 1.f - 2.f * (x * x + y * y)};
+  if (clip.stretch.size() == frames * 9) {
+    // A scaling joint: the pose is rotation * stretch, the stretch blended frame to frame.
+    const float* const ua = clip.stretch.data() + 9 * i;
+    float u[9], m[9];
+    for (int k = 0; k < 9; ++k) {
+      u[k] = ua[k] + (ua[k + 9] - ua[k]) * w;
+    }
+    for (int row = 0; row < 3; ++row) {
+      for (int col = 0; col < 3; ++col) {
+        m[3 * row + col] = r[3 * row] * u[col] + r[3 * row + 1] * u[3 + col] + r[3 * row + 2] * u[6 + col];
+      }
+    }
+    std::copy(m, m + 9, r);
+  }
+  return CTransform4f(r[0], r[1], r[2], a[4] + (b[4] - a[4]) * w, r[3], r[4], r[5], a[5] + (b[5] - a[5]) * w, r[6],
+                      r[7], r[8], a[6] + (b[6] - a[6]) * w);
 }
 
 // The script objects as the file has them: a counter at 0, the camera in no volume.
@@ -1275,6 +1290,31 @@ void SetLoadedAreas(const uint32_t* mreas, size_t count) {
   }
 }
 
+namespace {
+struct ShadowReceiver {
+  const CModel* model;
+  const CTransform4f* xf;
+  CAABox bounds;
+};
+std::vector< ShadowReceiver > sShadowReceivers;
+} // namespace
+
+void ClearShadowReceivers() { sShadowReceivers.clear(); }
+
+void DrawShadowReceivers(const float lo[3], const float hi[3]) {
+  CGraphics::DisableAllLights();
+  for (const ShadowReceiver& r : sShadowReceivers) {
+    const CVector3f& a = r.bounds.GetMinPoint();
+    const CVector3f& b = r.bounds.GetMaxPoint();
+    if (b.GetX() < lo[0] || a.GetX() > hi[0] || b.GetY() < lo[1] || a.GetY() > hi[1] ||
+        b.GetZ() < lo[2] || a.GetZ() > hi[2]) {
+      continue;
+    }
+    gpRender->SetModelMatrix(*r.xf);
+    r.model->DrawUnsortedParts(CModelFlags::Normal());
+  }
+}
+
 bool Draw(const CStateManager& mgr, const CGameArea& gameArea, const CFrustumPlanes& frustum) {
   if (GetMode() == Mode::Off) {
     return false;
@@ -1504,6 +1544,9 @@ bool Draw(const CStateManager& mgr, const CGameArea& gameArea, const CFrustumPla
                        bool inView = true, const Placed* driven = nullptr) {
     (inView ? visible : casters)
         .push_back({cutout(model), distanceSq(bounds), &drawn, &xf, lights, &bounds, glow, lightmap, driven});
+    if (inView && !visible.back().cutout) {
+      sShadowReceivers.push_back({&drawn, &xf, bounds});
+    }
   };
   // In view, or else whether it can cast into view: an opaque model in the shadow map's box.
   const auto inView = [&](Model& model, const CAABox& bounds, bool& casts) {
@@ -1512,7 +1555,9 @@ bool Draw(const CStateManager& mgr, const CGameArea& gameArea, const CFrustumPla
     }
     const float lo[3] = {bounds.GetMinPoint().GetX(), bounds.GetMinPoint().GetY(), bounds.GetMinPoint().GetZ()};
     const float hi[3] = {bounds.GetMaxPoint().GetX(), bounds.GetMaxPoint().GetY(), bounds.GetMaxPoint().GetZ()};
-    casts = sOffscreenCasters && !cutout(model) && GXPortShadowBoxCasts(lo, hi);
+    // A cutout casts too: aurora gives a draw a caster only when it can discard like the colour pass does
+    // (a Remastered cut bit); a retail alpha-tested draw (alphaCompare) still gets none.
+    casts = sOffscreenCasters && GXPortShadowBoxCasts(lo, hi);
     return false;
   };
   for (Cluster& cluster : area.clusters) {

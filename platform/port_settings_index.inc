@@ -124,6 +124,8 @@
 {"Video", "Quality", "Quality", "Show F1 hint at launch", "f1 hint menu launch tip"},
 {"Video", "Quality", "Quality", "Anisotropic filtering", "anisotropic texture filter sharp"},
 {"Video", "Quality", "Quality", "Per-pixel lighting", "per pixel lighting shading smooth dolphin"},
+{"Video", "Quality", "Quality", "Sun shadows", "sun shadow cascades outdoor remastered look"},
+{"Video", "Quality", "Quality", "Projected actor shadows", "actor shadow blob projected depth map floor remastered"},
 {"Video", "Quality", "Quality", "Auto render scale (native)", "resolution scale native auto render"},
 {"Video", "Quality", "Quality", "EFB scale", "resolution scale efb framebuffer"},
 {"Video", "Quality", "Quality", "Dynamic resolution", "dynamic resolution scale performance fps"},
@@ -215,6 +217,8 @@
 {"Archipelago", "Chat", "", "Send", "chat message say send"},
 {"Tracker", "", "", "Reveal map", "map reveal show all rooms"},
 {"Tracker", "", "", "Pickups on the map", "map pickup dots items tracker seen rooms amber"},
+{"Tracker", "", "", "Show major and minor items", "map pickup dots ring cross collected kinds"},
+{"Tracker", "", "", "Map stations show pickups", "map station pickup dots seen reveal hint"},
 {"Tracker", "", "Archipelago checks", "Colour the map's dots by logic", "tracker logic map dots colour"},
 {"Tracker", "", "Progress", "Show progress", "progress tracker items scans rooms"},
 {"Save states", "", "", "Keep enemies and room objects", "save state room enemies doors objects"},
@@ -229,7 +233,7 @@
 {"System", "", "Settings", "Reset configuration...", "reset defaults configuration factory"},
 {"System", "", "Memory card", "Import file...", "memory card import gci raw wii save"},
 #if !defined(__ANDROID__)
-{"System", "", "Memory card", "Import from Dolphin", "memory card dolphin import saves"},
+{"System", "", "Memory card", "Import from Dolphin/PrimeHack", "memory card dolphin primehack import saves"},
 #endif
 {"System", "", "Memory card", "Export as", "memory card export format release"},
 #if defined(__ANDROID__)
@@ -238,7 +242,10 @@
 #else
 {"System", "", "Memory card", "Export to folder...", "memory card export folder gci"},
 {"System", "", "Memory card", "Export into save.bin...", "memory card export trilogy wii save.bin"},
-{"System", "", "Memory card", "Export to Dolphin", "memory card export dolphin saves"},
+{"System", "", "Memory card", "Export to Dolphin/PrimeHack", "memory card export dolphin primehack saves"},
+{"System", "", "Memory card", "Emulator folder", "memory card emulator folder dolphin primehack path auto"},
+{"System", "", "Memory card", "Installed emulators", "memory card emulator installed detected dolphin primehack flatpak"},
+{"System", "", "Memory card", "Share memory card with emulator", "memory card share emulator dolphin primehack live saves"},
 {"System", "", "Memory card", "Open card folder", "memory card folder open directory"},
 #endif
 #if defined(__ANDROID__)

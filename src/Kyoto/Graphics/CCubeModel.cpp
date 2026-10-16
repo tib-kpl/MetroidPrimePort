@@ -13,6 +13,7 @@
 #include <dolphin/gx/GXExtra.h>
 #include "port_pbr_record.h"
 #include "port_room_env.h"
+#include "port_visor_mesh.h"
 #include <algorithm>
 #include <cassert>
 #include <cmath>
@@ -242,7 +243,54 @@ bool sPortSky = false;
 f32 sPortSkyGain[3];
 f32 sPortChargeShell = 0.f;
 f32 sPortDisintegration = 0.f;
+int sPortActiveVisor = 0;
+unsigned sPortVisorSkipped = 0;
+unsigned sPortShadowSkipped = 0;
+
+// Remastered's mesh filter for one surface (PortVisorMesh): true when it isn't drawn. A surface
+// with the shadow bit isn't drawn by a cast-only pass, and in a drawing pass is drawn without
+// casting: the guard turns the caster off for it and restores it.
+struct SPortVisorGuard {
+  bool restore = false;
+  bool Skip(const CCubeSurface& surface) {
+    const uint word = surface.PortVisorWord();
+    if (word == 0) {
+      return false;
+    }
+    if (PortVisorMesh::SkipsVisor(word, sPortActiveVisor)) {
+      ++sPortVisorSkipped;
+      return true;
+    }
+    if (PortVisorMesh::SkipsShadow(word)) {
+      const u8 mode = GXPortGetShadowCasterMode();
+      if (mode == 2) {
+        ++sPortShadowSkipped;
+        return true;
+      }
+      if (mode == 1) {
+        ++sPortShadowSkipped;
+        GXPortSetShadowCaster(false);
+        restore = true;
+      }
+    }
+    return false;
+  }
+  ~SPortVisorGuard() {
+    if (restore) {
+      GXPortSetShadowCaster(true);
+    }
+  }
+};
 } // namespace
+
+void CCubeModel::PortSetActiveVisor(const int visor) { sPortActiveVisor = visor; }
+
+void CCubeModel::PortTakeVisorSkipCounts(unsigned& visor, unsigned& shadow) {
+  visor = sPortVisorSkipped;
+  shadow = sPortShadowSkipped;
+  sPortVisorSkipped = 0;
+  sPortShadowSkipped = 0;
+}
 
 void CCubeModel::PortSetChargeShell(const f32 amount) { sPortChargeShell = amount; }
 
@@ -430,7 +478,9 @@ void CCubeModel::PortSetFallbackGlow(const CCubeMaterial& material, const int id
   }
   // The konst holds the emissive in gamma 2.2 and cannot exceed 1.0, so a glow brighter
   // than that (s * gain > 1) is clamped to it.
-  const f32 gain = PortRoomEnv::GlowGain(frameExposed);
+  // An opaque-pass glow is shown at the static exposure (the PBR shader's pbr_tone.w), so the
+  // frame-exposed gain is rescaled by GlowScale() unless the draw is frame-exposed.
+  const f32 gain = PortRoomEnv::GlowGain(frameExposed) * (frameExposed ? 1.f : PortRoomEnv::GlowScale());
   GXColor color{0, 0, 0, 255};
   u8* channels[3] = {&color.r, &color.g, &color.b};
   for (int i = 0; i < 3; ++i) {
@@ -624,6 +674,13 @@ CCubeModel::PortInventoryScope::~PortInventoryScope() {
 #endif
 
 void CCubeModel::DrawSurface(const CCubeSurface& surface, const CModelFlags& modelFlags) const {
+#ifdef TARGET_PC
+  // The pause screen's doll isn't a world draw: no filter there.
+  SPortVisorGuard visorGuard;
+  if (!sPortInventoryActive && visorGuard.Skip(surface)) {
+    return;
+  }
+#endif
   const CCubeMaterial material = GetMaterialByIndex(surface.GetMaterialIndex());
   if (material.IsFlagSet(kStateFlag_ShadowOccluderMesh) && !sDrawingOccluders) {
     return;
@@ -686,7 +743,24 @@ void CCubeModel::DrawSurface(const CCubeSurface& surface, const CModelFlags& mod
       }
     }
   }
+  // The TEV fallback of a PBR material lit by the bake takes only the runtime lights, as its PBR
+  // draw does (GXSetPBRLightSkip below); Remastered has no area lights on a baked-lit model.
+  if (!inventory && material.IsFlagSet(kStateFlag_PortPBR) && CCubeMaterial::sPortAreaLights != 0 &&
+      !PortRoomEnv::AreaLights() && !(outside && (fadeBlend || CCubeMaterial::PortPBRAllowed(drawFlags)))) {
+    const CTransform4f& tevXf = CGraphics::GetModelMatrix();
+    const CVector3f tevOrigin = x20_bounds.Invalid() ? tevXf.GetTranslation() : tevXf * x20_bounds.GetCenterPoint();
+    float pos[3] = {tevOrigin.GetX(), tevOrigin.GetY(), tevOrigin.GetZ()};
+    PortRoomEnv::ProbeOverride(pos);
+    PortRoomEnv::Selection env;
+    const bool found = PortRoomEnv::Select(pos, env);
+    const bool lightmap =
+        found && env.lightmap != 0 && PortLightmapSlot(static_cast< int >(surface.GetMaterialIndex())) >= 0;
+    if (found && ((env.hasAmbient && env.ambientAbsolute) || env.volume != 0 || lightmap)) {
+      CCubeMaterial::sPortTevLightSkip = CCubeMaterial::sPortAreaLights;
+    }
+  }
   material.SetCurrent(drawFlags, surface, *this);
+  CCubeMaterial::sPortTevLightSkip = 0;
   if (material.IsFlagSet(kStateFlag_PortHudGlow) && !material.IsFlagSet(kStateFlag_PortPBR)) {
     // Remastered's 3853595c on FRME_Helmet: rgb = T*v1 + T*ICNC (ICNC white), alpha T.a^2*v1.a,
     // drawn with the widget's own blend (additive: src alpha, one) into the UNORM target after
@@ -1178,6 +1252,12 @@ void CCubeModel::DrawFlat(const float* positions, const float* normals,
   if (which != kSS_Sorted) {
     for (CCubeSurface surface = x38_firstUnsorted; surface.IsValid();
          surface = surface.GetNextSurface()) {
+#ifdef TARGET_PC
+      SPortVisorGuard visorGuard;
+      if (visorGuard.Skip(surface)) {
+        continue;
+      }
+#endif
       CCubeMaterial material = GetMaterialByIndex(surface.GetMaterialIndex());
       CGX::SetVtxDescv_Compressed(material.GetVertexDescLwzx());
       surface.CallDisplayList();
@@ -1187,6 +1267,12 @@ void CCubeModel::DrawFlat(const float* positions, const float* normals,
   if (which != kSS_Unsorted) {
     for (CCubeSurface surface = x3c_firstSorted; surface.IsValid();
          surface = surface.GetNextSurface()) {
+#ifdef TARGET_PC
+      SPortVisorGuard visorGuard;
+      if (visorGuard.Skip(surface)) {
+        continue;
+      }
+#endif
       CCubeMaterial material = GetMaterialByIndex(surface.GetMaterialIndex());
       CGX::SetVtxDescv_Compressed(material.GetVertexDescLwzx());
       surface.CallDisplayList();

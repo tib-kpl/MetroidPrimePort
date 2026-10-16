@@ -7,6 +7,7 @@
 #include "../gfx/depth_peek.hpp"
 #include "../gfx/probe.hpp"
 #include "../gfx/shadow.hpp"
+#include "../gfx/actor_shadow.hpp"
 #include "../gfx/hash.hpp"
 #include "../gfx/pipeline_cache.hpp"
 #include "../gfx/recording.hpp"
@@ -129,11 +130,16 @@ std::vector<FogRangeLutEntry> sFogRangeLuts;
 struct PipelineMemo {
   ShaderInfo shaderInfo{};
   gfx::PipelineRef shadowPipelineRef{};
+  gfx::PipelineRef cutPipelineRef{};
   bool shadowCaster = false;
+  bool cutCaster = false;
 };
 // Keyed by pipeline ref (the config's hash); entries stay valid until the config's pipeline is
 // dropped, which gfx::touch_pipeline reports.
 absl::flat_hash_map<gfx::PipelineRef, PipelineMemo> sPipelineMemo;
+
+// aurora_gpu_selftest_run sets blocking_pipelines() for its passes, so a draw of those passes is not
+// skipped for a pipeline that is still compiling (gx.cpp).
 
 struct DrawCache {
   PipelineConfig config{};
@@ -142,6 +148,10 @@ struct DrawCache {
   // The sun's shadow-map pipeline, for a draw that casts (GXPortSetShadowCaster)
   gfx::PipelineRef shadowPipelineRef{};
   bool shadowCaster = false;
+  // A cutout caster's own texture group: the receiver layout holds the shadow map being drawn into.
+  gfx::PipelineRef cutPipelineRef{};
+  bool cutCaster = false;
+  GXBindGroups cutBindGroups{};
   GXBindGroups bindGroups{};
   uint64_t bindGeneration = 0;
   GXVtxFmt fmt = GX_MAX_VTXFMT;
@@ -485,24 +495,30 @@ static void push_gx_draw(GXPrimitive prim, GXVtxFmt fmt, u16 vtxCount, gfx::Rang
     const auto prevSampledIndTextures = cache.shaderInfo.sampledIndTextures;
     const bool prevUsesVolFog = cache.shaderInfo.usesVolFog;
     const bool prevShadowReceive = cache.shaderInfo.shadowReceive;
+    const bool prevActorDecal = cache.shaderInfo.actorDecal;
     const bool prevUsesLightmap = cache.shaderInfo.usesLightmap;
     populate_pipeline_config(cache.config, prim, fmt);
     // A frame switches pipelines hundreds of times between a few hundred configs. The config's
     // hash is the pipeline's ref, so a config seen before reuses its shader info and shadow
-    // pipeline without the second lookup (shader info depends on the config alone).
+    // pipeline without the second lookup (shader info depends on the config alone). With blocking
+    // pipelines the lookup must still happen, since it is what waits for this draw's pipeline.
+    const bool blocking = blocking_pipelines();
     const gfx::PipelineRef ref = xxh3_hash(cache.config, static_cast<HashType>(gfx::ShaderType::GX));
-    auto memoIt = sPipelineMemo.find(ref);
+    auto memoIt = blocking ? sPipelineMemo.end() : sPipelineMemo.find(ref);
     if (memoIt != sPipelineMemo.end() && gfx::touch_pipeline(ref) &&
-        (!memoIt->second.shadowCaster || gfx::touch_pipeline(memoIt->second.shadowPipelineRef))) {
+        (!memoIt->second.shadowCaster || gfx::touch_pipeline(memoIt->second.shadowPipelineRef)) &&
+        (!memoIt->second.cutCaster || gfx::touch_pipeline(memoIt->second.cutPipelineRef))) {
       const auto& memo = memoIt->second;
       cache.shaderInfo = memo.shaderInfo;
       cache.pipelineRef = ref;
       cache.shadowCaster = memo.shadowCaster;
       cache.shadowPipelineRef = memo.shadowPipelineRef;
+      cache.cutPipelineRef = memo.cutPipelineRef;
+      cache.cutCaster = memo.cutCaster;
     } else {
       cache.shaderInfo = build_shader_info(cache.config.shaderConfig);
       warn_missing_uv_sets(cache.config.shaderConfig, cache.shaderInfo);
-      cache.pipelineRef = gfx::pipeline_ref(cache.config);
+      cache.pipelineRef = gfx::pipeline_ref(cache.config, blocking);
       // Only an opaque surface that writes depth casts: the shadow map's vertex-only pass can't
       // alpha-test or blend. The game draws most opaque surfaces as a ONE/ZERO blend.
       const auto& sc = cache.config.shaderConfig;
@@ -515,12 +531,22 @@ static void push_gx_draw(GXPrimitive prim, GXVtxFmt fmt, u16 vtxCount, gfx::Rang
         PipelineConfig shadowConfig = cache.config;
         shadowConfig.shadowPass = 1;
         shadowConfig.msaaSamples = 1;
-        cache.shadowPipelineRef = gfx::pipeline_ref(shadowConfig);
+        cache.shadowPipelineRef = gfx::pipeline_ref(shadowConfig, blocking);
+      }
+      // A Remastered cutout (the PBR cut bit of a draw's mode) casts through its own cut test.
+      cache.cutCaster = cache.shadowCaster && sc.pbr != 0 && sc.shadow && shader_has_cut_caster(sc);
+      if (cache.cutCaster) {
+        PipelineConfig cutConfig = cache.config;
+        cutConfig.shadowPass = 2;
+        cutConfig.msaaSamples = 1;
+        cache.cutPipelineRef = gfx::pipeline_ref(cutConfig, blocking);
       }
       sPipelineMemo.insert_or_assign(cache.pipelineRef, PipelineMemo{
                                                             .shaderInfo = cache.shaderInfo,
                                                             .shadowPipelineRef = cache.shadowPipelineRef,
+                                                            .cutPipelineRef = cache.cutPipelineRef,
                                                             .shadowCaster = cache.shadowCaster,
+                                                            .cutCaster = cache.cutCaster,
                                                         });
     }
     cache.fmt = fmt;
@@ -530,7 +556,8 @@ static void push_gx_draw(GXPrimitive prim, GXVtxFmt fmt, u16 vtxCount, gfx::Rang
     if (!hadPipeline || prevSampledTextures != cache.shaderInfo.sampledTextures ||
         prevSampledIndTextures != cache.shaderInfo.sampledIndTextures ||
         prevUsesVolFog != cache.shaderInfo.usesVolFog || prevUsesLightmap != cache.shaderInfo.usesLightmap ||
-        prevShadowReceive != cache.shaderInfo.shadowReceive) {
+        prevShadowReceive != cache.shaderInfo.shadowReceive || prevActorDecal != cache.shaderInfo.actorDecal ||
+        cache.cutCaster) {
       cache.bindGeneration = 0;
     }
   }
@@ -543,6 +570,11 @@ static void push_gx_draw(GXPrimitive prim, GXVtxFmt fmt, u16 vtxCount, gfx::Rang
     const auto prevBindGroup = cache.bindGroups.textureBindGroup;
     resolve_sampled_textures(cache.shaderInfo);
     cache.bindGroups = build_bind_groups(cache.shaderInfo);
+    if (cache.cutCaster) {
+      ShaderInfo plain = cache.shaderInfo;
+      plain.shadowReceive = false;
+      cache.cutBindGroups = build_bind_groups(plain);
+    }
     cache.bindGeneration = texture::current_bind_generation();
     state.dirty &= ~DirtyTextures;
     // For texture_size_bias uniform
@@ -605,7 +637,28 @@ static void push_gx_draw(GXPrimitive prim, GXVtxFmt fmt, u16 vtxCount, gfx::Rang
     DrawData caster = draw;
     caster.pipeline = cache.shadowPipelineRef;
     caster.bindGroups = {};
-    gfx::shadow::add_caster(caster);
+    // The PBR mode's cut bit (512): the colour pass discards the pixel, so it casts no shadow either.
+    if (cache.cutCaster && (static_cast<u32>(std::max(state.pbrBacklight.w(), 0.f)) & 512u) != 0) {
+      caster.pipeline = cache.cutPipelineRef;
+      caster.bindGroups = cache.cutBindGroups;
+    }
+    if (state.actorLayer >= 0) {
+      // The node's own cull, as Remastered's RenderShadowMaps leaves it to the material. The map's
+      // frame is mirrored (z = -world z), which flips the winding: back and front swap. A cutout's
+      // caster (shadowPass 2) alpha-tests the same way and takes the same cull.
+      PipelineConfig actorConfig = cache.config;
+      actorConfig.shadowPass = caster.pipeline == cache.shadowPipelineRef ? 1 : 2;
+      if (actorConfig.cullMode == GX_CULL_BACK) {
+        actorConfig.cullMode = GX_CULL_FRONT;
+      } else if (actorConfig.cullMode == GX_CULL_FRONT) {
+        actorConfig.cullMode = GX_CULL_BACK;
+      }
+      actorConfig.msaaSamples = 1;
+      caster.pipeline = gfx::pipeline_ref(actorConfig);
+      gfx::actor_shadow::add_caster(static_cast<uint32_t>(state.actorLayer), caster);
+    } else {
+      gfx::shadow::add_caster(caster);
+    }
   }
 }
 
@@ -637,7 +690,8 @@ static void draw_prim(GXPrimitive prim, GXVtxFmt fmt, u16 vtxCount, ByteReader& 
   if (totalVtxBytes > reader.remaining())
     UNLIKELY { handle_draw_overrun(totalVtxBytes, reader); }
 
-  const bool cleanState = g_gxState.dirty == 0 && fmt == sDrawCache.lastDrawFmt && sDrawCache.lineMode == 0 &&
+  // A cast-only draw pushes no command of its own, so it must not extend the last world draw.
+  const bool cleanState = g_gxState.dirty == 0 && !g_gxState.shadowCasterOnly && g_gxState.actorLayer < 0 && fmt == sDrawCache.lastDrawFmt && sDrawCache.lineMode == 0 &&
                           prim != GX_LINES && prim != GX_LINESTRIP && prim != GX_POINTS;
   auto* lastDraw = cleanState ? gfx::get_last_draw_command<DrawData>() : nullptr;
   const bool canMerge = lastDraw != nullptr && lastDraw->instanceCount == 1;
@@ -1426,6 +1480,58 @@ void handle_aurora(ByteReader& reader) noexcept {
     }
   } else if (subCmd == GX_AURORA_PORT_SHADOW_RENDER) {
     gfx::shadow::record();
+  } else if (subCmd == GX_AURORA_PORT_ACTOR_SHADOW) {
+    const u8 mode = reader.read<u8>();
+    auto& st = g_gxState;
+    if (mode == 1 || mode == 2) {
+      const u8 layer = reader.read<u8>();
+      std::array<Vec4<float>, 36> values{};
+      for (auto& v : values) {
+        v = {};
+      }
+      f32 raw[64];
+      for (f32& f : raw) {
+        f = reader.read<f32>();
+      }
+      std::memcpy(values.data(), raw, sizeof(raw));
+      if (st.actorLayer < 0 && !st.actorDecal) {
+        st.actorSavedCaster = st.shadowCaster;
+        st.actorSavedCasterOnly = st.shadowCasterOnly;
+        st.actorSavedActive = st.shadowActive;
+        st.actorSavedUniform = st.shadowUniform;
+      }
+      st.shadowUniform = values;
+      st.shadowActive = true;
+      st.shadowCaster = true;
+      st.shadowCasterOnly = mode == 1;
+      st.actorLayer = mode == 1 ? static_cast<int>(layer) : -1;
+      st.actorDecal = mode == 2;
+      st.dirty |= DirtyPipeline | DirtyUniform;
+    } else if (mode == 0) {
+      if (st.actorLayer >= 0 || st.actorDecal) {
+        st.shadowCaster = st.actorSavedCaster;
+        st.shadowCasterOnly = st.actorSavedCasterOnly;
+        st.shadowActive = st.actorSavedActive;
+        st.shadowUniform = st.actorSavedUniform;
+        st.actorLayer = -1;
+        st.actorDecal = false;
+        st.dirty |= DirtyPipeline | DirtyUniform;
+      }
+      // The caster/decal layers bound their own pipelines, bind groups and uniforms (and the depth
+      // passes forgot the texture groups): re-emit everything for the draws that follow.
+      sDrawCache.hasPipeline = false;
+      sDrawCache.bindGeneration = 0;
+      sDrawCache.uniformRange = {};
+      sDrawCache.lastDrawFmt = GX_MAX_VTXFMT;
+      st.dirty |= DirtyPipeline | DirtyUniform | DirtyTextures;
+    } else if (mode == 3) {
+      gfx::actor_shadow::record();
+      sDrawCache.hasPipeline = false;
+      sDrawCache.bindGeneration = 0;
+      sDrawCache.uniformRange = {};
+      sDrawCache.lastDrawFmt = GX_MAX_VTXFMT;
+      st.dirty |= DirtyPipeline | DirtyUniform | DirtyTextures;
+    }
   } else if (subCmd == GX_AURORA_SET_PBR_LIGHT_SKIP) {
     const Vec4<float> value{static_cast<f32>(reader.read<u32>() & 0xFF), 0.f, 0.f, 0.f};
     if (g_gxState.pbrLightSkip != value) {

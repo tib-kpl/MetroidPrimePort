@@ -22,17 +22,19 @@ int main() {
   Check(PortMouse::AxisForce(1.f, 0.f, 12.f, 0.1f, 90.f, 1.f / 60.f, 1000.f) > 0.f);
   Check(PortMouse::AxisForce(-1.f, 0.f, 12.f, 0.1f, 90.f, 1.f / 60.f, 1000.f) < 0.f);
   Check(PortMouse::AxisForce(0.f, 5.f, 12.f, 0.1f, 90.f, 1.f / 60.f, 1000.f) == 0.f);
-  // The player's map per tick (friction f*s, then the force over dt) reaches
+  // The player's map per tick (friction f*s, then the force over dt) moves at
   // the 60 Hz top speed and ramp at any tick rate.
   const auto run = [](float rate, float seconds) {
     const float dt = 1.f / rate;
     const float tickScale = dt * 60.f;
     float v = 0.f;
+    float moved = 0.f; // the post-friction speed, which the position integrates
     for (int tick = 0; tick < int(seconds * rate + 0.5f); ++tick) {
       v = std::fmax(0.f, v - 0.1f * tickScale);
+      moved = v;
       v += PortMouse::AxisForce(1.f, v, 12.f, 0.1f, 90.f, dt, 1000.f, tickScale) / 90.f * dt;
     }
-    return v;
+    return moved;
   };
   for (const float rate : {30.f, 90.f, 120.f, 240.f}) {
     Check(std::fabs(run(rate, 20.f) - run(60.f, 20.f)) < 0.01f);
@@ -55,6 +57,56 @@ int main() {
     return std::hypot(vr, vf);
   };
   Check(std::fabs(planar(0.7071068f, 0.7071068f) - planar(0.f, 1.f)) < 0.01f);
+  {
+    // Direct aim moves along the unit stick direction by the retail forward law,
+    // with friction taken in the stick's axes (CPlayer::GetDampedClampedVelocityWR).
+    // Constants (plausible, not the retail tweak): vmax 12, friction 0.1, mass 90,
+    // acceleration 5000, 60 Hz.
+    constexpr float vmax = 12.f, fr = 0.1f, mass = 90.f, accel = 5000.f, dt = 1.f / 60.f;
+    // (a) The single force equals the inline retail forward formula bit for bit.
+    float vRetail = 0.f, vAxis = 0.f;
+    for (int tick = 0; tick < 300; ++tick) {
+      const float fs = fr * mass * vmax / (dt * accel);
+      const float desired = 1.f * (vmax - fs) + fs * 1.f;
+      float fraction = (desired - vRetail) / vmax;
+      fraction = fraction < -1.f ? -1.f : fraction > 1.f ? 1.f : fraction;
+      vRetail += fraction * accel / mass * dt;
+      vRetail = std::fmax(0.f, vRetail - fr);
+      vAxis += PortMouse::AxisForce(1.f, vAxis, vmax, fr, mass, dt, accel) / mass * dt;
+      vAxis = std::fmax(0.f, vAxis - fr);
+      Check(vRetail == vAxis);
+    }
+    // (b) A diagonal unit stick, velocity kept in world (right, forward) and
+    // friction taken per axis of the stick frame, tracks the straight run.
+    const auto step = [&](float sr, float sf, float& vr, float& vf, float input) {
+      const float along = vr * sr + vf * sf;
+      const float force = PortMouse::AxisForce(input, along, vmax, fr, mass, dt, accel);
+      vr += force * sr / mass * dt;
+      vf += force * sf / mass * dt;
+      float a = vr * sr + vf * sf;
+      float c = vr * sf - vf * sr;
+      a = a > 0.f ? std::fmax(0.f, a - fr) : std::fmin(0.f, a + fr);
+      c = c > 0.f ? std::fmax(0.f, c - fr) : std::fmin(0.f, c + fr);
+      vr = a * sr + c * sf;
+      vf = a * sf - c * sr;
+    };
+    const float root = 0.7071067811865476f;
+    float sr = 0.f, sf = 0.f, dr = 0.f, df = 0.f;
+    float diagonalTop = 0.f;
+    for (int tick = 0; tick < 300; ++tick) {
+      step(0.f, 1.f, sr, sf, 1.f);
+      step(root, root, dr, df, 1.f);
+      Check(std::fabs(std::hypot(dr, df) - std::hypot(sr, sf)) < 1e-4f);
+      diagonalTop = std::hypot(dr, df);
+    }
+    Check(diagonalTop > 0.5f * vmax);
+    // (c) After release it slows to a halt along the stick, never sideways.
+    for (int tick = 0; tick < 600; ++tick) {
+      step(root, root, dr, df, 0.f);
+      Check(std::fabs(dr * root - df * root) < 1e-4f);
+    }
+    Check(std::hypot(dr, df) < 1e-4f);
+  }
   const auto speed = PortMouse::ClampPlanar({20.f, 20.f}, 12.f);
   Check(std::hypot(speed.right, speed.forward) <= 12.0001f);
   PortMouse::AimState aim;

@@ -74,6 +74,20 @@ const PropertyTable& ElectricProperties() {
   return table;
 }
 
+// Port-only: the ELC2 (CParticleElectric2) fields retail's ELSM has no property for. An ELC2 is written
+// as an ELSC stream that starts with the PEL2 marker and carries these (ELC2_RE.md).
+const PropertyTable& Elc2Properties() {
+  static const PropertyTable table = [] {
+    PropertyTable t;
+    AddProperties(t, "SIDE LWQD NFOM TSPN BDEP BNDI", Type::Int);
+    AddProperties(t, "RADS LRAD RRAD SLVF BLNC BCFF BLEN BANG BIDF BLDF AMDF", Type::Real);
+    AddProperties(t, "NCLR", Type::Color);
+    AddProperties(t, "LLRD FPLB", Type::Bool);
+    return t;
+  }();
+  return table;
+}
+
 const PropertyTable& RetailProperties() {
   static const PropertyTable table = [] {
     PropertyTable t;
@@ -1113,7 +1127,12 @@ public:
   // GRAD: u8 stop count, per stop four halves (RGBA) and an f32 position,
   // then what the position runs over: ILPT(CNST(n)) (n% of the particle's
   // life) or CNST(n) (n frames), then a byte (1: the gradient repeats).
-  // Written as retail's percent keyframes (KEYP, 101 keys over the life).
+  // A swoosh's gradient is written as the port-only PGRD element, which evaluates Remastered's
+  // CCEGradient exactly on the segment's age (Remastered feeds a swoosh COLR the age in frames,
+  // UpdateExisting 0x27d590). The period stays the source's own int element (ILPT(CNST n) or
+  // CNST n). A generator's gradient is written as retail's percent keyframes (KEYP, 101 keys over
+  // the life): its time base in Remastered is not verified (compiled var contexts), and KEYP
+  // reproduces the bake the importer shipped before.
   bool Gradient(const EffectValue& value, std::vector<uint8_t>& out, std::string& why) const {
     if (value.args.size() != 1 || value.args[0].kind != EffectValue::Kind::Raw) {
       why = "GRAD without its stops";
@@ -1126,6 +1145,31 @@ public:
     if (stops == 0 || at > size) {
       why = "GRAD without its stops";
       return false;
+    }
+    if (m_swoosh) {
+      AppendBE32(out, F("PGRD"));
+      AppendBE32(out, uint32_t(stops));
+      for (size_t i = 0; i < stops; ++i) {
+        for (size_t c = 0; c < 4; ++c) {
+          AppendBE32(out, FloatBits(HalfToFloat(uint16_t(p[1 + 12 * i + 2 * c] | p[2 + 12 * i + 2 * c] << 8))));
+        }
+        AppendBE32(out, ReadLE32(p + 1 + 12 * i + 8));  // the f32 position, bits unchanged
+      }
+      if (at + 12 <= size && ReadLE32(p + at) == F("ILPT") && ReadLE32(p + at + 4) == F("CNST")) {
+        AppendBE32(out, F("ILPT"));
+        AppendBE32(out, F("CNST"));
+        AppendBE32(out, ReadLE32(p + at + 8));
+        at += 12;
+      } else if (at + 8 <= size && ReadLE32(p + at) == F("CNST")) {
+        AppendBE32(out, F("CNST"));
+        AppendBE32(out, ReadLE32(p + at + 4));
+        at += 8;
+      } else {
+        why = "GRAD over something other than the life or frames";
+        return false;
+      }
+      out.push_back(at < size && p[at] != 0 ? 1 : 0);
+      return true;
     }
     // How many percent of the life one pass over the gradient takes.
     float span = 0.0f;
@@ -1726,7 +1770,9 @@ public:
   // recipe: VMAT and the per-particle data it reads (build/mpr/vfx/DESIGN.md).
   // Writes nothing where the MATI is unavailable or its shader has no recipe.
   // A swoosh's (`swoosh`) has no SSZE or VORN, and its blend mode is SBDM.
-  bool Material(const EffectProperty& material, const EffectNode& node, ConvertedPart& result, bool swoosh) const {
+  // An ELC2 (`electric`, with `swoosh` set) takes its blend from EBDM.
+  bool Material(const EffectProperty& material, const EffectNode& node, ConvertedPart& result, bool swoosh,
+                bool electric = false) const {
     if (!m_io.materialData || !m_io.vfxTexture) {
       return false;
     }
@@ -1802,7 +1848,18 @@ public:
     }
 
     uint32_t blend = 0;
-    if (const EffectProperty* sbdm = swoosh ? find(F("SBDM")) : nullptr) {
+    if (const EffectProperty* ebdm = electric ? find(F("EBDM")) : nullptr) {
+      // InitStaticRenderStateImpl (0xb72618) indexes a 6-entry table: 1 reads row 2 and 2 row 1 of the
+      // PBDM-style rows (0 alpha, 1 premultiplied, 2 additive); 3-5 read row 0. Row meaning UNVERIFIED.
+      uint32_t word = 0;
+      if (SmallConst(*ebdm, word) && word <= 5) {
+        blend = word == 1 ? 2 : word == 2 ? 1 : 0;
+      } else {
+        m_approximated.push_back("VMAT: EBDM taken as alpha blend");
+      }
+    } else if (electric) {
+      blend = 0;
+    } else if (const EffectProperty* sbdm = swoosh ? find(F("SBDM")) : nullptr) {
       uint32_t word = 0;
       if (SmallConst(*sbdm, word) && word <= 1) {
         blend = word == 1 ? 2 : 0;
@@ -2176,6 +2233,14 @@ public:
     const auto& retail = PropertiesOf(type);
     const bool part = type == F("PART");
     const bool swoosh = type == F("SWHC");
+    // An ELC2 (CParticleElectric2) is written as an ELSC stream that starts with the port-only PEL2
+    // marker and carries the ELC2 fields; it draws through its VMAT like a swoosh.
+    const bool electric = type == F("ELSC") && node.form == F("ELC2");
+    if (electric) {
+      AppendBE32(out, F("PEL2"));
+      AppendBE32(out, F("CNST"));
+      AppendBE32(out, 1);
+    }
     // This is deliberately not a general Remastered particle-light mapping:
     // source proof covers only this embedded Plasma impact child.
     std::vector<uint8_t> nestedLightInnerRadius;
@@ -2226,6 +2291,7 @@ public:
     }
     // A constant lifetime, for gradients timed in frames. Both count in
     // Remastered's frames, so LTM2 is taken as it is (one above retail's).
+    m_swoosh = node.form == F("SWSH");
     m_lifetime = 0;
     for (const EffectProperty& property : node.properties) {
       if ((property.fourcc == F("LTM2") || property.fourcc == F("LTME")) && property.value.size() == 1 &&
@@ -2324,7 +2390,7 @@ public:
       } else if (type == F("SWHC") && fourcc == F("SBDM") && !additive) {
         fourcc = F("AALP");
       }
-      if (fourcc == F("MTIN") && textured) {
+      if (fourcc == F("MTIN") && (textured || electric)) {
         material = &property;
         continue;
       }
@@ -2373,8 +2439,21 @@ public:
         portOnly.push_back(fourcc);
         continue;
       }
-      if (swoosh && (fourcc == F("TMTR") || fourcc == F("PMTR") || fourcc == F("SMTR") || fourcc == F("ITEN"))) {
+      if ((swoosh || electric) &&
+          (fourcc == F("TMTR") || fourcc == F("PMTR") || fourcc == F("SMTR") || fourcc == F("ITEN"))) {
         portOnly.push_back(fourcc);
+        continue;
+      }
+      // Port-only ELC2 fields, written as the retail encoding under their own tags.
+      if (electric && Elc2Properties().count(fourcc) != 0) {
+        std::vector<uint8_t> bytes;
+        std::string why;
+        if (Property(fourcc, Elc2Properties().at(fourcc), property.value, bytes, why)) {
+          AppendBE32(out, fourcc);
+          out.insert(out.end(), bytes.begin(), bytes.end());
+        } else {
+          result.dropped.push_back(EffectFourCCString(fourcc) + ": " + why);
+        }
         continue;
       }
       // Port-only PSRO: a swoosh's POFS of ROTV(v, EXTR) is v turned by the swoosh's orientation.
@@ -2455,7 +2534,7 @@ public:
       AppendBE32(out, FloatBits(0.0f));
     }
     // A material instance draws with its texture where there is no TEXR.
-    if (material != nullptr && !texture) {
+    if (material != nullptr && !texture && !electric) {
       const EffectValue* guid = nullptr;
       for (const EffectValue& value : material->value) {
         if (value.kind == EffectValue::Kind::Guid) {
@@ -2472,10 +2551,11 @@ public:
         result.dropped.push_back("MTIN: no texture for its material");
         ++result.droppedRetail;
       }
-    } else if (material != nullptr) {
+    } else if (material != nullptr && !electric) {
       result.dropped.push_back("MTIN: the effect has a TEXR");
     }
-    const bool vmat = (part || swoosh) && material != nullptr && Material(*material, node, result, swoosh);
+    const bool vmat = (part || swoosh || electric) && material != nullptr &&
+                      Material(*material, node, result, swoosh || electric, electric);
     if (!vmat) {
       for (const uint32_t fourcc : portOnly) {
         result.dropped.push_back(EffectFourCCString(fourcc) + ": no VMAT");
@@ -2601,6 +2681,7 @@ private:
   const EffectConvertIO& m_io;
   mutable std::vector<PvarEntry> m_vars;            // the PVAR of the generator being written
   mutable std::vector<std::string> m_approximated;  // for the generator being written
+  mutable bool m_swoosh = false;                    // the node being written is a SWSH
   mutable int32_t m_lifetime = 0;                   // its constant lifetime in frames, or 0
 };
 
@@ -2655,6 +2736,12 @@ public:
     if ((fourcc == F("VARF") && type == Type::Real) || (fourcc == F("VARI") && type == Type::Int) ||
         (fourcc == F("VARV") && type == Type::Vector) || (fourcc == F("VARC") && type == Type::Color)) {
       return Skip(4);
+    }
+    // Port-only PGRD (a swoosh's gradient): stop count, five floats per stop, the period as an
+    // int element, then the repeat byte.
+    if (fourcc == F("PGRD") && type == Type::Color) {
+      uint32_t count;
+      return Word(count) && count <= 0x10000 && Skip(size_t(count) * 20) && Element(Type::Int) && Skip(1);
     }
     const Signatures& elements = ElementsOf(type);
     const auto found = elements.find(fourcc);
@@ -2865,7 +2952,8 @@ bool SplitRetailEffect(uint32_t type, const uint8_t* data, size_t size, std::vec
   }
   const auto& retail = PropertiesOf(type);
   const bool part = type == F("PART");
-  const bool vfx = part || type == F("SWHC"); // swooshes take the VFX material too
+  const bool electric = type == F("ELSC");
+  const bool vfx = part || type == F("SWHC") || electric; // swooshes and ELC2s take the VFX material too
   for (;;) {
     const size_t start = reader.At();
     if (!reader.Word(fourcc)) {
@@ -2899,6 +2987,11 @@ bool SplitRetailEffect(uint32_t type, const uint8_t* data, size_t size, std::vec
       ok = reader.PortExtraSwooshes();
     } else if (!part && vfx && fourcc == F("PSRO")) {
       ok = reader.PortWord();
+    } else if (electric && fourcc == F("PEL2")) {
+      ok = reader.PortWord();
+    } else if (electric && Elc2Properties().count(fourcc) != 0) {
+      const Type elcType = Elc2Properties().at(fourcc).type;
+      ok = elcType == Type::Bool ? reader.Bool() : reader.Element(elcType);
     } else if (const auto found = retail.find(fourcc); found == retail.end()) {
       error = "property " + EffectFourCCString(fourcc) + " retail does not read";
       return false;
