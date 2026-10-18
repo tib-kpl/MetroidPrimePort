@@ -1,6 +1,7 @@
 # Metroid Prime — native port
 
-A native build of **Metroid Prime** for Linux, Windows and Android, compiled
+A native build of **Metroid Prime** for Linux, Windows and Android (plus an
+experimental, untested-on-hardware macOS build), compiled
 from the [PrimeDecomp](https://github.com/PrimeDecomp/prime) decompilation and
 rendered through Aurora (SDL3/WebGPU). There's no emulator involved. Supported
 discs: USA 1.00, 1.01 and 1.02, and PAL.
@@ -54,36 +55,40 @@ Releases are published on the
 [GitHub releases page](https://github.com/Odrannnn/MetroidPrimePort/releases).
 Every build needs your own disc image; none of them contains one.
 
+**Quick start:** download the build for your platform (Windows zip, Linux
+AppImage or tarball, Android APK), start it, and pick your disc image when it
+asks. It remembers the choice. Supported discs are the GameCube USA 1.00, 1.01
+and 1.02 (`GM8E01`) and PAL (`GM8P01`) releases, as `.iso`, `.gcm`, `.rvz`,
+`.wbfs`, `.ciso` or `.nkit`. The Japanese and Korean releases, the Wii Trilogy and
+Remastered are not run as the base game. Press **F1** for every setting.
+
 ## Building
 
-Needs CMake 3.25+, Ninja and a C++20 toolchain. Aurora and MusyX are vendored, so
-a normal clone is enough; Aurora fetches its pinned dependencies on the first
-configure.
-
-```sh
-cmake -S . -B build/native -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-  -DAURORA_ENABLE_TESTS=OFF -DMP_BUILD_TESTS=ON
-cmake --build build/native -j 4
-ctest --test-dir build/native -L port --output-on-failure
-```
-
-On Windows, run from an MSVC developer shell and add
-`-DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl`. CI builds and tests
-Linux (GCC 14 and Clang 18) and Windows (clang-cl); see
-`.github/workflows/`.
-
-### Android
-
-```sh
-tools/make_android_keystore.sh          # once; writes android/keystore.properties
-tools/android_apk.sh :app:assembleRelease
-```
+CMake 3.25+, Ninja and a C++20 toolchain; a normal clone is enough. The
+requirements, the configure, build and test commands for Linux, Windows and
+macOS, the CMake options and what CI runs are in
+[`docs/NATIVE_PORT.md`](docs/NATIVE_PORT.md#build); the Android build is in
+[`docs/ANDROID.md`](docs/ANDROID.md). Before changing the game code, read
+[where port code goes](docs/NATIVE_PORT.md#where-port-code-goes).
 
 ## Running
 
 ```sh
 ./build/native/metroid_prime_port "/path/to/Metroid Prime (USA) (v1.00).iso"
 ```
+
+## Troubleshooting
+
+- **Where are the logs?** `metroid_prime_port.log` in the user folder (F1 >
+  System shows its path); the previous run's is `metroid_prime_port.old.log`. On
+  Android a copy goes to `Documents/MetroidPrime/`. Attach it to a bug report.
+- **"unsupported disc"**: the image is not one of the revisions above (see the
+  log for the disc id it found). Re-dump it, or check you picked the GameCube disc.
+- **Stuck at startup on a GNOME Wayland session**: run with
+  `SDL_VIDEODRIVER=x11`. The port does this itself when `DISPLAY` is set; see
+  `docs/NATIVE_PORT.md`.
+- **Settings in a bad state**: F1 > System > Settings > **Reset configuration...**
+  backs up and resets every setting and mapping; saves are not touched.
 
 ## Packaging
 
@@ -108,9 +113,24 @@ and remains Nintendo's. See `NOTICE`.
 Metroid Prime is a trademark of Nintendo. This project is unaffiliated with
 Nintendo and Retro Studios, and ships no game data.
 
-`docs/NATIVE_PORT.md` is the detailed reference: build options, the smoke-test hooks,
-and the platform notes. Every setting and environment variable lives in
-`docs/SETTINGS.md` (debug console: `docs/CONSOLE.md`, mods: `docs/MODS.md`).
+## Documentation
+
+| Document | What it covers |
+|---|---|
+| `docs/SETTINGS.md` | Every control, setting and environment variable |
+| `docs/NATIVE_PORT.md` | The detailed reference: build options, smoke-test hooks, platform notes |
+| `docs/MODS.md` | HD texture packs and the mods folder |
+| `docs/RANDOMIZER.md` | The built-in randomizer |
+| `docs/ARCHIPELAGO.md` | The Archipelago multiworld client |
+| `docs/CONSOLE.md` | The debug console (`MP_CONSOLE`) |
+| `docs/DEBUGGING.md` | Headless debugging with `tools/mprig.py` |
+| `tools/README.md` | What each script in `tools/` does and what runs it |
+| `docs/RELEASING.md` | What a release contains and must carry |
+| `docs/ANDROID.md` | The Android port's status and build |
+| `docs/REMASTERED_EFFECTS.md` | Importing Remastered particle effects |
+| `docs/FRAME_INTERPOLATION.md`, `docs/HIGH_FPS_AUDIT.md` | High frame rate design notes |
+| `decomp/` | The original decompilation's GameCube build and notes (not used by the port) |
+| `PORT_NOTES.md` | Open follow-ups and non-obvious facts |
 
 ## AI assistance
 

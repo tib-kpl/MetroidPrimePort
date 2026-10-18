@@ -77,8 +77,8 @@ constexpr ElementSig kElementSigs[] = {
     {"PSOR", "-"},     {"PSOU", "-"},          {"PSTR", "-"},       {"PULS", "eeee"},
     {"PVEL", "-"},     {"RADD", "ee"},         {"RAND", "ee"},      {"REUL", "eeeb"},
     {"RLPT", "e"},     {"RTOI", "ee"},         {"RTOV", "e"},       {"SCAL", "e"},
-    {"SEMR", "ee"},    {"SETR", "e"},          {"SEVT", "eeee"},    {"SINE", "eee"},
-    {"SMOV", "eeeee e"},     {"SPAC", "be"},         {"SPAF", "be"},      {"SPAH", "eee"},
+    {"SEMR", "ee"},    {"SETR", "e"},          {"SEVT", "e"},       {"SINE", "eee"},
+    {"SMOV", "eeeee"},       {"SPAC", "be"},         {"SPAF", "be"},      {"SPAH", "eee"},
     {"SPAI", "be"},    {"SPAV", "be"},         {"SPHE", "eee"},     {"SPOS", "e"},
     {"SUB_", "ee"},    {"SWRL", "eeee"},       {"TPVC", "ge"},      {"TPVF", "ge"},
     {"TPVI", "ge"},    {"TRSS", "eeeeee"},     {"TSCL", "e"},       {"VARC", "g"},
@@ -89,9 +89,10 @@ constexpr ElementSig kElementSigs[] = {
     // angles and a magnitude; MPRD is 2 or 4 elements; DFCP and DFCS 1 to 3.
     {"MPCB", "e ee"},  {"MPAC", "eeee"},       {"MPRD", "ee eeee"}, {"DFCP", "ee eee e"},
     {"DFCS", "ee eee e"},
-    // EXTT, EXTR and EXTS are leaves; SMOV is (translation, offset, rotation, and
-    // two more, NONE in most files); TRST is five reals and a raw word.
-    {"TRST", "eeeeew"}, {"EXTS", "-"},
+    // EXTT, EXTR and EXTS are leaves; SMOV is CSimpleMoverElement's (position,
+    // velocity, rotation, scale, modifier); ROTV a vector turned by a rotation;
+    // TRST is five reals and a raw word.
+    {"TRST", "eeeeew"}, {"EXTS", "-"}, {"ROTV", "ee"},
     // TEXR's texture elements besides ATEX: an id and three elements (TXP2),
     // or an id and one to four (TXFB, whose first is an LFTW).
     // ANTH is a property whose value is an ANTH element: an id, TRST, two keyframe
@@ -123,13 +124,18 @@ constexpr ElementSig kRealSigs[] = {
     {"ISWT", "RR"},   {"CLTN", "RRRR"}, {"CEQL", "RRRR"}, {"CRNG", "RRRRR"}, {"CEXT", "I"},    {"ITRL", "IR"},
     {"SUB_", "RR"},   {"GTCR", "C"},    {"GTCG", "C"},    {"GTCB", "C"},     {"GTCA", "C"},    {"DFCP", "RR"},
     {"DFCS", "RR"}, {"MPRD", "RR eeee"}, {"TPVF", "gR"}, {"DPVF", "gR"}, {"SPAF", "bR"}, {"KPIN", "R"},
+    {"SLCT", "Re"},   {"DIVD", "RR"},
 };
 constexpr ElementSig kVectorSigs[] = {
     {"NONE", "-"},   {"CNST", "RRR"},   {"KEYE", "k"},    {"KEYP", "k"},   {"ANGC", "RRRRR"}, {"CONE", "VR"},
     {"CIRC", "VVRRR"}, {"CCLU", "VVIR"}, {"ADD_", "VV"},  {"MULT", "VV"},  {"CHAN", "VVI"},   {"PULS", "IIVV"},
     {"RTOV", "R"},   {"PLOC", "-"},     {"PLCO", "-"},    {"PVEL", "-"},   {"PSOF", "-"},     {"PSOU", "-"},
     {"PSOR", "-"},   {"PSTR", "-"},     {"SUB_", "VV"},   {"CTVC", "C"},   {"MPCB", "V VR"},  {"MPAC", "RRRR"},
-    {"ANCR", "eRRR ebeee"}, {"ANCM", "eRRR"}, {"ANCV", "eRRRRRRRb"}, {"RNDV", "R"}, {"TPVV", "gV"}, {"DPVV", "gV"}, {"SPAV", "bV"},
+    {"ANCR", "eRRR ebeee"}, {"ANCM", "eRRR"}, {"ANCV", "eRRRRRRRb"}, {"RNDV", "R"}, {"ROTV", "Ve"}, {"TPVV", "gV"}, {"DPVV", "gV"}, {"SPAV", "bV"},
+    {"SLCT", "Re"},  {"NORM", "V"},     {"CMPS", "-"},    {"EXTT", "-"},   {"EXTS", "-"},
+    {"CPSS", "-"},
+    // MCBS is MPCB's scale form (MPT_CVEConvertScaleToXLeftYUpZForward 0x2a30f8).
+    {"MCBS", "V"},
 };
 constexpr ElementSig kModVectorSigs[] = {
     {"NONE", "-"},     {"CNST", "RRR"},   {"GRAV", "V"},     {"WIND", "VR"},   {"EXPL", "RR"},
@@ -146,8 +152,20 @@ constexpr ElementSig kEmitterSigs[] = {
     {"PLNE", "VVVRRR"}, {"ELPS", "VVVRe"}, {"PLNV", "VVRRRRRRRRb"}, {"SPEV", "VRRRRRRb"},
 };
 
-constexpr char kTypeLetters[] = "IRVMCE";
-constexpr int kTypeCount = 6;
+// Remastered's rotations (GetRotationElement); retail has none. CNST is a raw
+// quaternion.
+constexpr ElementSig kRotationSigs[] = {
+    {"CNST", "wwww"}, {"REUL", "RRRb"}, {"MPRE", "RRR"},  {"RADD", "QQ"},   {"RADN", "QQ"},   {"RSUB", "QQ"},
+    {"RSBN", "QQ"},   {"ISWT", "QQ"},   {"CROT", "eQQ"},  {"KPIN", "Q"},    {"MPCB", "Q"},    {"RINV", "Q"},
+    {"RAXY", "VVQ"},  {"RAXZ", "VVQ"},  {"RAYX", "VVQ"},  {"RAYZ", "VVQ"},  {"RAZX", "VVQ"},  {"RAZY", "VVQ"},
+    {"CMRT", "-"},    {"EXTR", "-"},    {"INTR", "-"},    {"RSYS", "-"},    {"RSYX", "-"},    {"SPNR", "-"},    {"RLCL", "-"},
+    {"PAP0", "-"},    {"PAP1", "-"},    {"PAP2", "-"},    {"PAP3", "-"},    {"PAP4", "-"},    {"PAP5", "-"},
+    {"PAP6", "-"},    {"PAP7", "-"},    {"PAP8", "-"},    {"PAP9", "-"},    {"PTAV", "b"},    {"SBAV", "b"},
+    {"SYAV", "b"},    {"SPAR", "bQ"},   {"VARR", "g"},    {"PEXT", "IQ"},   {"VEXT", "IQ"},   {"BNRT", "I"},
+};
+
+constexpr char kTypeLetters[] = "IRVMCEQ";
+constexpr int kTypeCount = 7;
 
 int TypeIndex(char letter) {
   for (int i = 0; i < kTypeCount; ++i) {
@@ -171,12 +189,13 @@ constexpr PropertyType kPropertyTypes[] = {
     {'M', "PSVM VEL1 VEL2 VEL3 VEL4"},
     {'C', "COLR PMCL LCLR"},
     {'E', "EMTR"},
+    {'Q', "PMRQ"},
 };
 
 // Elements seen in the files whose arity is not pinned down; they parse with
 // whatever arity fits, like any unknown FourCC, but they are never properties.
 constexpr const char* kLooseElements =
-    "ARRY CMPS CODE EMRV GPUA GRAD KEWS MDAO PAFM PLNE PSA0 PSA1 PSA2 PSA3 RNDV ROTV SLCT";
+    "ARRY CMPS CODE EMRV GPUA GRAD KEWS MDAO PAFM PLNE PSA0 PSA1 PSA2 PSA3 PSA4 PSA5 PSA6 PSA7 PSA8 PSA9 RNDV SLCT";
 
 // Properties: retail's PART properties and the ones Remastered added. A FourCC
 // that is in neither list may still be a property (the grammar lets unknown
@@ -201,14 +220,11 @@ constexpr const char* kDefaultPropertySigs = "e b bg g be";
 // Unknown elements are tried with up to this many element arguments.
 constexpr int kMaxUnknownArity = 4;
 
-constexpr uint32_t FourCCOf(const char* text) {
-  return uint32_t(uint8_t(text[0])) << 24 | uint32_t(uint8_t(text[1])) << 16 | uint32_t(uint8_t(text[2])) << 8 |
-         uint32_t(uint8_t(text[3]));
-}
+using port::FourCC;
 
 bool HasFourCC(const char* words, uint32_t value) {
   for (const char* word = words; *word != 0;) {
-    if (FourCCOf(word) == value) {
+    if (FourCC(word) == value) {
       return true;
     }
     word += 4;
@@ -236,52 +252,52 @@ struct RolePropertySchema {
 // signatures are deliberately irrelevant to role parsing. The new Plasma rows
 // also pin the observed input-header selector instead of accepting any tag.
 constexpr RolePropertySchema kRolePropertySchemas[] = {
-    {FourCCOf("WPSM"), FourCCOf("APSM"), RolePropertyEncoding::Guid},
-    {FourCCOf("WPSM"), FourCCOf("APS2"), RolePropertyEncoding::Guid, 0, 0},
-    {FourCCOf("WPSM"), FourCCOf("ASW1"), RolePropertyEncoding::Guid},
-    {FourCCOf("WPSM"), FourCCOf("ASW2"), RolePropertyEncoding::Guid},
-    {FourCCOf("WPSM"), FourCCOf("ASW3"), RolePropertyEncoding::Guid},
-    {FourCCOf("WPSM"), FourCCOf("COLR"), RolePropertyEncoding::Guid},
-    {FourCCOf("WPSM"), FourCCOf("FC60"), RolePropertyEncoding::CnstByte},
-    {FourCCOf("WPSM"), FourCCOf("SPS1"), RolePropertyEncoding::CnstByte},
-    {FourCCOf("WPSM"), FourCCOf("HOMG"), RolePropertyEncoding::CnstByte},
-    {FourCCOf("WPSM"), FourCCOf("INRT"), RolePropertyEncoding::Rotation, 0, 0},
-    {FourCCOf("WPSM"), FourCCOf("AP11"), RolePropertyEncoding::CnstByte},
-    {FourCCOf("WPSM"), FourCCOf("AP21"), RolePropertyEncoding::CnstByte},
-    {FourCCOf("WPSM"), FourCCOf("APSO"), RolePropertyEncoding::CnstByte},
-    {FourCCOf("WPSM"), FourCCOf("SPS2"), RolePropertyEncoding::CnstByte},
-    {FourCCOf("WPSM"), FourCCOf("AS11"), RolePropertyEncoding::CnstByte},
-    {FourCCOf("WPSM"), FourCCOf("AS12"), RolePropertyEncoding::CnstByte},
-    {FourCCOf("WPSM"), FourCCOf("AS13"), RolePropertyEncoding::CnstByte},
-    {FourCCOf("WPSM"), FourCCOf("EWTR"), RolePropertyEncoding::CnstByte},
-    {FourCCOf("WPSM"), FourCCOf("LWTR"), RolePropertyEncoding::CnstByte},
-    {FourCCOf("WPSM"), FourCCOf("SWTR"), RolePropertyEncoding::CnstByte},
-    {FourCCOf("WPSM"), FourCCOf("IVEC"), RolePropertyEncoding::Typed, 'V'},
-    {FourCCOf("WPSM"), FourCCOf("TRAT"), RolePropertyEncoding::Typed, 'R'},
-    {FourCCOf("WPSM"), FourCCOf("PSLT"), RolePropertyEncoding::Typed, 'I'},
-    {FourCCOf("WPSM"), FourCCOf("PSCL"), RolePropertyEncoding::Typed, 'V'},
-    {FourCCOf("WPSM"), FourCCOf("PSVM"), RolePropertyEncoding::Typed, 'M'},
-    {FourCCOf("WPSM"), FourCCOf("VMD2"), RolePropertyEncoding::CnstByte},
-    {FourCCOf("CRSM"), FourCCOf("BHFX"), RolePropertyEncoding::Guid},
-    {FourCCOf("CRSM"), FourCCOf("DSHX"), RolePropertyEncoding::Guid},
-    {FourCCOf("CRSM"), FourCCOf("DDCL"), RolePropertyEncoding::Guid},
-    {FourCCOf("CRSM"), FourCCOf("SHFX"), RolePropertyEncoding::Guid},
-    {FourCCOf("CRSM"), FourCCOf("GRDL"), RolePropertyEncoding::Guid},
-    {FourCCOf("CRSM"), FourCCOf("ICDL"), RolePropertyEncoding::Guid},
-    {FourCCOf("CRSM"), FourCCOf("MEDL"), RolePropertyEncoding::Guid},
-    {FourCCOf("CRSM"), FourCCOf("DEFS"), RolePropertyEncoding::Guid},
-    {FourCCOf("CRSM"), FourCCOf("WODL"), RolePropertyEncoding::Guid},
-    {FourCCOf("CRSM"), FourCCOf("DSFX"), RolePropertyEncoding::Guid},
-    {FourCCOf("CRSM"), FourCCOf("CODL"), RolePropertyEncoding::Guid},
-    {FourCCOf("CRSM"), FourCCOf("6DRN"), RolePropertyEncoding::Guid},
-    {FourCCOf("CRSM"), FourCCOf("4DRN"), RolePropertyEncoding::Guid},
-    {FourCCOf("CRSM"), FourCCOf("FOFF"), RolePropertyEncoding::Typed, 'R'},
-    {FourCCOf("CRSM"), FourCCOf("RNGE"), RolePropertyEncoding::Typed, 'R'},
-    {FourCCOf("CRSM"), FourCCOf("PBHX"), RolePropertyEncoding::Guid},
-    {FourCCOf("CRSM"), FourCCOf("CSFX"), RolePropertyEncoding::Guid},
-    {FourCCOf("CRSM"), FourCCOf("3MUD"), RolePropertyEncoding::Guid, 0, 4},
-    {FourCCOf("CRSM"), FourCCOf("3LAV"), RolePropertyEncoding::Guid, 0, 4},
-    {FourCCOf("CRSM"), FourCCOf("3SAN"), RolePropertyEncoding::Guid, 0, 4},
+    {FourCC("WPSM"), FourCC("APSM"), RolePropertyEncoding::Guid},
+    {FourCC("WPSM"), FourCC("APS2"), RolePropertyEncoding::Guid, 0, 0},
+    {FourCC("WPSM"), FourCC("ASW1"), RolePropertyEncoding::Guid},
+    {FourCC("WPSM"), FourCC("ASW2"), RolePropertyEncoding::Guid},
+    {FourCC("WPSM"), FourCC("ASW3"), RolePropertyEncoding::Guid},
+    {FourCC("WPSM"), FourCC("COLR"), RolePropertyEncoding::Guid},
+    {FourCC("WPSM"), FourCC("FC60"), RolePropertyEncoding::CnstByte},
+    {FourCC("WPSM"), FourCC("SPS1"), RolePropertyEncoding::CnstByte},
+    {FourCC("WPSM"), FourCC("HOMG"), RolePropertyEncoding::CnstByte},
+    {FourCC("WPSM"), FourCC("INRT"), RolePropertyEncoding::Rotation, 0, 0},
+    {FourCC("WPSM"), FourCC("AP11"), RolePropertyEncoding::CnstByte},
+    {FourCC("WPSM"), FourCC("AP21"), RolePropertyEncoding::CnstByte},
+    {FourCC("WPSM"), FourCC("APSO"), RolePropertyEncoding::CnstByte},
+    {FourCC("WPSM"), FourCC("SPS2"), RolePropertyEncoding::CnstByte},
+    {FourCC("WPSM"), FourCC("AS11"), RolePropertyEncoding::CnstByte},
+    {FourCC("WPSM"), FourCC("AS12"), RolePropertyEncoding::CnstByte},
+    {FourCC("WPSM"), FourCC("AS13"), RolePropertyEncoding::CnstByte},
+    {FourCC("WPSM"), FourCC("EWTR"), RolePropertyEncoding::CnstByte},
+    {FourCC("WPSM"), FourCC("LWTR"), RolePropertyEncoding::CnstByte},
+    {FourCC("WPSM"), FourCC("SWTR"), RolePropertyEncoding::CnstByte},
+    {FourCC("WPSM"), FourCC("IVEC"), RolePropertyEncoding::Typed, 'V'},
+    {FourCC("WPSM"), FourCC("TRAT"), RolePropertyEncoding::Typed, 'R'},
+    {FourCC("WPSM"), FourCC("PSLT"), RolePropertyEncoding::Typed, 'I'},
+    {FourCC("WPSM"), FourCC("PSCL"), RolePropertyEncoding::Typed, 'V'},
+    {FourCC("WPSM"), FourCC("PSVM"), RolePropertyEncoding::Typed, 'M'},
+    {FourCC("WPSM"), FourCC("VMD2"), RolePropertyEncoding::CnstByte},
+    {FourCC("CRSM"), FourCC("BHFX"), RolePropertyEncoding::Guid},
+    {FourCC("CRSM"), FourCC("DSHX"), RolePropertyEncoding::Guid},
+    {FourCC("CRSM"), FourCC("DDCL"), RolePropertyEncoding::Guid},
+    {FourCC("CRSM"), FourCC("SHFX"), RolePropertyEncoding::Guid},
+    {FourCC("CRSM"), FourCC("GRDL"), RolePropertyEncoding::Guid},
+    {FourCC("CRSM"), FourCC("ICDL"), RolePropertyEncoding::Guid},
+    {FourCC("CRSM"), FourCC("MEDL"), RolePropertyEncoding::Guid},
+    {FourCC("CRSM"), FourCC("DEFS"), RolePropertyEncoding::Guid},
+    {FourCC("CRSM"), FourCC("WODL"), RolePropertyEncoding::Guid},
+    {FourCC("CRSM"), FourCC("DSFX"), RolePropertyEncoding::Guid},
+    {FourCC("CRSM"), FourCC("CODL"), RolePropertyEncoding::Guid},
+    {FourCC("CRSM"), FourCC("6DRN"), RolePropertyEncoding::Guid},
+    {FourCC("CRSM"), FourCC("4DRN"), RolePropertyEncoding::Guid},
+    {FourCC("CRSM"), FourCC("FOFF"), RolePropertyEncoding::Typed, 'R'},
+    {FourCC("CRSM"), FourCC("RNGE"), RolePropertyEncoding::Typed, 'R'},
+    {FourCC("CRSM"), FourCC("PBHX"), RolePropertyEncoding::Guid},
+    {FourCC("CRSM"), FourCC("CSFX"), RolePropertyEncoding::Guid},
+    {FourCC("CRSM"), FourCC("3MUD"), RolePropertyEncoding::Guid, 0, 4},
+    {FourCC("CRSM"), FourCC("3LAV"), RolePropertyEncoding::Guid, 0, 4},
+    {FourCC("CRSM"), FourCC("3SAN"), RolePropertyEncoding::Guid, 0, 4},
 };
 
 constexpr size_t kMaxRoleProperties = 1024;
@@ -304,57 +320,57 @@ enum class RetailValue : uint8_t { Int, Real, Vector, ModVector, Color, Bool, As
 // and CCollisionResponseData. Unknown records are not skippable: the game
 // factories reject them too.
 bool RetailFieldValue(uint32_t owner, uint32_t field, RetailValue& value) {
-  if (owner == FourCCOf("WPSM")) {
+  if (owner == FourCC("WPSM")) {
     switch (field) {
-    case FourCCOf("IORN"):
-    case FourCCOf("IVEC"):
-    case FourCCOf("PSOV"):
-    case FourCCOf("PSCL"):
-    case FourCCOf("POFS"):
-    case FourCCOf("OFST"):
+    case FourCC("IORN"):
+    case FourCC("IVEC"):
+    case FourCC("PSOV"):
+    case FourCC("PSCL"):
+    case FourCC("POFS"):
+    case FourCC("OFST"):
       value = RetailValue::Vector;
       return true;
-    case FourCCOf("PSVM"):
+    case FourCC("PSVM"):
       value = RetailValue::ModVector;
       return true;
-    case FourCCOf("PSLT"):
+    case FourCC("PSLT"):
       value = RetailValue::Int;
       return true;
-    case FourCCOf("PCOL"):
+    case FourCC("PCOL"):
       value = RetailValue::Color;
       return true;
-    case FourCCOf("TRAT"):
-    case FourCCOf("RNGE"):
-    case FourCCOf("FOFF"):
+    case FourCC("TRAT"):
+    case FourCC("RNGE"):
+    case FourCC("FOFF"):
       value = RetailValue::Real;
       return true;
-    case FourCCOf("APSM"):
-    case FourCCOf("APS2"):
-    case FourCCOf("ASW1"):
-    case FourCCOf("ASW2"):
-    case FourCCOf("ASW3"):
-    case FourCCOf("OHEF"):
-    case FourCCOf("COLR"):
-    case FourCCOf("PJFX"):
+    case FourCC("APSM"):
+    case FourCC("APS2"):
+    case FourCC("ASW1"):
+    case FourCC("ASW2"):
+    case FourCC("ASW3"):
+    case FourCC("OHEF"):
+    case FourCC("COLR"):
+    case FourCC("PJFX"):
       value = RetailValue::Asset;
       return true;
-    case FourCCOf("VMD2"):
-    case FourCCOf("AP11"):
-    case FourCCOf("AP21"):
-    case FourCCOf("APSO"):
-    case FourCCOf("AS11"):
-    case FourCCOf("AS12"):
-    case FourCCOf("AS13"):
-    case FourCCOf("HOMG"):
-    case FourCCOf("EWTR"):
-    case FourCCOf("LWTR"):
-    case FourCCOf("SWTR"):
-    case FourCCOf("F60H"):
-    case FourCCOf("SVBD"):
-    case FourCCOf("NDTT"):
-    case FourCCOf("SPS1"):
-    case FourCCOf("SPS2"):
-    case FourCCOf("FC60"):
+    case FourCC("VMD2"):
+    case FourCC("AP11"):
+    case FourCC("AP21"):
+    case FourCC("APSO"):
+    case FourCC("AS11"):
+    case FourCC("AS12"):
+    case FourCC("AS13"):
+    case FourCC("HOMG"):
+    case FourCC("EWTR"):
+    case FourCC("LWTR"):
+    case FourCC("SWTR"):
+    case FourCC("F60H"):
+    case FourCC("SVBD"):
+    case FourCC("NDTT"):
+    case FourCC("SPS1"):
+    case FourCC("SPS2"):
+    case FourCC("FC60"):
       value = RetailValue::Bool;
       return true;
     default:
@@ -362,7 +378,7 @@ bool RetailFieldValue(uint32_t owner, uint32_t field, RetailValue& value) {
     }
   }
 
-  if (owner != FourCCOf("CRSM")) {
+  if (owner != FourCC("CRSM")) {
     return false;
   }
   static constexpr const char* kParticleFields =
@@ -382,7 +398,7 @@ bool RetailFieldValue(uint32_t owner, uint32_t field, RetailValue& value) {
     value = RetailValue::Asset;
     return true;
   }
-  if (field == FourCCOf("RNGE") || field == FourCCOf("FOFF")) {
+  if (field == FourCC("RNGE") || field == FourCC("FOFF")) {
     value = RetailValue::RawReal;
     return true;
   }
@@ -408,7 +424,7 @@ std::vector<std::string> SplitSigs(const char* text) {
 
 void AddWords(std::unordered_set<uint32_t>& set, const char* text) {
   for (const char* c = text; *c != 0;) {
-    set.insert(FourCCOf(c));
+    set.insert(FourCC(c));
     c += 4;
     while (*c == ' ') {
       ++c;
@@ -427,13 +443,13 @@ struct Grammar {
 
   Grammar() {
     for (const ElementSig& sig : kElementSigs) {
-      elements[FourCCOf(sig.fourcc)] = SplitSigs(sig.sigs);
-      elementNames.insert(FourCCOf(sig.fourcc));
+      elements[FourCC(sig.fourcc)] = SplitSigs(sig.sigs);
+      elementNames.insert(FourCC(sig.fourcc));
     }
     AddWords(elementNames, kLooseElements);
     AddWords(propertyNames, kProperties);
     for (const ElementSig& sig : kPropertySigs) {
-      properties[FourCCOf(sig.fourcc)] = SplitSigs(sig.sigs);
+      properties[FourCC(sig.fourcc)] = SplitSigs(sig.sigs);
     }
     defaultProperty = SplitSigs(kDefaultPropertySigs);
     // Most arguments first: when two arities reach the same end, the one with
@@ -443,8 +459,12 @@ struct Grammar {
     }
     auto addTyped = [this](char type, const ElementSig* sigs, size_t count) {
       for (size_t i = 0; i < count; ++i) {
-        typed[TypeIndex(type)][FourCCOf(sigs[i].fourcc)] = SplitSigs(sigs[i].sigs);
-        elementNames.insert(FourCCOf(sigs[i].fourcc));
+        typed[TypeIndex(type)][FourCC(sigs[i].fourcc)] = SplitSigs(sigs[i].sigs);
+        // Rotations share names with properties (INTR): a rotation is only an
+        // element where a rotation is read, never where a property may start.
+        if (type != 'Q') {
+          elementNames.insert(FourCC(sigs[i].fourcc));
+        }
       }
     };
     addTyped('I', kIntSigs, std::size(kIntSigs));
@@ -453,13 +473,14 @@ struct Grammar {
     addTyped('M', kModVectorSigs, std::size(kModVectorSigs));
     addTyped('C', kColorSigs, std::size(kColorSigs));
     addTyped('E', kEmitterSigs, std::size(kEmitterSigs));
+    addTyped('Q', kRotationSigs, std::size(kRotationSigs));
     // A typed property is read as its type first, then any way an untyped one
     // can be (Remastered stores some as a byte).
     for (const PropertyType& property : kPropertyTypes) {
       for (const char* c = property.fourccs; *c != 0;) {
         std::vector<std::string> sigs{std::string(1, property.type)};
         sigs.insert(sigs.end(), defaultProperty.begin(), defaultProperty.end());
-        properties.emplace(FourCCOf(c), std::move(sigs));
+        properties.emplace(FourCC(c), std::move(sigs));
         c += 4;
         while (*c == ' ') {
           ++c;
@@ -778,20 +799,31 @@ public:
     if (found != m_sequences.end()) {
       return found->second;
     }
-    Ends ends;
-    if (count == 0) {
-      ends.push_back(at);
-    } else {
-      const Ends first = Element(at);
-      for (size_t next : first) {
-        AddEnds(ends, Sequence(next, count - 1));
+    // One element at a time over every place the sequence can have reached, so
+    // a long sequence does not nest a call per element.
+    Ends ends{at};
+    for (uint32_t i = 0; i < count && !ends.empty(); ++i) {
+      Ends next;
+      for (size_t pos : ends) {
+        AddEnds(next, Element(pos));
       }
+      ends = std::move(next);
     }
     return m_sequences.emplace(key, std::move(ends)).first->second;
   }
 
   // Where the arguments in `sig` starting at `at` can end.
   Ends Args(size_t at, const std::string& sig) {
+    // Elements nest through their arguments, so a crafted file could nest deep
+    // enough to run out of stack; no real effect comes near the limit.
+    if (m_depth >= kMaxNesting) {
+      return {};
+    }
+    ++m_depth;
+    struct Leave {
+      size_t& depth;
+      ~Leave() { --depth; }
+    } leave{m_depth};
     Ends current{at};
     for (char arg : sig) {
       Ends next;
@@ -949,7 +981,7 @@ public:
         for (uint8_t i = 0; i < m_data[pos]; ++i) {
           Ends after;
           for (size_t item : items) {
-            for (size_t end : Element(item)) {
+            for (size_t end : ModifierItem(item, group)) {
               AddEnd(after, end + trailer);
             }
           }
@@ -960,6 +992,16 @@ public:
       current = std::move(next);
     }
     return current;
+  }
+
+  // A PMTR/SMTR item's group is the type it is read as: 0 an int, 1 a real, 2 a
+  // vector, 4 a colour (group 3 is untyped). Untyped, a colour SLCT's ARRY could
+  // split CNST(r, g, b, a) into CNST(r, g, b) and CNST(a).
+  static int ModifierType(int group) { return group == 3 ? -1 : group; }
+
+  Ends ModifierItem(size_t at, int group) {
+    const int type = ModifierType(group);
+    return type < 0 ? Element(at) : Typed(at, type);
   }
 
   // KSSM: NONE, or CNST with four u32 (retail's three header words and the
@@ -1048,7 +1090,10 @@ public:
     out.events = ReadLE32(m_data + at + 16);
     for (size_t pos : Sequence(at + 20, out.events)) {
       const std::optional<uint32_t> tables = U32(pos);
-      if (tables && *tables <= 16 && BuildSpawnTables(pos + 4, *tables, end, out.tables)) {
+      out.components.clear();
+      out.tables.clear();
+      if (tables && *tables <= 16 && BuildElements(at + 20, out.events, pos, out.components) &&
+          BuildSpawnTables(pos + 4, *tables, end, out.tables)) {
         return true;
       }
     }
@@ -1109,9 +1154,13 @@ public:
     EffectSpawnTable::Spawn spawn;
     std::memcpy(spawn.id.data(), m_data + at, 16);
     spawn.form = FourCCAt(at + 16);
+    spawn.component = ReadLE32(m_data + at + 20);
     spawn.conditional = FourCCAt(at + 24) != kNone;
     out.back().frames.back().spawns.push_back(spawn);
     for (size_t spawnEnd : Element(at + 24)) {
+      if (!BuildElement(at + 24, spawnEnd, out.back().frames.back().spawns.back().instances)) {
+        continue;
+      }
       if (BuildSpawns(spawnEnd, spawns - 1, frames, tables, end, out)) {
         return true;
       }
@@ -1145,6 +1194,17 @@ public:
     if (found != m_properties.end()) {
       return found->second;
     }
+    // Each property recurses into the next one, so the chain's length is stack
+    // depth: the same cap as the role reader's property count, with room for
+    // the generators nested in it.
+    if (m_propertyDepth >= kMaxPropertyChain) {
+      return std::nullopt;
+    }
+    ++m_propertyDepth;
+    struct Leave {
+      size_t& depth;
+      ~Leave() { --depth; }
+    } leave{m_propertyDepth};
     m_properties[key] = std::nullopt; // a cycle cannot parse
     const uint32_t fourcc = FourCCAt(at);
     if (fourcc == 0 || at + 5 > m_size || m_data[at + 4] > 5) {
@@ -1263,7 +1323,7 @@ private:
     // MPCB's factory-backed vector form is one vector argument. The shared
     // converter table also has an unproven trailing-real fallback; role parsing
     // intentionally selects only the single factory form.
-    if (type == 'V' && fourcc == FourCCOf("MPCB")) {
+    if (type == 'V' && fourcc == FourCC("MPCB")) {
       static const std::string kMpcbVector = "V";
       return &kMpcbVector;
     }
@@ -1410,13 +1470,13 @@ private:
       return false;
     }
     const size_t start = at;
-    if (FourCCAt(at) != FourCCOf("REUL")) {
+    if (FourCCAt(at) != FourCC("REUL")) {
       return false;
     }
 
     EffectValue rotation;
     rotation.kind = EffectValue::Kind::Element;
-    rotation.fourcc = FourCCOf("REUL");
+    rotation.fourcc = FourCC("REUL");
     rotation.offset = start;
     at += 4;
     // The source calls GetRealElement three times. Reuse only the unique typed-R
@@ -1505,7 +1565,7 @@ private:
       return {};
     }
     const uint32_t field = FourCCAt(at);
-    if (field == FourCCOf("_END")) {
+    if (field == FourCC("_END")) {
       // The game factories return at _END and leave any resource tail unread.
       // Match that boundary; importantly, never inspect trailing bytes for a
       // second role field.
@@ -1528,7 +1588,7 @@ private:
         RetailFail(at, "invalid asset field type FourCC");
         return {};
       }
-      const bool present = type != FourCCOf("NONE");
+      const bool present = type != FourCC("NONE");
       const size_t next = valueAt + 4 + (present ? 4 : 0);
       if (next > m_size) {
         RetailFail(at, "truncated asset id");
@@ -1624,7 +1684,8 @@ private:
     if (left == 0) {
       return BuildGroups(at, group + 1, trailer, end, out);
     }
-    for (size_t next : Element(at)) {
+    const int type = ModifierType(group);
+    for (size_t next : ModifierItem(at, group)) {
       if (next + trailer > end) {
         continue;
       }
@@ -1634,7 +1695,7 @@ private:
       item.offset = at;
       item.size = next + trailer - at;
       EffectValue element;
-      if (!BuildElement(at, next, element)) {
+      if (!(type < 0 ? BuildElement(at, next, element) : BuildTyped(at, next, type, element))) {
         continue;
       }
       item.args.push_back(std::move(element));
@@ -1798,14 +1859,15 @@ private:
     if (left == 0) {
       return BuildMaterialGroup(at, end, trailer, group + 1, out);
     }
-    for (size_t elementEnd : Element(at)) {
+    const int type = ModifierType(group);
+    for (size_t elementEnd : ModifierItem(at, group)) {
       if (elementEnd + trailer > end) {
         continue;
       }
       EffectMaterialTrack::Item item;
       item.group = group;
       std::copy_n(m_data + elementEnd, trailer, item.trailer.begin());
-      if (!BuildElement(at, elementEnd, item.value)) {
+      if (!(type < 0 ? BuildElement(at, elementEnd, item.value) : BuildTyped(at, elementEnd, type, item.value))) {
         continue;
       }
       out.items.push_back(std::move(item));
@@ -1828,6 +1890,14 @@ private:
       raw.offset = at + 4;
       raw.size = end - at - 4;
       value.args.push_back(std::move(raw));
+      // An ARRY's entries are elements too: they follow the raw bytes when
+      // they parse as exactly that many.
+      const std::optional<uint32_t> count = U32(at + 4);
+      std::vector<EffectValue> entries;
+      if (value.fourcc == kArry && count && *count != 0 && BuildElements(at + 8, *count, end, entries)) {
+        value.args.insert(value.args.end(), std::make_move_iterator(entries.begin()),
+                          std::make_move_iterator(entries.end()));
+      }
       return true;
     }
     for (const std::string& sig : m_grammar.ElementSigs(value.fourcc)) {
@@ -1853,6 +1923,10 @@ private:
   std::unordered_map<uint64_t, Ends> m_sequences;
   std::unordered_map<uint64_t, std::optional<size_t>> m_properties;
   size_t m_furthest = 0;
+  static constexpr size_t kMaxNesting = 256;
+  size_t m_depth = 0; // Args calls on the stack
+  static constexpr size_t kMaxPropertyChain = 2 * kMaxRoleProperties;
+  size_t m_propertyDepth = 0; // Properties calls on the stack
 };
 
 // Where the root GPSM starts, after the RFRM header.
@@ -1880,9 +1954,11 @@ void DumpValue(const EffectValue& value, const uint8_t* data, std::string& out) 
   case EffectValue::Kind::Element:
     out += EffectFourCCString(value.fourcc);
     if (!value.args.empty()) {
+      // An ARRY whose entries parsed shows them instead of its raw bytes.
+      const size_t first = value.fourcc == kArry && value.args.size() > 1 ? 1 : 0;
       out += '(';
-      for (size_t i = 0; i < value.args.size(); ++i) {
-        if (i > 0) {
+      for (size_t i = first; i < value.args.size(); ++i) {
+        if (i > first) {
           out += ", ";
         }
         DumpValue(value.args[i], data, out);
@@ -2081,13 +2157,10 @@ bool ParseMaterialTrack(const uint8_t* data, size_t size, const EffectProperty& 
   return parser.BuildMaterialTrack(property.offset + 5, property.offset + property.size, trailer, out);
 }
 
-uint32_t EffectMaterialShader(const uint8_t* mati, size_t size) {
-  constexpr size_t kShaderAt = 0x48;  // the MTRL guid, checked in all 2061 MATIs
-  if (size < kShaderAt + 4) {
-    return 0;
-  }
-  const uint8_t* p = mati + kShaderAt;
-  return uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3];
+std::string DumpEffectValue(const EffectValue& value, const uint8_t* data) {
+  std::string out;
+  DumpValue(value, data, out);
+  return out;
 }
 
 std::string DumpEffect(const EffectNode& effect, const uint8_t* data) {

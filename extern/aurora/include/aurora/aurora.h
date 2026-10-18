@@ -120,7 +120,8 @@ typedef struct {
   /*
    * Multiplies what one frame can hold of vertex, index and array data (5, 2 and 8 MiB at 1),
    * and doubles the 24 MiB of uniforms when above 1. 0 means 1. A frame that outgrows
-   * its buffers aborts, so raise this for content denser than the original game's.
+   * these limits drops the draws that no longer fit and logs a warning once, so raise this for
+   * content denser than the original game's.
    */
   uint32_t frameBufferScale;
 
@@ -147,12 +148,42 @@ typedef struct {
   size_t pipelineCacheSeedSize;
   /* Merge no initial pipeline cache at all (recording a new seed from an empty cache). */
   bool pipelineCacheNoSeed;
+  /*
+   * Keep the pipeline cache (and the merged seed) but do not compile its rows at startup:
+   * pipelines are built on first use. For devices that cannot spare the memory the startup
+   * compile takes (Dawn/driver state per pipeline).
+   */
+  bool pipelineCacheLazy;
+  /* Release built pipelines unused for this many frames (0 = never); see aurora_set_pipeline_eviction. */
+  uint32_t pipelineEvictFrames;
+  /*
+   * Do not compile the cached rows whose shader is PBR at startup: the caller knows nothing
+   * can draw PBR (no mod brings a PBR material). The rows stay in the database, and a PBR
+   * draw still builds its pipeline on first use. pipelineCacheSkipPbrReason is the log text.
+   */
+  bool pipelineCacheSkipPbr;
+  const char* pipelineCacheSkipPbrReason;
 
   /*
    * A directory (with a trailing slash) Dawn searches first for the Vulkan library, e.g. a shim
    * for a custom driver. Null searches the usual places only.
    */
   const char* vulkanLibraryDir;
+
+  /*
+   * Dawn device toggles to turn on and off, comma-separated (null or empty for none): driver
+   * workarounds chosen by the application. MP_DAWN_ENABLE / MP_DAWN_DISABLE apply after these.
+   */
+  const char* dawnEnableToggles;
+  const char* dawnDisableToggles;
+
+  /*
+   * The per-frame staging buffers hold the full frameBufferScale/frameStorageScale sizes. When
+   * false they start smaller (4, 8, 2 and 8 MiB of vertices, uniforms, indices and arrays, 8
+   * of texture uploads), and a frame that needs more spills into memory allocated for that
+   * frame, up to the scaled sizes.
+   */
+  bool frameBuffersPinned;
 
   /*
    * When set and only the Null backend started (no GPU and no software adapter), this message is
@@ -187,6 +218,9 @@ void aurora_set_log_level(AuroraLogLevel level);
 void aurora_set_pause_on_focus_lost(bool value);
 void aurora_set_background_input(bool value);
 void aurora_set_resampler(AuroraSampler sampler);
+/** Sharpens the frame (CAS-style contrast-adaptive, 0 = off, 1 = most) when it is drawn smaller than
+ * the window and stretched to it; a frame at or above the window's size is never touched. */
+void aurora_set_present_sharpness(float sharpness);
 /** Sets MSAA samples (1 or 4) and max texture anisotropy (1-16); applied at the next frame start. */
 void aurora_set_graphics_quality(uint32_t msaa, uint16_t maxTextureAnisotropy);
 /** Evaluates GX lighting per pixel instead of per vertex (default off); lit pipelines rebuild on next use. */

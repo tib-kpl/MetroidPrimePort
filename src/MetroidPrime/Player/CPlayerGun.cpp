@@ -1,6 +1,9 @@
 #include "MetroidPrime/Player/CPlayerGun.hpp"
 #include "port_debug.h"
+#include "port_power_charge_release.h"
+#include "port_power_flash_frame.h"
 #include "port_room_env.h"
+#include "port_shot_aim.h"
 #include "port_synthetic_effect.h"
 #ifdef MP_ENABLE_SMOKE_DRIVER
 #include "port_smoke.h"
@@ -592,7 +595,7 @@ void CPlayerGun::PortSnapshotPresentedPose(const CStateManager& mgr) const {
   sPortGunPrevGeneration = CActor::PortTickGeneration();
 }
 
-void CPlayerGun::PortShotFromDrawnMuzzle(const CStateManager& mgr, CTransform4f& xf) const {
+void CPlayerGun::PortShotFromDrawnMuzzle(const CStateManager& mgr, CTransform4f& xf, bool aim) const {
   // CStateManager's RenderGun pass draws the gun at the retail FOV when the view's differs,
   // so on screen the muzzle sits where a world point at the same depth, scaled out from the
   // view axis by the ratio of the two projections, would. Shots start there, so they leave
@@ -617,13 +620,72 @@ void CPlayerGun::PortShotFromDrawnMuzzle(const CStateManager& mgr, CTransform4f&
   const CVector3f p = viewXf.TransposeRotate(xf.GetTranslation() - eye);
   const CVector3f pos =
       eye + viewXf.Rotate(CVector3f(p.GetX() * scale, p.GetY(), p.GetZ() * scale));
+  // A shot that only moved would keep retail's direction, aimed from the real muzzle, and pass
+  // beside what it was aimed at by as much as it moved (#134: weak points missed with the FOV
+  // slider off retail). It is aimed from its new start at where retail's would have arrived:
+  // the pointed point, the aim target at its depth along the shot, or what the shot meets.
+  if (!aim) {
+    xf.SetTranslation(pos);
+    return;
+  }
+  CVector3f aimPoint;
   if (mPortPointerAimValid) {
-    const CVector3f toAim = mPortPointerAimPoint - pos;
-    if (toAim.CanBeNormalized()) {
-      xf = CTransform4f::LookAt(CVector3f::Zero(), toAim);
-    }
+    aimPoint = mPortPointerAimPoint;
+  } else {
+    aimPoint = PortShotAimPoint(mgr, xf.GetTranslation(), xf.GetForward());
+  }
+  const CVector3f toAim = aimPoint - pos;
+  if (toAim.CanBeNormalized()) {
+    xf = CTransform4f::LookAt(CVector3f::Zero(), toAim);
   }
   xf.SetTranslation(pos);
+}
+
+CVector3f CPlayerGun::PortShotAimPoint(const CStateManager& mgr, const CVector3f& from,
+                                       const CVector3f& dir) const {
+  // Nearer than this the new start's offset would bend the shot more than it is worth.
+  const float kMinDepth = 2.f;
+  const float kRange = 100.f;
+  if (!dir.CanBeNormalized()) {
+    return from;
+  }
+  const CVector3f forward = dir.AsNormalized();
+  // Assist-aimed at a target: retail's shot heads for the assisted aim point (the target with
+  // its lead), so meet the line at its depth, whether or not the shot touches the target. Only
+  // when this shot was aimed at it (port_shot_aim.h): it took the assist direction, and that
+  // direction, from the gun, points at the aim point. An aim target kept after it left the box
+  // or the line of sight, or one assist was clamped or off for, is not where the shot goes.
+  const CPlayer& player = *mgr.GetPlayer();
+  if (TCastToConstPtr< CActor >(mgr.GetObjectById(player.GetAimTargetId())) != nullptr &&
+      x478_assistAimXf.GetForward().CanBeNormalized()) {
+    const CVector3f assistDir = x478_assistAimXf.GetForward().AsNormalized();
+    const CVector3f gun = GetTransform().GetTranslation();
+    const CVector3f& aim = player.GetAssistedTargetAim();
+    const float dirXyz[3] = {forward.GetX(), forward.GetY(), forward.GetZ()};
+    const float assistXyz[3] = {assistDir.GetX(), assistDir.GetY(), assistDir.GetZ()};
+    const float gunXyz[3] = {gun.GetX(), gun.GetY(), gun.GetZ()};
+    const float aimXyz[3] = {aim.GetX(), aim.GetY(), aim.GetZ()};
+    const float fromXyz[3] = {from.GetX(), from.GetY(), from.GetZ()};
+    if (PortShotAim::SameDirection(dirXyz, assistXyz) &&
+        PortShotAim::PointsAt(gunXyz, assistXyz, aimXyz, kMinDepth)) {
+      const float depth = PortShotAim::DepthAlong(fromXyz, dirXyz, aimXyz);
+      if (depth >= kMinDepth) {
+        return from + forward * depth;
+      }
+    }
+  }
+  // Else what retail's shot would meet first: the world, or an actor.
+  static const CMaterialFilter filter = CMaterialFilter::MakeIncludeExclude(
+      CMaterialList(kMT_Solid), CMaterialList(kMT_Player, kMT_ProjectilePassthrough));
+  TEntityList nearList;
+  mgr.BuildNearList(nearList, from, forward, kRange, filter, mgr.GetPlayer());
+  TUniqueId hitId = kInvalidUniqueId;
+  const CRayCastResult hit = mgr.RayWorldIntersection(hitId, from, forward, kRange, filter, nearList);
+  float depth = kRange;
+  if (hit.IsValid()) {
+    depth = CMath::Max(CVector3f::Dot(hit.GetPoint() - from, forward), kMinDepth);
+  }
+  return from + forward * depth;
 }
 
 CTransform4f CPlayerGun::PortGunView(const CStateManager& mgr,
@@ -839,6 +901,11 @@ inline bool just_froze(bool frozen, bool playerFrozen) {
 }
 
 void CPlayerGun::Update(float grappleSwingT, float cameraBobT, float dt, CStateManager& mgr) {
+#ifdef TARGET_PC
+  if (!PortDebug::StackBeams()) {
+    PortReleaseStackedBeams();
+  }
+#endif
   CPlayer& player = *mgr.Player();
   const CGunMorph::EGunState gunState = x678_morph.GetGunState();
   CPlayerState& playerState = *mgr.PlayerState();
@@ -955,6 +1022,14 @@ void CPlayerGun::Update(float grappleSwingT, float cameraBobT, float dt, CStateM
     x350_shakeZ = chargeShakeTbl[static_cast< int >(mgr.Random()->Next()) % 3] * shakeFactor;
   }
 
+#ifdef TARGET_PC
+  // Port: a save state loaded in the ball morphs the player before the beam has loaded, and
+  // nothing touches the gun in the ball, so it never would and every bomb is skipped below.
+  if (!x72c_currentBeam->IsLoaded()
+      && player.GetMorphballTransitionState() == CPlayer::kMS_Morphed) {
+    x72c_currentBeam->Touch(mgr);
+  }
+#endif
   if (!x72c_currentBeam->IsLoaded()) {
     return;
   }
@@ -1287,7 +1362,15 @@ void CPlayerGun::ResetCharged(float dt, CStateManager& mgr) {
     return;
   }
 
-  if (x32c_chargePhase >= kCP_FxGrowing) {
+#ifdef TARGET_PC
+  const bool powerRapidCharge = NPortPowerChargeRelease::IsScopedRapidCharge(
+      mPortRapidCharge, x310_currentBeam == CPlayerState::kBI_Power);
+#else
+  const bool powerRapidCharge = false;
+#endif
+  if (NPortPowerChargeRelease::IsChargedRelease(
+          x32c_chargePhase, kCP_FxGrowing, kCP_AnimAndSfx, x832_27_chargeAnimStarted,
+          powerRapidCharge)) {
     x833_30_canShowAuxMuzzleEffect = false;
     UpdateNormalShotCycle(dt, mgr);
     x832_24_coolingCharge = true;
@@ -1341,6 +1424,56 @@ bool CPlayerGun::ExitMissile() {
   return true;
 }
 
+#ifdef TARGET_PC
+// Port (stack_beams): the projectiles of every other owned beam, from the shot just fired.
+void CPlayerGun::PortFireStackedBeams(float dt, CStateManager& mgr, const CTransform4f& xf,
+                                      uint targetHoming) {
+  const bool enabled = PortDebug::StackBeams() && !x833_28_phazonBeamActive;
+  if (!enabled) {
+    PortReleaseStackedBeams();
+    return;
+  }
+  const CPlayerState& playerState = *mgr.GetPlayerState();
+  for (int i = 0; i < 4; ++i) {
+    CGunWeapon* beam = x760_selectableBeams[i];
+    if (i == x310_currentBeam || beam == nullptr || beam == x72c_currentBeam ||
+        !playerState.HasPowerUp(mBeamArr[i])) {
+      continue;
+    }
+    beam->PortLockStackTokens();
+    beam->PortFireStackedProjectile(
+        x834_27_underwater, dt, CPlayerState::EChargeStage(x330_chargeState), xf, mgr,
+        static_cast< const TUniqueId& >(targetHoming ? GetTargetId(mgr) : kInvalidUniqueId),
+        x340_chargeBeamFactor, x340_chargeBeamFactor);
+  }
+}
+
+// The selected beam's shot cool down, or with stack_beams the slowest owned beam's.
+float CPlayerGun::PortShotCoolDown(const CStateManager& mgr) const {
+  float coolDown = x72c_currentBeam->GetWeaponInfo().x0_coolDown;
+  if (!PortDebug::StackBeams() || x833_28_phazonBeamActive) {
+    return coolDown;
+  }
+  const CPlayerState& playerState = *mgr.GetPlayerState();
+  for (int i = 0; i < 4; ++i) {
+    const CGunWeapon* beam = x760_selectableBeams[i];
+    if (beam != nullptr && playerState.HasPowerUp(mBeamArr[i])) {
+      coolDown = rstl::max_val(coolDown, beam->GetWeaponInfo().x0_coolDown);
+    }
+  }
+  return coolDown;
+}
+
+// Releases the stacked beams' projectile tokens once the setting is off.
+void CPlayerGun::PortReleaseStackedBeams() {
+  for (int i = 0; i < 4; ++i) {
+    if (x760_selectableBeams[i] != nullptr) {
+      x760_selectableBeams[i]->PortUnlockStackTokens();
+    }
+  }
+}
+#endif
+
 void CPlayerGun::UpdateNormalShotCycle(float dt, CStateManager& mgr) {
   if (!ExitMissile() || mgr.GetCameraManager()->IsInCinematicCamera()) {
     return;
@@ -1384,6 +1517,9 @@ void CPlayerGun::UpdateNormalShotCycle(float dt, CStateManager& mgr) {
       x834_27_underwater, dt, CPlayerState::EChargeStage(x330_chargeState), xf, mgr,
       static_cast< const TUniqueId& >(targetHoming ? GetTargetId(mgr) : kInvalidUniqueId),
       x340_chargeBeamFactor, x340_chargeBeamFactor);
+#ifdef TARGET_PC
+  PortFireStackedBeams(dt, mgr, xf, targetHoming);
+#endif
 
   mgr.InformListeners(GetGunMotionTransform().GetTranslation(), kLNT_PlayerFire);
 }
@@ -1592,6 +1728,12 @@ bool CPlayerGun::PortRapidChargeShot(float dt, CStateManager& mgr) {
   if (beam == nullptr || mPortRapidShots >= beam->shots) {
     return false;
   }
+  // A held charge is requested again before the new beam's ToBeam animation ends.
+  // Wait for the switch to finish: firing here calls ExitMissile, which can replace
+  // ChangeWeapon/SetupBeam and leave the switching flag set, blocking every weapon.
+  if (IsWeaponStateSet(0x8)) {
+    return true;
+  }
   mPortRapidTimer += dt;
   if (mPortRapidTimer < float(beam->shotFrames[mPortRapidShots]) / 60.f) {
     return true;
@@ -1608,11 +1750,15 @@ void CPlayerGun::UpdateChargeState(float dt, CStateManager& mgr) {
   float fxStart = kChargeFxStart;
   float chargeSpeed = kChargeSpeed;
 #ifdef TARGET_PC
+  const bool powerRapidCharge = NPortPowerChargeRelease::IsScopedRapidCharge(
+      mPortRapidCharge, x310_currentBeam == CPlayerState::kBI_Power);
   if (const SPortRapidCharge* beam = mPortRapidCharge ? PortRapidChargeFor(x310_currentBeam) : nullptr) {
     animStart = float(beam->triggered) / float(beam->full);
     fxStart = float(beam->warmUp) / float(beam->full);
     chargeSpeed = 60.f / float(beam->full);
   }
+#else
+  const bool powerRapidCharge = false;
 #endif
 #ifdef TARGET_PC
   // Remastered (UpdateChargeRumbleTriggered 0xc9b41c): one rumble once the charge time passes warmUp.
@@ -1651,6 +1797,8 @@ void CPlayerGun::UpdateChargeState(float dt, CStateManager& mgr) {
               mgr.GetRumbleManager()->Rumble(mgr, kRFX_PlayerGunCharge, 1.f, kRP_Three);
         }
         x832_27_chargeAnimStarted = true;
+        x330_chargeState = NPortPowerChargeRelease::ChargeStageAtAnimationStart(
+            x330_chargeState, kCS_Charged, powerRapidCharge, x832_27_chargeAnimStarted);
       }
     } else if (x340_chargeBeamFactor >= fxStart && !IsWeaponStateSet(0x8)) {
       x832_25_chargeEffectVisible = true;
@@ -2007,7 +2155,7 @@ void CPlayerGun::PortUpdateFlashes(float dt, const CVector3f& scale) {
     if (gen == nullptr) {
       continue;
     }
-    gen->SetGlobalOrientAndTrans(x418_beamLocalXf);
+    NPortPowerFlashFrame::SetGlobalLocator(*gen, x418_beamLocalXf, i);
     gen->SetGlobalScale(scale);
     gen->Update(dt);
     if (gen->IsSystemDeletable()) {
@@ -2158,7 +2306,11 @@ void CPlayerGun::UpdateWeaponFire(float dt, CPlayerState& playerState, CStateMan
   CPlayer& player = *mgr.Player();
 
   if (!x832_24_coolingCharge && !x834_30_inBigStrike) {
+#ifdef TARGET_PC
+    float coolDown = PortShotCoolDown(mgr);
+#else
     float coolDown = x72c_currentBeam->GetWeaponInfo().x0_coolDown;
+#endif
     if ((pressedStates & 0x1) == 0) {
       if (x390_cooldown >= coolDown) {
         x390_cooldown = coolDown;
@@ -2882,7 +3034,8 @@ void CPlayerGun::ReturnArmAndGunToDefault(CStateManager& mgr, bool returnToDefau
 void CPlayerGun::UpdateAuxWeapons(float dt, const CTransform4f& targetXf, CStateManager& mgr) {
 #ifdef TARGET_PC
   CTransform4f fireXf = GetGunMotionTransform() * x418_beamLocalXf;
-  PortShotFromDrawnMuzzle(mgr, fireXf);
+  // The combo beams fire along targetXf; this only places their muzzle effect.
+  PortShotFromDrawnMuzzle(mgr, fireXf, false);
   const CVector3f firePoint = fireXf.GetTranslation();
 #else
   const CVector3f firePoint = GetGunMotionTransform() * x418_beamLocalXf.GetTranslation();

@@ -14,11 +14,13 @@
 #include <dolphin/dvd.h>
 
 #include "port_env.h"
+#include "port_strings.h"
 #include "port_embedded.h"
 #include "port_crash.h"
 #include "port_disc.h"
 #include "port_gci.h"
 #include "port_debug.h"
+#include "port_graphics_backend.h"
 #include "port_paths.h"
 #include "port_actor_collision_bounds.h"
 #include "port_apclient.h"
@@ -31,6 +33,7 @@
 #include "port_memory_log.h"
 #include "port_mods.h"
 #include "port_pal_languages.h"
+#include "port_flaahgra_music.h"
 #include "port_room_geo.h"
 #include "port_importers.h"
 #include "port_remastered_import.h"
@@ -57,6 +60,7 @@
 #include <array>
 #include <atomic>
 #include <cctype>
+#include <clocale>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -218,13 +222,19 @@ std::string FindDiscNextToExecutable() {
     return {};
 }
 
+// MP_DISC, or nullptr when it is unset or empty.
+const char* DiscFromEnvironment() {
+    const char* env = port::EnvString("MP_DISC");
+    return env != nullptr && env[0] != '\0' ? env : nullptr;
+}
+
 const char* ResolveDiscPath(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         if (argv[i][0] != '-' && argv[i][0] != '\0') {
             return argv[i];
         }
     }
-    if (const char* env = std::getenv("MP_DISC"); env != nullptr && env[0] != '\0') {
+    if (const char* env = DiscFromEnvironment()) {
         return env;
     }
     if (const char* saved = PortDebug::DiscPath(); saved != nullptr) {
@@ -306,8 +316,7 @@ bool ResolveDiscFromArgs(int argc, char** argv) {
             return true;
         }
     }
-    const char* env = std::getenv("MP_DISC");
-    return env != nullptr && env[0] != '\0';
+    return DiscFromEnvironment() != nullptr;
 }
 
 // The disc id's game name and maker as one six-character id.
@@ -500,7 +509,7 @@ bool DiscReadFailedLastTime(const std::string& path) {
     if (!in) {
         return false;
     }
-    const std::string failed((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    const std::string failed = port::ReadAllText(in);
     in.close();
     std::error_code ec;
     std::filesystem::remove(marker, ec);
@@ -795,6 +804,31 @@ const char* DefaultTexturesPath() {
     }();
     return sPath.empty() ? nullptr : sPath.c_str();
 }
+
+// The API to ask Aurora for. It is tried first, with Aurora's own order (D3D12,
+// Vulkan, D3D11) as the fallback, so a driver that can't start it still plays.
+AuroraBackend DesiredGraphicsBackend() {
+#if defined(_WIN32)
+    // The `graphics_backend` setting (F1 > Video > Compatibility, issue #135), read at
+    // window creation, so a change needs a restart. Auto keeps asking for nothing in
+    // particular. MP_GRAPHICS_BACKEND=auto|d3d12|vulkan|d3d11 overrides the setting for
+    // one run; an unknown value warns and leaves the saved selection in charge.
+    // port_graphics_backend.h owns the mapping and the same resolution the Video page
+    // shows, so a request cannot be described one way and started another.
+    const char* const env = PortGraphicsBackend::EnvRequest();
+    const PortGraphicsBackend::Request request = PortGraphicsBackend::Resolve(PortDebug::GraphicsBackend(), env);
+    if (request.rejected) {
+        PortLog::Write("port: MP_GRAPHICS_BACKEND=%s is not auto, d3d12, vulkan or d3d11; "
+                       "using graphics_backend=%s\n",
+                       env, PortDebug::GraphicsBackendConfigName(request.backend));
+    }
+    return PortGraphicsBackend::ToAurora(request.backend);
+#else
+    // Elsewhere the API is Dawn's to choose: MP_OPENGLES=0/1 overrides the `opengles`
+    // setting for one run (Android's OpenGL ES, issue #7).
+    return port::EnvFlag("MP_OPENGLES", PortDebug::OpenGles()) ? BACKEND_OPENGLES : BACKEND_AUTO;
+#endif
+}
 } // namespace
 
 int main(int argc, char** argv) {
@@ -804,6 +838,9 @@ int main(int argc, char** argv) {
     }
     PortLogFile::AttachParentConsole();
 #endif
+    if (argc == 2 && std::strcmp(argv[1], "--settings-selftest") == 0) {
+        return PortDebug::SettingsSelfTest();
+    }
     if (argc == 2 && std::strcmp(argv[1], "--version") == 0) {
         std::printf("Metroid Prime native port %s (%s)\n", MP_BUILD_VERSION, MP_BUILD_REVISION);
         return 0;
@@ -821,7 +858,7 @@ int main(int argc, char** argv) {
             rest = space == std::string_view::npos ? std::string_view{} : rest.substr(space + 1);
             if (const size_t eq = pair.find('='); eq != std::string::npos && eq != 0) {
                 setenv(pair.substr(0, eq).c_str(), pair.c_str() + eq + 1, 1);
-                __android_log_print(ANDROID_LOG_INFO, "MetroidPrime", "%s: %s", prop, pair.c_str());
+                PortLog::Write("%s: %s\n", prop, pair.c_str());
             }
         }
     }
@@ -865,6 +902,15 @@ int main(int argc, char** argv) {
             return 2;
         }
         return PortPalLanguages::RunFromCommandLine(argv[2]);
+    }
+    // --import-flaahgra-music <image>: add the full Flaahgra theme from a PAL/JP
+    // GameCube or Trilogy image to the mods folder (port_flaahgra_music.h).
+    if (argc >= 2 && std::strcmp(argv[1], "--import-flaahgra-music") == 0) {
+        if (argc != 3) {
+            std::fprintf(stderr, "usage: %s %s <PAL/JP GameCube or Trilogy image>\n", argv[0], argv[1]);
+            return 2;
+        }
+        return PortFlaahgraMusic::RunFromCommandLine(argv[2]);
     }
 #endif
     // The file log starts first so it holds everything after it, build id included.
@@ -958,10 +1004,41 @@ int main(int argc, char** argv) {
                        envFrameBuffers >= 0 || envStorageBuffers >= 0 ? "MP_FRAME_BUFFERS/MP_STORAGE_BUFFERS"
                                                                       : "room geometry");
     }
+    // The startup compile of the cached and seeded pipelines costs ~950 MiB of process memory
+    // (issue #162): Android, and any device short on RAM, builds them on first use instead. An 8 GB
+    // tablet held ~900 MiB of driver pipeline state from them and swapped all session.
+    bool pipelineLazy = false;
+    {
+        char why[96] = "";
+        pipelineLazy = PortMemoryLog::LowRamDevice(why, sizeof(why));
+#if defined(__ANDROID__)
+        if (!pipelineLazy) {
+            pipelineLazy = true;
+            std::strncat(why, ", Android", sizeof(why) - std::strlen(why) - 1);
+        }
+#endif
+        const char* reason = why;
+        if (const char* env = port::EnvString("MP_PIPELINE_LAZY"); env != nullptr && env[0] != '\0') {
+            pipelineLazy = port::EnvFlag("MP_PIPELINE_LAZY", pipelineLazy);
+            reason = "MP_PIPELINE_LAZY";
+        }
+        if (pipelineLazy || why[0] != '\0' || reason != why) {
+            PortLog::Write("port: pipelines %s at startup (%s)\n", pipelineLazy ? "built on first use" : "precompiled",
+                           reason);
+        }
+    }
+    uint32_t pipelineEvictFrames = pipelineLazy ? 7200 : 0;
+    if (const char* env = port::EnvString("MP_PIPELINE_EVICT"); env != nullptr && env[0] != '\0') {
+        pipelineEvictFrames = static_cast<uint32_t>(std::strtoul(env, nullptr, 10));
+        PortLog::Write("port: pipeline eviction %u frames (MP_PIPELINE_EVICT)\n", pipelineEvictFrames);
+    }
+    // PBR pipelines are only drawn with a mod's converted materials (issue #162): without an
+    // enabled mod their cached rows are not compiled at startup. MP_PIPELINE_PBR=0|1 overrides.
+    const bool pipelineSkipPbr = !port::EnvFlag("MP_PIPELINE_PBR", PortMods::AnyModEnabled());
     // Settings, mods, save states and the shader caches sit in user/ beside the
     // executable when that folder can be written to (port_paths.h).
     const std::string& userFolder = PortPaths::UserFolder();
-    const char* cacheEnv = std::getenv("MP_CACHE_PATH");
+    const char* cacheEnv = port::EnvString("MP_CACHE_PATH");
 #if defined(__ANDROID__)
     // The shader caches stay in app storage when the data moves to shared
     // storage: they are disposable, and SQLite is slow on the shared mount.
@@ -1017,8 +1094,9 @@ int main(int argc, char** argv) {
         .userPath = userFolder.empty() ? nullptr : userFolder.c_str(),
         .cachePath = cacheFolder.empty() ? nullptr : cacheFolder.c_str(),
         .resourcesPath = resourcesPath.empty() ? nullptr : resourcesPath.c_str(),
-        // MP_OPENGLES=0/1 overrides the setting for one run.
-        .desiredBackend = port::EnvFlag("MP_OPENGLES", PortDebug::OpenGles()) ? BACKEND_OPENGLES : BACKEND_AUTO,
+        // Which API to ask Aurora for: aurora tries it first and falls back to its
+        // own order (see DesiredGraphicsBackend).
+        .desiredBackend = DesiredGraphicsBackend(),
         .msaa = static_cast<uint32_t>(PortDebug::Msaa()),
         .maxTextureAnisotropy = static_cast<uint16_t>(PortDebug::Anisotropy()),
         .vsync = false,
@@ -1058,8 +1136,20 @@ int main(int argc, char** argv) {
         .pipelineCacheSeedSize = embeddedSeed.size(),
         // MP_PIPELINE_SEED=0: start from an empty cache (tools/pipeline_seed.py tour records with it).
         .pipelineCacheNoSeed = !port::EnvFlag("MP_PIPELINE_SEED", true),
+        // Low-RAM Android builds pipelines on first use (issue #162); MP_PIPELINE_LAZY=0|1 overrides.
+        .pipelineCacheLazy = pipelineLazy,
+        // Idle pipelines are released after ~2 min at 60 fps when pipelines are built on first use;
+        // MP_PIPELINE_EVICT=0|<frames> overrides (issue #162).
+        .pipelineEvictFrames = pipelineEvictFrames,
+        .pipelineCacheSkipPbr = pipelineSkipPbr,
+        .pipelineCacheSkipPbrReason = "no mod enabled",
         // Set below when a custom Vulkan driver (port_gpu_driver.h) is loaded.
         .vulkanLibraryDir = nullptr,
+        // Set below from the Driver workarounds settings.
+        .dawnEnableToggles = nullptr,
+        .dawnDisableToggles = nullptr,
+        // Explicit MP_FRAME_BUFFERS / MP_STORAGE_BUFFERS keep the staging buffers at full size.
+        .frameBuffersPinned = envFrameBuffers >= 0 || envStorageBuffers >= 0,
         // Aurora's Null backend draws nothing: the game would play its sound behind
         // a black window (issue #33). Scripted runs, which can't answer a box, keep it.
         .noGraphicsMessage = port::EnvFlag("MP_NO_DISC_DIALOG")
@@ -1133,7 +1223,7 @@ int main(int argc, char** argv) {
     const std::filesystem::path driverMarker =
         std::filesystem::path(userFolder.empty() ? "." : userFolder) / "gpu_driver_starting";
     static std::string vulkanLibraryDir;
-    const char* envDriver = std::getenv("MP_GPU_DRIVER");
+    const char* envDriver = port::EnvString("MP_GPU_DRIVER");
     {
         const std::string driver = envDriver != nullptr ? envDriver : PortDebug::GpuDriver();
         std::error_code ec;
@@ -1155,7 +1245,17 @@ int main(int argc, char** argv) {
         }
     }
     PortDebug::ApplyStorageClamp();
+    static std::string dawnEnableToggles;
+    static std::string dawnDisableToggles;
+    PortDebug::BeginDriverWorkarounds(userFolder, dawnEnableToggles, dawnDisableToggles);
+    config.dawnEnableToggles = dawnEnableToggles.c_str();
+    config.dawnDisableToggles = dawnDisableToggles.c_str();
     aurora_initialize(argc, argv, &config);
+    // The settings file, JSON and the logs read and write numbers with the C
+    // library, in the "C" format. A toolkit loaded with the window (a GTK
+    // decoration plugin, an input method) may call setlocale(LC_ALL, ""), which
+    // under a comma-decimal locale would make "1.5" read as 1 and print as "1,5".
+    std::setlocale(LC_NUMERIC, "C");
     if (config.desiredBackend == BACKEND_OPENGLES) {
         std::error_code ec;
         std::filesystem::remove(glesMarker, ec);
@@ -1203,7 +1303,7 @@ int main(int argc, char** argv) {
     // passes no folder, so PortTextures/PortPrompts use the built-in copy and a stale
     // `textures` folder left in an old install is ignored; any other build reads the
     // folder next to the executable.
-    const char* textures = std::getenv("MP_TEXTURES");
+    const char* textures = port::EnvString("MP_TEXTURES");
     if (textures == nullptr || textures[0] == '\0') {
         textures = PortEmbedded::Under("textures/").empty() ? DefaultTexturesPath() : nullptr;
     }
@@ -1211,7 +1311,7 @@ int main(int argc, char** argv) {
     // a name updates never replace (the built-in set is read-only in an AppImage or
     // Flatpak, and re-copied on every Android launch).
     std::string userTextures;
-    if (const char* env = std::getenv("MP_USER_TEXTURES"); env != nullptr && env[0] != '\0') {
+    if (const char* env = port::EnvString("MP_USER_TEXTURES"); env != nullptr && env[0] != '\0') {
         userTextures = env;
     } else if (!PortPaths::UserFolder().empty()) {
         userTextures = PortPaths::UserFolder() + "user_textures";
@@ -1285,7 +1385,7 @@ int main(int argc, char** argv) {
         }
         discPath = discImage.c_str();
     }
-    std::printf("metroid_prime_port: disc mounted: %s\n", discPath);
+    PortLog::Write("metroid_prime_port: disc mounted: %s\n", discPath);
     PortLog::Write("metroid_prime_port: disc is %s%s\n", PortDisc::Name(PortDisc::Current()),
                    PortDisc::Current() == PortDisc::Version::Pal ? " (experimental support)" : "");
     // Saves are the disc's region's (a PAL save's worlds are laid out
@@ -1323,9 +1423,10 @@ int main(int argc, char** argv) {
         if (PortDebug::RenderScale() > 0.f) {
             std::snprintf(scale, sizeof(scale), "%.2fx", static_cast<double>(PortDebug::RenderScale()));
         }
-        PortLog::Write("port: settings: backend %s, msaa %d, anisotropy %d, scale %s, dynamic-res %s, "
+        PortLog::Write("port: settings: backend %s (in use: %s), msaa %d, anisotropy %d, scale %s, dynamic-res %s, "
                        "smoothing %s (interp %s), vsync %s, frame-cap %d, remastered-models %s\n",
-                       config.desiredBackend == BACKEND_OPENGLES ? "opengles" : "auto", PortDebug::Msaa(),
+                       PortGraphicsBackend::DisplayName(config.desiredBackend),
+                       PortGraphicsBackend::DisplayName(aurora_get_backend()), PortDebug::Msaa(),
                        PortDebug::Anisotropy(), scale, dynamicRes,
                        PortDebug::SmoothFrames() ? "on" : "off", PortDebug::FrameInterpolation() ? "on" : "off",
                        PortDebug::VsyncEnabled() ? "on" : "off", PortDebug::FrameRateCap(),

@@ -1,4 +1,5 @@
 #include "MetroidPrime/CGameArea.hpp"
+#include "port_env.h"
 
 #include "MetroidPrime/CMemoryDrawEnum.hpp"
 
@@ -23,6 +24,8 @@
 
 #ifdef TARGET_PC
 #include "port_randomizer.h"
+#include "port_room_geo.h"
+#include "port_savestate.h"
 #include "port_skip_cutscenes.h"
 
 #include <string.h>
@@ -35,7 +38,7 @@
 namespace {
 // MP_LOG_DOORS: when each area started streaming, and how long each load stage took.
 bool PortAreaLogEnabled() {
-  static const bool enabled = std::getenv("MP_LOG_DOORS") != nullptr;
+  static const bool enabled = port::EnvFlag("MP_LOG_DOORS");
   return enabled;
 }
 std::map< int, std::chrono::steady_clock::time_point > sPortAreaLoadStart;
@@ -646,6 +649,10 @@ static void PortDumpInactivePickups(const CGameArea& area, CStateManager& mgr, T
 #endif
 
 void CGameArea::LoadScriptObjects(CStateManager& mgr) {
+#ifdef TARGET_PC
+  // PORT: a save state records the layer bits this area spawns with and rebuilds with them (#161).
+  PortSaveState::NoteAreaSpawnBegin(mgr, x4_selfIdx.Value());
+#endif
   rstl::vector< TEditorId > ids;
   const CScriptLayerManager& layers = *mgr.WorldLayerState();
   int count = layers.GetAreaLayerCount(x4_selfIdx);
@@ -663,6 +670,9 @@ void CGameArea::LoadScriptObjects(CStateManager& mgr) {
 #endif
   }
   mgr.InitScriptObjects(ids);
+#ifdef TARGET_PC
+  PortSaveState::NoteAreaSpawnEnd(mgr, x4_selfIdx.Value()); // PORT: puts the saved live layer bits back
+#endif
 }
 
 void CGameArea::StartStreamIn(CStateManager& mgr) {
@@ -674,6 +684,8 @@ void CGameArea::StartStreamIn(CStateManager& mgr) {
       std::fprintf(stderr, "MP area %d (MREA %08X) stream start\n", x4_selfIdx.Value(),
                    static_cast< uint >(x84_mrea));
     }
+    // The Remastered room geometry's file is read and parsed while the area streams in.
+    PortRoomGeo::Prefetch(static_cast< uint32_t >(x84_mrea));
 #endif
     VerifyTokenList(mgr);
     if (!xf0_26_tokensReady) {

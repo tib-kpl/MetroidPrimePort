@@ -28,6 +28,7 @@
 #include <utility>
 #include <unordered_map>
 #include <vector>
+#include "texture_sites.hpp"
 
 // Remastered's VFX particle materials, drawn natively (see aurora/vfx.hpp). The formulas are the
 // ones recovered from the Remastered shaders (build/mpr/vfx/SPEC.md section 2); the tone curve,
@@ -65,7 +66,7 @@ struct Uniform {
   float fogColor[4];
   float fog[4];     // type, a, b, c
   float misc[4];    // modulate, reversed Z, ramp row 0, ramp row 1
-  float misc2[4];   // add row
+  float misc2[4];   // add row, opacity gain, opacity bias, unused (layout unchanged)
   float srcs[6][4]; // Src i = (code, value) at [i / 2][2 * (i % 2)]; code = -1 or row * 4 + comp
   float uvSets[4];  // per slot
   float layers[4];  // per slot
@@ -73,6 +74,7 @@ struct Uniform {
   float pad[32];
 };
 static_assert(sizeof(Uniform) == UniformSize);
+static_assert(offsetof(Uniform, misc2) == 208 && offsetof(Uniform, srcs) == 224);
 
 // ---- Array textures ----
 // A slot's texture as a texture_2d_array: a 1-layer view of the GX texture itself, or, for an atlas,
@@ -103,6 +105,8 @@ struct State_ {
   wgpu::PipelineLayout pipelineLayout;
   std::map<std::array<uint64_t, 7>, wgpu::RenderPipeline> pipelines;
   std::map<std::array<const void*, 1 + 2 * SlotCount>, wgpu::BindGroup> groups;
+  // Set when an atlas is evicted: the cached bind groups still hold its views, so the render thread drops them.
+  std::atomic<bool> groupsStale{false};
   wgpu::Texture dummyTexture;
   wgpu::TextureView dummyView;
 };
@@ -353,13 +357,13 @@ fn fs_main(in: VOut) -> @location(0) vec4f {
     let fx = src(in, 4);
     let fy = src(in, 5);
     let q = fy - fx;
-    x = x * smooth3(select(select(0.0, 1.0, d >= fx), sat((d - fx) / q), q != 0.0));
+    x = x * u.misc2.y * sat(smooth3(select(select(0.0, 1.0, d >= fx), sat((d - fx) / q), q != 0.0)) - u.misc2.z);
   }
   if ((FEAT & 2048u) != 0u) {
     let fx = src(in, 6);
     let fy = src(in, 7);
     let q = fy - fx;
-    x = x * smooth3(select(select(0.0, 1.0, fx <= 0.0), sat(-fx / q), q != 0.0));
+    x = x * u.misc2.y * sat(smooth3(select(select(0.0, 1.0, fx <= 0.0), sat(-fx / q), q != 0.0)) - u.misc2.z);
   }
   if ((FEAT & 4u) != 0u) {
     x = max(0.0, x - src(in, 0));
@@ -627,6 +631,7 @@ void ensure_dummy(const DrawContext& ctx) {
       .size = {1, 1, 1},
       .format = wgpu::TextureFormat::RGBA8Unorm,
   };
+  AURORA_NOTE_TEXTURE(&descriptor);
   g_state.dummyTexture = ctx.device.CreateTexture(&descriptor);
   const uint8_t white[4] = {255, 255, 255, 255};
   const wgpu::TexelCopyTextureInfo dst{.texture = g_state.dummyTexture};
@@ -698,6 +703,7 @@ void build_array(const EncoderTaskContext& ctx, const wgpu::CommandEncoder& cmd,
       .format = src.format,
       .mipLevelCount = mips,
   };
+  AURORA_NOTE_TEXTURE(&descriptor);
   entry->texture = ctx.device.CreateTexture(&descriptor);
   for (uint32_t layer = 0; layer < entry->layers; ++layer) {
     const uint32_t col = layer % entry->cols;
@@ -776,6 +782,9 @@ bool ensure_registered() {
             groupKey[SlotCount + i] = samplers[i].Get();
           }
           groupKey[2 * SlotCount] = ctx.uniformBuffer.Get();
+          if (g_state.groupsStale.exchange(false, std::memory_order_acq_rel)) {
+            g_state.groups.clear();
+          }
           auto group = g_state.groups.find(groupKey);
           if (group == g_state.groups.end()) {
             if (g_state.groups.size() > 512) {
@@ -865,6 +874,7 @@ void evict_idle() {
     if (now - it->second->lastUse > EvictAfter && it->second->state.load() != State::Requested) {
       g_state.byId.erase(it->second->id);
       it = g_state.byKey.erase(it);
+      g_state.groupsStale.store(true, std::memory_order_release);
     } else {
       ++it;
     }
@@ -998,6 +1008,8 @@ static void draw_prims(const DrawDesc& desc, const Vertex* verts, uint32_t verte
   u.misc[2] = float(desc.rampRow[0]);
   u.misc[3] = float(desc.rampRow[1]);
   u.misc2[0] = float(desc.addRow);
+  u.misc2[1] = desc.opacityGain;
+  u.misc2[2] = desc.opacityBias;
   const Src* srcs[SrcCount] = {&desc.erosion,   &desc.thrX,      &desc.thrY,        &desc.thrW,
                                &desc.fresnelX,  &desc.fresnelY,  &desc.fadeX,       &desc.fadeY,
                                &desc.indexScale, &desc.indexOffset, &desc.indexRow};

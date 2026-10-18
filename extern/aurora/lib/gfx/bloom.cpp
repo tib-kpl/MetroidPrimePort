@@ -18,6 +18,7 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include "texture_sites.hpp"
 
 // Remastered's bloom, as its CRenderPass_Bloom and shaders do it:
 //  - a bright pass over the exposed colour X, at a quarter of the frame's size, on four bilinear
@@ -505,6 +506,7 @@ wgpu::TextureView make_lut(uint32_t size, const uint8_t* rgba, const wgpu::Queue
       .size = {size, size, size},
       .format = wgpu::TextureFormat::RGBA8Unorm,
   };
+  AURORA_NOTE_TEXTURE(&descriptor);
   const auto texture = g_device.CreateTexture(&descriptor);
   const wgpu::TexelCopyTextureInfo dst{.texture = texture};
   const wgpu::TexelCopyBufferLayout layout{.bytesPerRow = size * 4, .rowsPerImage = size};
@@ -649,6 +651,7 @@ void ensure_pipelines() {
       .size = {AverageSamples, AverageSamples, 1},
       .format = AverageFormat,
   };
+  AURORA_NOTE_TEXTURE(&samplesDescriptor);
   g_state.averageSamplesTexture = g_device.CreateTexture(&samplesDescriptor);
   g_state.averageSamplesView = g_state.averageSamplesTexture.CreateView();
   const wgpu::BindGroupLayoutEntry samplesEntry{
@@ -684,6 +687,7 @@ void ensure_pipelines() {
       .size = {AverageSize, AverageSize, 1},
       .format = AverageFormat,
   };
+  AURORA_NOTE_TEXTURE(&averageDescriptor);
   g_state.averageTexture = g_device.CreateTexture(&averageDescriptor);
   g_state.averageView = g_state.averageTexture.CreateView();
 }
@@ -721,6 +725,7 @@ void ensure_frame(uint32_t width, uint32_t height, wgpu::TextureFormat format) {
       .size = {width, height, 1},
       .format = format,
   };
+  AURORA_NOTE_TEXTURE(&frameDescriptor);
   g_state.frame = g_device.CreateTexture(&frameDescriptor);
   g_state.frameView = g_state.frame.CreateView();
 }
@@ -743,6 +748,7 @@ void ensure_levels(uint32_t width, uint32_t height) {
         .size = {level.width, level.height, 1},
         .format = LevelFormat,
     };
+    AURORA_NOTE_TEXTURE(&descriptor);
     level.texture = g_device.CreateTexture(&descriptor);
     level.view = level.texture.CreateView();
     w = (w + 1) / 2;
@@ -938,8 +944,10 @@ void encode(const EncoderTaskContext& ctx, const wgpu::CommandEncoder& cmd, cons
   }
   Params& params = recorded.params;
   const bool hdr = recorded.domain == Domain::Hdr;
+  // The targets this frame was recorded against (a resize may have made newer ones since).
+  const auto efb = webgpu::efb_targets();
   const auto& source = webgpu::present_source();
-  const auto& target = webgpu::g_frameBuffer;
+  const auto& target = efb.color;
   const uint32_t samples = webgpu::g_graphicsConfig.msaaSamples > 1 ? webgpu::g_graphicsConfig.msaaSamples : 1;
   const auto format = webgpu::g_graphicsConfig.surfaceConfiguration.format;
   if (hdr && !hdr_source_valid(recorded, samples)) {
@@ -1064,7 +1072,7 @@ void encode(const EncoderTaskContext& ctx, const wgpu::CommandEncoder& cmd, cons
     return;
   }
   draw(cmd, "Bloom composite", g_state.composite, slot++, frameView, levels[0].view, target.view, false,
-       samples > 1 ? webgpu::g_frameBufferResolved.view : wgpu::TextureView{}, lutA, lutB);
+       samples > 1 ? efb.resolved.view : wgpu::TextureView{}, lutA, lutB);
 }
 
 // A slot for a post in this frame; false (warned) past MaxPostsPerFrame. Under g_recordMutex.

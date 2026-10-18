@@ -62,14 +62,28 @@ void CWaveBeam::UpdateGunFx(const bool shotSmoke, const float dt, const CStateMa
       x24c_effectTimer = 0.f;
       x258_25_effectTimerActive = false;
     } else {
+#ifdef TARGET_PC
+      // Converted effects are authored in Remastered gun space (X left, Y up, Z forward:
+      // Wave2nd's circle normal +Z is the barrel). CWaveBeamMP1::UpdateGunFx 0xd638f0 feeds
+      // them the native elbow frame; the retail elbow needs the same B as the Power charge.
+      const CTransform4f remXf = NPortChargeFxDetail::ConvertedPowerChargeMuzzleFrame(xf);
+      const bool fxRem = x254_chargeFx.get() && x254_chargeFx->PortIsRemastered();
+      const bool elecRem = x250_chargeElec.get() && x250_chargeElec->PortIsRemastered();
+#else
+      const CTransform4f& remXf = xf;
+      const bool fxRem = false;
+      const bool elecRem = false;
+#endif
       if (x254_chargeFx.get()) {
-        x254_chargeFx->SetGlobalTranslation(xf.GetTranslation());
-        x254_chargeFx->SetGlobalOrientation(xf.GetRotation());
+        const CTransform4f& fxXf = fxRem ? remXf : xf;
+        x254_chargeFx->SetGlobalTranslation(fxXf.GetTranslation());
+        x254_chargeFx->SetGlobalOrientation(fxXf.GetRotation());
         x254_chargeFx->Update(dt);
       }
       if (x250_chargeElec.get()) {
-        x250_chargeElec->SetGlobalTranslation(xf.GetTranslation());
-        x250_chargeElec->SetGlobalOrientation(xf.GetRotation());
+        const CTransform4f& elecXf = elecRem ? remXf : xf;
+        x250_chargeElec->SetGlobalTranslation(elecXf.GetTranslation());
+        x250_chargeElec->SetGlobalOrientation(elecXf.GetRotation());
         x250_chargeElec->Update(dt);
       }
     }
@@ -120,6 +134,37 @@ void CWaveBeam::Fire(const bool underwater, const float dt,
   animData.EnableLooping(false);
   animData.SetAnimation(CAnimPlaybackParms(skShootAnim[chargeState], -1, 1.f, true), false);
 }
+
+#ifdef TARGET_PC
+// Stacked: a normal Wave shot is the same fan of three projectiles Fire spawns.
+void CWaveBeam::PortFireStackedProjectile(const bool underwater, const float dt,
+                                          const CPlayerState::EChargeStage chargeState,
+                                          const CTransform4f& xf, CStateManager& mgr,
+                                          const TUniqueId homingTarget, const float chargeFactor1,
+                                          const float chargeFactor2) {
+  if (chargeState != CPlayerState::kCS_Normal) {
+    CGunWeapon::PortFireStackedProjectile(underwater, dt, chargeState, xf, mgr, homingTarget,
+                                          chargeFactor1, chargeFactor2);
+    return;
+  }
+  const TToken< CWeaponDescription >* weapon = PortStackedWeapon(chargeState);
+  if (weapon == nullptr) {
+    return;
+  }
+  float randAng = mgr.Random()->Float() * 360.f;
+  for (int i = 0; i < 3; ++i) {
+    CTransform4f shotXf = xf * CTransform4f::RotateY(CRelAngle::FromDegrees(
+                                   skShotAnglePitch * (randAng + CCast::ToReal32(i))));
+    CEnergyProjectile* proj = rs_new CEnergyProjectile(
+        true, *weapon, GetType(), shotXf, GetPlayerMaterial(),
+        GetDamageInfo(mgr, chargeState, chargeFactor1), mgr.AllocateUniqueId(), kInvalidAreaId,
+        GetPlayerId(), homingTarget, CWeapon::kPA_ArmCannon, underwater, CVector3f(1.f, 1.f, 1.f),
+        rstl::optional_object_null(), CSfxManager::kInternalInvalidSfxId, false);
+    mgr.AddObject(proj);
+    proj->Think(dt, mgr);
+  }
+}
+#endif
 
 void CWaveBeam::Load(CStateManager& mgr, const bool subtypeBasePose) {
   CGunWeapon::Load(mgr, subtypeBasePose);

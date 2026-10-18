@@ -36,6 +36,20 @@ For Windows, run from an MSVC developer shell and add
 `-DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl` to configure.
 Plain MSVC `cl.exe` and MinGW builds are not currently validated.
 
+CI builds and tests Linux (GCC 14 and Clang 18) on each push to `port` and
+each pull request; Windows (clang-cl) and macOS (arm64, experimental) run
+weekly and can be started by hand from the Actions tab (`.github/workflows/`).
+CI configures with `-DAURORA_ENABLE_TESTS=ON`, which adds Aurora's GPU-free
+FIFO/GX tests (`gx_fifo_tests`); turn it on to run the same suite locally.
+
+Configure downloads about a dozen pinned dependencies (checked by SHA-256). On
+a machine without access to GitHub, clone them yourself and point CMake at the
+copies with `-DFETCHCONTENT_SOURCE_DIR_<NAME>=<dir>`, the way
+`flatpak/io.github.odrannnn.metroidprimeport.yml` does.
+
+Android builds through Gradle: `tools/make_android_keystore.sh` once, then
+`tools/android_apk.sh :app:assembleRelease`; see `docs/ANDROID.md`.
+
 macOS (Apple Silicon, macOS 13+) is experimental: `.github/workflows/macos.yml`
 builds it on `macos-15` with Homebrew's `ninja` and `openssl@3` and renders
 through Metal, but nobody has played it on a real Mac yet. Configure as that
@@ -61,7 +75,7 @@ One configuration takes about 0.5 GB of cache (`ccache -M` sets the limit).
 
 No disc or generated game-asset headers are needed to compile. The two embedded
 default-font resources are read from the mounted retail DOL at runtime, using
-the addresses in `config/GM8E01_00/symbols.txt`. Native builds do not depend on
+the addresses in `decomp/config/GM8E01_00/symbols.txt`. Native builds do not depend on
 `build/GM8E01_00/include` or distribute extracted font data.
 
 ### Linking and packaging
@@ -139,7 +153,8 @@ managers cannot reach. F1 > System > Data folder moves it to
 `/storage/emulated/0/MetroidPrime/` (the shared storage root): it asks for "All
 files access" (Android 11+; storage permission on 9/10), copies saves, settings,
 mods, save states, the texture pack and the copied disc there with a progress
-bar (built-in textures and the pipeline cache stay behind), then restarts the
+bar (built-in textures, the pipeline cache and the app's own Remastered import
+stay behind; docs/MODS.md), then restarts the
 game. If the shared folder already holds data, it offers to use that data or to
 copy over it. The choice is kept in `data_folder.txt` in app storage; "Move
 back to app storage" reverses it, and "Delete the old copy" frees the space the
@@ -147,7 +162,8 @@ old folder still takes. If access is revoked later, the game starts from app
 storage and says so, with buttons to grant access again or stay there.
 
 `MP_USER_PATH` overrides the folder
-and `MP_CACHE_PATH` the caches alone; use separate directories for automated
+and `MP_CACHE_PATH` the caches alone (neither moves the built-in Remastered
+import, which stays in app storage); use separate directories for automated
 testing so runs do not share normal saves/settings (the memory card stays with
 the executable either way). Screenshots are written to `screenshots/` in the
 working directory.
@@ -214,16 +230,11 @@ best case. The presented rate and the jitter are the parts that transfer.
 
 ### Seeing the front end, and where it stops
 
-With `MP_FAST_BOOT` **off** the real front end runs and waits for input. The
-screens captured on the real session, on the AMD adapter, are in
-`docs/images/`:
-
-| Screen | File |
-|---|---|
-| Metroid Prime title | `front-end-title.png` |
-| Nintendo publisher logo | `front-end-publisher.png` |
-| Dolby Surround Pro Logic II | `front-end-dolby.png` |
-| Title with `[ PRESS START ]` | `front-end-press-start.png` |
+With `MP_FAST_BOOT` **off** the real front end runs and waits for input. On the
+real session, on the AMD adapter, captures (`F12` or console `shot`) showed the
+Nintendo publisher logo, the Dolby Surround Pro Logic II logo, the Metroid Prime
+title and the title with `[ PRESS START ]`. The captures are not kept in the
+repository: they are pictures of Nintendo's game.
 
 All four render correctly, so **the reported blank front end does not
 reproduce**. Note that `MP_FAST_BOOT=1` never shows any of them: it drives
@@ -240,7 +251,7 @@ end receives input messages containing no buttons. A scripted press launched int
 an unfocused window on a live desktop is therefore thrown away before anything
 reads it. `MP_SMOKE_SCRIPT` and `MP_SMOKE_FRONTEND` now claim focus the way
 `MP_SMOKE_MOUSE` already did; with that fixed the front end reaches the title and
-its `[ PRESS START ]` prompt (`front-end-press-start.png`).
+its `[ PRESS START ]` prompt.
 
 The front end then loops between the title and the attract movie. The main menu,
 and the Continue option on it, has not been reached: at the few frames per second
@@ -432,6 +443,38 @@ cutscene skipping is independent.
 ### Controls and settings
 
 Moved to `docs/SETTINGS.md`; the debug console now lives in `docs/CONSOLE.md`.
+## Where port code goes
+
+The game code under `src/` and `include/` is the decompilation and stays
+recognisably so: it is what upstream PrimeDecomp fixes are merged into (see
+`tools/upstream_screen.py`), and what reviewers compare against the original.
+Port behaviour therefore lives in `platform/`, and a decomp file gets only a
+short `#ifdef TARGET_PC` hook that calls into it, as in `CPlayer.cpp`:
+
+```cpp
+#ifdef TARGET_PC
+  if (const float hurt = PortConsoleTakePendingHurt(); hurt > 0.f) {
+    TakeDamage(true, GetTranslation(), hurt, kWT_AI, mgr);
+  }
+#endif
+```
+
+The `Port*` function or namespace (declared in `platform/include/port_*.h`,
+defined in `platform/port_*.cpp`) holds the logic, its state and its settings,
+and can be unit tested in `tests/` against that header, without the game.
+A hook passes in the game objects it needs and acts on what comes back; it
+does not grow into tens or hundreds of inline lines in the decomp file. Keep
+retail behaviour the default path, so the hook reads as an exception to the
+original code, not a rewrite of it.
+
+Port code that was moved out of a decomp file but still defines members of
+decomp classes or depends on decomp headers the way game code does (for
+example `platform/port_remastered_movers.cpp`, which holds the Remastered
+player movers called from `CGameCollision::MovePlayer`) is appended to
+`MP_GAME_SOURCES` in `CMakeLists.txt` rather than `MP_PORT_SOURCES`. It is then
+compiled exactly as the file it came from (same flags, definitions and forced
+`platform/compat.h`), so moving it does not change the generated code.
+
 ## Ownership and threading rules
 
 - Use `rstl::auto_ptr<T[]>` / `single_ptr<T[]>` for host arrays and scalar owners

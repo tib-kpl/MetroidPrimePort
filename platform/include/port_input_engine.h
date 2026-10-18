@@ -159,6 +159,8 @@ enum class ActionKind : uint8_t {
   X(Screenshot, Digital, "screenshot", "Screenshot")                                               \
   X(ToggleOriginal, Digital, "toggle_original", "Original experience")                             \
   X(PhotoMode, Digital, "photo_mode", "Photo mode")                                                \
+  X(GyroAim, Digital, "gyro_aim", "Gyro aim")                                                      \
+  X(ResetAim, Digital, "reset_aim", "Reset aim")                                                   \
   X(MenuA, Digital, "menu_a", "Menu A")                                                            \
   X(MenuB, Digital, "menu_b", "Menu B")                                                            \
   X(MenuX, Digital, "menu_x", "Menu X")                                                            \

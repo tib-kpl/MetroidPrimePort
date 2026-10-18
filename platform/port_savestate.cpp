@@ -1,8 +1,12 @@
 #include "port_savestate.h"
+#include "port_strings.h"
 
 #include "port_apclient.h"
 #include "port_debug.h"
+#include "port_beam_doors.h"
 #include "port_gci.h"
+#include "port_log.h"
+#include "port_map_side.h"
 #include "port_paths.h"
 #include "port_randomizer.h"
 #include "port_mods.h"
@@ -12,6 +16,7 @@
 #include "Kyoto/CResFactory.hpp"
 #include "Kyoto/Streams/CMemoryInStream.hpp"
 #include "Kyoto/Streams/CMemoryStreamOut.hpp"
+#include "MetroidPrime/CInGameGuiManager.hpp"
 #include "MetroidPrime/CMain.hpp"
 #include "MetroidPrime/CMemoryCard.hpp"
 #include "MetroidPrime/CStateManager.hpp"
@@ -32,6 +37,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <ctime>
 #include <filesystem>
 #include <fstream>
@@ -130,7 +136,7 @@ Clock::time_point sRoomSince;
 
 void SetMessage(const std::string& text) {
   sMessage = text;
-  std::fprintf(stderr, "[savestate] %s\n", text.c_str());
+  PortLog::Write("[savestate] %s\n", text.c_str());
 }
 
 std::string SlotName(int slot) { return slot == kUndoSlot ? "undo" : "slot " + std::to_string(slot); }
@@ -149,7 +155,7 @@ bool ReadSlot(int slot, Header& header, std::vector< uint8_t >& blob) {
   std::ifstream file(path, std::ios::binary);
   if (!file)
     return false;
-  const std::string data((std::istreambuf_iterator< char >(file)), std::istreambuf_iterator< char >());
+  const std::string data = port::ReadAllText(file);
   return Decode(data, header, blob);
 }
 
@@ -212,6 +218,10 @@ bool PlayerCanSave(CStateManager& mgr, std::string& why) {
   return true;
 }
 
+// The map record of a captured blob; defined with the load side below.
+void StoreMapData(std::vector< uint8_t >& blob, size_t gameBits);
+void StoreBeamData(std::vector< uint8_t >& blob, size_t gameBits);
+
 bool Capture(CStateManager& mgr, Header& header, std::vector< uint8_t >& blob) {
   const CPlayer& player = *mgr.GetPlayer();
   const CWorld& world = *mgr.GetWorld();
@@ -223,10 +233,20 @@ bool Capture(CStateManager& mgr, Header& header, std::vector< uint8_t >& blob) {
   worldState.SetDesiredAreaAssetId(kInvalidAssetId);
 
   blob.assign(kBlobSize, 0);
+  size_t gameBits = 0;
   {
+    // During a state load's restore, areas not yet spawned carry the state's spawn bits
+    // (#161): write their live bits.
+    SetSpawnLayersLive(true);
     CMemoryStreamOut out(blob.data(), blob.size());
     gpGameState->PutTo(out);
+    gameBits = out.PortBitsWritten();
+    SetSpawnLayersLive(false);
   }
+  // After the stream is gone: it flushes its last byte at the destructor, and
+  // the record's fingerprint has to cover the bytes as they are left here.
+  StoreBeamData(blob, gameBits);
+  StoreMapData(blob, gameBits);
 
   const CTransform4f& xf = player.GetTransform();
   const CVector3f pos = xf.GetTranslation();
@@ -268,6 +288,7 @@ void DoSave(CStateManager& mgr, int slot) {
 }
 
 void QuitToPending(CStateManager& mgr) {
+  DisarmSpawnLayers();
   sInstallPending = true;
   sPlacePending = false;
   sRoomPending = false;
@@ -330,8 +351,124 @@ bool DoLoad(CStateManager& mgr, int slot) {
   return true;
 }
 
+// The map data the blob's own trailers cannot carry (port_map_side.h): the
+// "RMMK" trailer holds PortMapMarks::kTrailerMarks marks, the save's list holds
+// PortMapMarks::kMaxMarks, and a state that came back with only the trailer
+// would drop the rest - and the next save would then write that shortened list
+// into the card's side file. The record sits at a fixed offset past the whole
+// game state (which stays under 1 KiB) as a length and the side file's own
+// bytes; its fingerprint covers everything before it, so a state written by an
+// older build (zeros there) or a damaged one is ignored and the trailers stand.
+constexpr size_t kMapOffset = kBlobSize - 256;
+// The open beam doorways (port_beam_doors.h) sit in the 64 bytes before it, the
+// same way: a length and the side file's bytes, fingerprinted over everything
+// before this offset. It is stored first, so the map record's fingerprint covers
+// it too.
+constexpr size_t kBeamOffset = kMapOffset - 64;
+static_assert(PortBeamDoors::kSideMaxBytes + 4 <= kMapOffset - kBeamOffset,
+              "the beam door record fits before the map record");
+static_assert(PortMapSide::kMaxBytes + 4 <= kBlobSize - kMapOffset,
+              "the map record fits the tail of the blob");
+
+void StoreMapData(std::vector< uint8_t >& blob, size_t gameBits) {
+  if (blob.size() < kBlobSize || gpGameState == nullptr) {
+    return;
+  }
+  if (gameBits > kBeamOffset * 8) {
+    PortLog::Write("save state: the game state grew past the map record (%u bits); marks stay "
+                   "in the trailers only\n",
+                   static_cast< unsigned >(gameBits));
+    return;
+  }
+  PortMapSide::Data data;
+  for (int i = 0; i < PortMapPickups::kSeenWords; ++i) {
+    data.seen[i] = gpGameState->PortSeenPickups()[i];
+  }
+  data.marks = gpGameState->PortMapMarkList();
+  const std::vector< uint8_t > bytes =
+      PortMapSide::Encode(PortMapSide::Fingerprint(blob.data(), kMapOffset), data);
+  uint8_t* tail = blob.data() + kMapOffset;
+  for (int i = 0; i < 4; ++i) {
+    tail[i] = static_cast< uint8_t >(bytes.size() >> (8 * i));
+  }
+  std::memcpy(tail + 4, bytes.data(), bytes.size());
+}
+
+void StoreBeamData(std::vector< uint8_t >& blob, size_t gameBits) {
+  if (blob.size() < kBlobSize || gpGameState == nullptr || gameBits > kBeamOffset * 8) {
+    return;
+  }
+  const std::vector< uint8_t > bytes =
+      PortBeamDoors::Encode(PortMapSide::Fingerprint(blob.data(), kBeamOffset), gpGameState->PortBeamDoorBits());
+  uint8_t* tail = blob.data() + kBeamOffset;
+  for (int i = 0; i < 4; ++i) {
+    tail[i] = static_cast< uint8_t >(bytes.size() >> (8 * i));
+  }
+  std::memcpy(tail + 4, bytes.data(), bytes.size());
+}
+
+// The record back over the rebuilt game state; false (nothing changed) for a
+// state without one (written by an older build, zeros there) or a damaged one.
+bool LoadBeamData(const std::vector< uint8_t >& blob) {
+  if (gpGameState == nullptr || blob.size() < kMapOffset) {
+    return false;
+  }
+  const uint8_t* tail = blob.data() + kBeamOffset;
+  uint32_t size = 0;
+  for (int i = 0; i < 4; ++i) {
+    size |= static_cast< uint32_t >(tail[i]) << (8 * i);
+  }
+  if (size > PortBeamDoors::kSideMaxBytes || kBeamOffset + 4 + size > kMapOffset) {
+    return false;
+  }
+  uint32_t bits[PortBeamDoors::kWords] = {};
+  if (!PortBeamDoors::Decode(tail + 4, size, PortMapSide::Fingerprint(blob.data(), kBeamOffset), bits)) {
+    return false;
+  }
+  for (int i = 0; i < PortBeamDoors::kWords; ++i) {
+    gpGameState->PortBeamDoorBits()[i] = bits[i];
+  }
+  return true;
+}
+
+// Puts the record back over the game state the blob was just built into. False
+// (nothing changed) when there is none: an older state keeps what its own
+// trailers gave, which is up to kTrailerMarks marks and the whole seen set.
+bool LoadMapData(const std::vector< uint8_t >& blob) {
+  if (gpGameState == nullptr || blob.size() < kMapOffset + 4) {
+    return false;
+  }
+  const uint8_t* tail = blob.data() + kMapOffset;
+  uint32_t size = 0;
+  for (int i = 0; i < 4; ++i) {
+    size |= static_cast< uint32_t >(tail[i]) << (8 * i);
+  }
+  if (size > PortMapSide::kMaxBytes || kMapOffset + 4 + size > blob.size()) {
+    return false;
+  }
+  PortMapSide::Data data;
+  if (!PortMapSide::Decode(tail + 4, size, PortMapSide::Fingerprint(blob.data(), kMapOffset),
+                           data)) {
+    return false;
+  }
+  for (int i = 0; i < PortMapPickups::kSeenWords; ++i) {
+    gpGameState->PortSeenPickups()[i] = data.seen[i];
+  }
+  gpGameState->PortMapMarkList() = data.marks;
+  return true;
+}
+
 void Place(CStateManager& mgr) {
   CPlayer& player = *mgr.Player();
+  // The retained Remastered physics object state is port-only and never serialized, and the
+  // state being loaded cannot carry it: invalidate it at the one PC point where the player is
+  // put back into a rebuilt world (both a slot load and quick resume reach here), so a value
+  // from before the load is never carried across it. The next verified Remastered airborne
+  // tick restores validity; until then the grounded Remastered mover stands aside (see
+  // CGameCollision::MovePlayer).
+  player.PortInvalidateRetainedObjectState();
+  // Same for the platform rider state (issue #117): no rider and no deferred carry survive.
+  player.PortResetRiderState();
   const Header& h = sPendingHeader;
   const CVector3f pos(h.position[0], h.position[1], h.position[2]);
   CVector3f look(h.forward[0], h.forward[1], 0.f);
@@ -347,6 +484,8 @@ void Place(CStateManager& mgr) {
   mgr.CameraManager()->ResetCameras(mgr);
   sPendingBlob.clear();
   sRoomPending = PortDebug::SaveStateRoomState() && !h.roomState.empty();
+  if (!sRoomPending)
+    DisarmSpawnLayers();  // no restore will run to the end that disarms them
   sRoomFrames = 0;
   sRoomDone.clear();
   sRoomStats = {};
@@ -360,8 +499,9 @@ void TickRoomState(CStateManager& mgr) {
   if (waiting > 0 && ++sRoomFrames < kRoomApplyFrames)
     return;
   sRoomPending = false;
-  std::fprintf(stderr, "[savestate] room state: %d applied, %d removed, %d unmatched\n",
-               sRoomStats.applied, sRoomStats.removed, sRoomStats.unmatched);
+  DisarmSpawnLayers();
+  PortLog::Write("[savestate] room state: %d applied, %d removed, %d unmatched, %d areas skipped\n",
+                 sRoomStats.applied, sRoomStats.removed, sRoomStats.unmatched, sRoomStats.skipped);
 }
 
 
@@ -430,7 +570,7 @@ bool ReadResume(ResumeMeta& meta, Header& header, std::vector< uint8_t >& blob) 
   std::ifstream file(path, std::ios::binary);
   if (!file)
     return false;
-  const std::string data((std::istreambuf_iterator< char >(file)), std::istreambuf_iterator< char >());
+  const std::string data = port::ReadAllText(file);
   std::string state;
   return DecodeResume(data, meta, state) && Decode(state, header, blob);
 }
@@ -451,7 +591,10 @@ ResumeContext GatherResumeContext() {
   ctx.cinematic = mgr->GetCameraManager() != nullptr && mgr->GetCameraManager()->IsInCinematicCamera();
   ctx.transition = mgr->GetWorldTransManager() != nullptr &&
                    mgr->GetWorldTransManager()->GetTransType() != CWorldTransManager::kTT_Disabled;
-  ctx.saveUi = mgr->GetInSaveUI();
+  // Not CStateManager::GetInSaveUI: that flag goes true at the first pause or message screen and only
+  // a save station clears it (ThinkSaveStation reads it as "the save UI was exited").
+  const CInGameGuiManager* gui = CInGameGuiManager::PortCurrent();
+  ctx.saveUi = gui != nullptr && gui->IsInOrTransitioningToOrFromState(kIGGS_PauseSaveGame);
   return ctx;
 }
 
@@ -584,6 +727,8 @@ bool Tick(CStateManager& mgr) {
     sPlacePending = false;
     if (static_cast< uint32_t >(mgr.GetWorld()->IGetWorldAssetId()) == sPendingHeader.worldId) {
       Place(mgr);
+    } else {
+      DisarmSpawnLayers();
     }
     if (sResumeLoading) {
       // The file stays until the next snapshot replaces it: a crash before
@@ -635,7 +780,10 @@ void ReloadModsNow() {
 void SetInFrontEnd(bool inFrontEnd) {
   sInFrontEnd = inFrontEnd;
   if (inFrontEnd) {
-    // Back at the title: the snapshot belongs to a game that was left.
+    // Back at the title: the snapshot, a room restore still running and the layers
+    // armed for it belong to a game that was left.
+    sRoomPending = false;
+    DisarmSpawnLayers();
     std::lock_guard< std::mutex > lock(sSnapMutex);
     sSnap.valid = false;
     sSnap.bytes.clear();
@@ -664,17 +812,52 @@ void InstallPending() {
     return;
   sInstallPending = false;
   CMemoryInStream in(sPendingBlob.data(), sPendingBlob.size(), CMemoryInStream::kOS_NotOwned);
+  // A state from before the beam door record keeps the running game's open
+  // doorways (the usual case is loading a state of the same save) rather than
+  // dropping them; the rebuilt game state would have none.
+  uint32_t keptBeam[PortBeamDoors::kWords] = {};
+  if (gpGameState != nullptr) {
+    for (int i = 0; i < PortBeamDoors::kWords; ++i) {
+      keptBeam[i] = gpGameState->PortBeamDoorBits()[i];
+    }
+  }
   gpMain->PortLoadGameState(in);
+  if (!LoadBeamData(sPendingBlob) && gpGameState != nullptr) {
+    for (int i = 0; i < PortBeamDoors::kWords; ++i) {
+      gpGameState->PortBeamDoorBits()[i] = keptBeam[i];
+    }
+  }
+  LoadMapData(sPendingBlob);
+  // Rebuild the areas with the layers their objects were spawned with (#161); each area puts
+  // the saved live bits back as its objects are spawned.
+  if (PortDebug::SaveStateRoomState())
+    ArmSpawnLayers(sPendingHeader.roomState, sPendingHeader.worldId);
   sPlacePending = true;
 }
 
 namespace {
 
-bool SafeNow(CStateManager& mgr) {
-  const ResumeContext ctx = GatherResumeContext();
-  std::string why;
-  return ResumeSkipReason(ctx) == nullptr && PlayerCanSave(mgr, why);
+// Logs why quick resume is (not) taking snapshots, once per change of reason.
+void ResumeNote(const std::string& reason) {
+  static std::string sLast;
+  if (reason == sLast)
+    return;
+  sLast = reason;
+  PortLog::Write("[resume] snapshots: %s\n", reason.c_str());
 }
+
+// The reason a snapshot can't be taken now, or empty when it can.
+std::string UnsafeReason(CStateManager& mgr) {
+  const ResumeContext ctx = GatherResumeContext();
+  if (const char* skip = ResumeSkipReason(ctx))
+    return skip;
+  std::string why;
+  if (!PlayerCanSave(mgr, why))
+    return why;
+  return {};
+}
+
+bool SafeNow(CStateManager& mgr) { return UnsafeReason(mgr).empty(); }
 
 uint64_t RoomKey(const CStateManager& mgr) {
   return (static_cast< uint64_t >(static_cast< uint32_t >(mgr.GetWorld()->IGetWorldAssetId())) << 32) |
@@ -697,11 +880,15 @@ bool TakeSnapshot(CStateManager& mgr) {
   Capture(mgr, header, blob);
   ResumeSnapshot snap;
   snap.meta = CurrentMeta();
-  if (snap.meta.fileIdx > 2)
+  if (snap.meta.fileIdx > 2) {
+    ResumeNote("blocked: no card file selected (file " + std::to_string(snap.meta.fileIdx) + ")");
     return false;
+  }
   snap.path = ResumePath();
-  if (snap.path.empty())
+  if (snap.path.empty()) {
+    ResumeNote("blocked: no resume path (no user folder)");
     return false;
+  }
   snap.bytes = EncodeResume(snap.meta, Encode(header, blob));
   snap.world = header.world;
   snap.room = header.room;
@@ -710,8 +897,8 @@ bool TakeSnapshot(CStateManager& mgr) {
   snap.taken = Clock::now();
   snap.valid = true;
   const double ms = std::chrono::duration< double, std::milli >(snap.taken - start).count();
-  std::fprintf(stderr, "[resume] snapshot %s - %s: %zu bytes in %.3f ms\n", snap.world.c_str(),
-               snap.room.c_str(), snap.bytes.size(), ms);
+  PortLog::Write("[resume] snapshot %s - %s: %zu bytes in %.3f ms\n", snap.world.c_str(),
+                 snap.room.c_str(), snap.bytes.size(), ms);
   {
     std::lock_guard< std::mutex > lock(sSnapMutex);
     snap.gen = sSnap.gen + 1;
@@ -791,8 +978,8 @@ bool FlushSnapshot(bool quiet) {
   sSnap.writtenGen = sSnap.gen;
   if (!quiet) {
     const double age = std::chrono::duration< double >(Clock::now() - sSnap.taken).count();
-    std::fprintf(stderr, "[resume] written: %s - %s (snapshot %.1f s old)\n", sSnap.world.c_str(),
-                 sSnap.room.c_str(), age);
+    PortLog::Write("[resume] written: %s - %s (snapshot %.1f s old)\n", sSnap.world.c_str(),
+                   sSnap.room.c_str(), age);
   }
   return true;
 }
@@ -810,8 +997,8 @@ void ResumeInstallEventWatch() {
     sLastRunCrashed = true;
     std::ifstream file(marker, std::ios::binary);
     std::getline(file, sLastRunMarker);
-    std::fprintf(stderr, "[resume] the last run did not quit cleanly%s\n",
-                 sLastRunMarker.empty() ? "" : (" (" + sLastRunMarker + ")").c_str());
+    PortLog::Write("[resume] the last run did not quit cleanly%s\n",
+                   sLastRunMarker.empty() ? "" : (" (" + sLastRunMarker + ")").c_str());
   }
   WriteMarker();
   // Returning from main or exit() is a clean quit too; a crash or a kill is not.
@@ -831,6 +1018,7 @@ void ResumeTick(CStateManager& mgr) {
     return;
   }
   if (sInFrontEnd || mgr.GetPlayer() == nullptr || mgr.GetWorld() == nullptr || gpGameState == nullptr) {
+    ResumeNote(sInFrontEnd ? "paused: in the front end" : "paused: no player or world");
     return;
   }
   const auto now = Clock::now();
@@ -852,18 +1040,27 @@ void ResumeTick(CStateManager& mgr) {
         sSnap.valid = false;
         sSnap.gen++;
         haveSnap = false;
+        PortLog::Write("[resume] snapshot dropped: another card file or game (file %u -> %u)\n",
+                       static_cast< unsigned >(sSnap.meta.fileIdx), static_cast< unsigned >(meta.fileIdx));
       } else {
         sameRoom = ((static_cast< uint64_t >(sSnap.worldId) << 32) | sSnap.areaId) == key;
         sinceSnap = std::chrono::duration< double >(now - sSnap.taken).count();
       }
     }
   }
-  const bool safe = SafeNow(mgr);
+  const std::string unsafe = UnsafeReason(mgr);
+  const bool safe = unsafe.empty();
+  if (!safe)
+    ResumeNote("blocked: " + unsafe);
+  else
+    ResumeNote("safe");
   if (ResumeRefreshDue(safe, haveSnap, sameRoom, std::chrono::duration< double >(now - sRoomSince).count(),
                        sinceSnap)) {
     // Written at once (a few KB): a crash leaves this snapshot to resume from.
-    if (TakeSnapshot(mgr))
-      FlushSnapshot(true);
+    if (TakeSnapshot(mgr)) {
+      if (!FlushSnapshot(true))
+        ResumeNote("blocked: writing the snapshot failed");
+    }
   }
 }
 
@@ -917,7 +1114,7 @@ bool ResumeOffer(ResumeInfo& info) {
   const auto note = [](const std::string& reason) {
     if (reason != sLastReason) {
       sLastReason = reason;
-      fprintf(stderr, "[resume] %s\n", reason.c_str());
+      PortLog::Write("[resume] %s\n", reason.c_str());
     }
   };
   if (!ReadResume(meta, header, blob)) {
@@ -955,9 +1152,9 @@ bool ResumeAccept(uint64_t cardSerial, uint32_t& fileIdx) {
   current.cardSerial = cardSerial;
   current.identity = CurrentIdentity();
   if (!ResumeMatches(meta, current)) {
-    fprintf(stderr, "[resume] mismatch: card %016llx/%016llx identity '%s'/'%s' file %u\n",
-            static_cast< unsigned long long >(meta.cardSerial), static_cast< unsigned long long >(current.cardSerial),
-            meta.identity.c_str(), current.identity.c_str(), meta.fileIdx);
+    PortLog::Write("[resume] mismatch: card %016llx/%016llx identity '%s'/'%s' file %u\n",
+                   static_cast< unsigned long long >(meta.cardSerial), static_cast< unsigned long long >(current.cardSerial),
+                   meta.identity.c_str(), current.identity.c_str(), meta.fileIdx);
     SetMessage("The resume state belongs to another game");
     return false;
   }

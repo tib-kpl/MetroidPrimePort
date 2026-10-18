@@ -3,8 +3,11 @@
 // result with Aurora's DVD overlays.
 
 #include "port_mods.h"
+#include "port_env.h"
 #include "port_strings.h"
 #include "port_paths.h"
+#include "port_ball_looks.h"
+#include "port_remastered_storage.h"
 
 #include "port_debug.h"
 #include "port_hd_font.h"
@@ -229,9 +232,37 @@ struct Replacement {
 
 } // namespace
 
+namespace {
+
+// The mod folders a scan loads: the mods folder's own folders, plus the built-in Remastered import
+// when it is installed outside it (port_remastered_storage.h). The import takes part in the same
+// name order as the others - a later name still wins - and a shared mod of the same name never
+// shadows it; a legacy shared import keeps standing in until a private one is installed.
+std::vector<PortRemasteredStorage::ModFolder> ScanModFolders(const std::string& sharedFolder) {
+  return PortRemasteredStorage::ScanFolders(sharedFolder, PortRemastered::InstalledModFolder());
+}
+
+bool HasRoomGeometryNow(const std::vector<PortRemasteredStorage::ModFolder>& mods) {
+  for (const PortRemasteredStorage::ModFolder& mod : mods) {
+    std::error_code ec;
+    for (fs::recursive_directory_iterator it(PathFromString(mod.path), fs::directory_options::skip_permission_denied,
+                                             ec),
+         end;
+         !ec && it != end; it.increment(ec)) {
+      uint32_t id = 0;
+      if (PortRoomGeo::ParseFileName(PathString(it->path().filename()), id)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+} // namespace
+
 std::string Folder() {
   std::string dir;
-  if (const char* env = std::getenv("MP_MODS"); env != nullptr && env[0] != '\0') {
+  if (const char* env = port::EnvString("MP_MODS"); env != nullptr && env[0] != '\0') {
     dir = env;
   } else {
     dir = PortPaths::UserFolder();
@@ -246,15 +277,19 @@ std::string Folder() {
 }
 
 bool HasRoomGeometry() {
-  const std::string dir = Folder();
-  if (dir.empty()) {
+  // The same folders the scan loads, the built-in import included: the frame buffers and the arena
+  // are sized from this before there is a renderer (main.cpp).
+  return HasRoomGeometryNow(ScanModFolders(Folder()));
+}
+
+bool AnyModEnabled() {
+  if (!PortDebug::ModsEnabled()) {
     return false;
   }
-  std::error_code ec;
-  for (fs::recursive_directory_iterator it(PathFromString(dir), fs::directory_options::skip_permission_denied, ec), end;
-       !ec && it != end; it.increment(ec)) {
-    uint32_t id = 0;
-    if (PortRoomGeo::ParseFileName(PathString(it->path().filename()), id)) {
+  const std::vector<std::string> disabled = SplitDisabled(PortDebug::ModsDisabled());
+  for (const PortRemasteredStorage::ModFolder& mod : ScanModFolders(Folder())) {
+    const std::string name = PathString(PathFromString(mod.path).filename());
+    if (std::find(disabled.begin(), disabled.end(), name) == disabled.end()) {
       return true;
     }
   }
@@ -440,20 +475,22 @@ void Initialize() {
   }
   sStatus.folder = Folder();
   sStatus.active = PortDebug::ModsEnabled() && !sSuspended;
-  if (sStatus.folder.empty()) {
+  // The built-in Remastered import can live outside the mods folder (Android,
+  // port_remastered_storage.h): it loads as a mod either way.
+  const std::vector<PortRemasteredStorage::ModFolder> scan = ScanModFolders(sStatus.folder);
+  if (sStatus.folder.empty() && scan.empty()) {
+    // No user folder: the generated layer has nowhere to keep its cache either.
+    PortBallLooks::SetState(false, 0);
     return;
   }
   const std::vector<std::string> disabled = SplitDisabled(PortDebug::ModsDisabled());
 
   std::error_code ec;
   std::vector<fs::path> modDirs;
-  for (fs::directory_iterator it(PathFromString(sStatus.folder), ec), end; !ec && it != end; it.increment(ec)) {
-    const std::string name = PathString(it->path().filename());
-    if (!name.empty() && name[0] != '.' && it->is_directory(ec)) {
-      modDirs.push_back(it->path());
-    }
+  modDirs.reserve(scan.size());
+  for (const PortRemasteredStorage::ModFolder& mod : scan) {
+    modDirs.push_back(PathFromString(mod.path));
   }
-  std::sort(modDirs.begin(), modDirs.end());
 
   // Keyed by disc entry and by (type, id); a later mod overwrites an earlier.
   std::map<int32_t, Replacement> replaced;
@@ -470,7 +507,7 @@ void Initialize() {
       const bool stamped = stamp.is_open();
       info.import = stamped || info.name == PortRemastered::kImportModName;
       if (info.import) {
-        const std::string text((std::istreambuf_iterator<char>(stamp)), std::istreambuf_iterator<char>());
+        const std::string text = port::ReadAllText(stamp);
         info.importStale = ImportStampStale(text, PortRemastered::kImportVersion);
       }
       if (info.importStale && sStatus.staleImport.empty()) {
@@ -598,6 +635,30 @@ void Initialize() {
     }
   }
 
+  // The generated ball looks (port_ball_looks.h): with mods on or off, under
+  // every mod. A mod with a look of its own of a ball (the Remastered import)
+  // keeps all of it; the other looks are still made.
+  {
+    const bool wanted = PortDebug::GeneratedBallLooks() && !sSuspended;
+    unsigned active = 0;
+    if (wanted) {
+      for (const PortBallLooks::Look look : PortBallLooks::kLooks) {
+        const std::vector<std::pair<uint32_t, uint32_t>> keys = PortBallLooks::ModelKeys(look);
+        const bool replaced =
+            std::any_of(keys.begin(), keys.end(), [&](const auto& key) { return loose.count(key) != 0; });
+        if (replaced) {
+          PortLog::Write("mods: a mod has its own %s; the generated one is left out\n", PortBallLooks::Name(look));
+          continue;
+        }
+        for (PortMods::LooseResource& resource : PortBallLooks::Collect(look)) {
+          loose.emplace(std::pair{resource.type, resource.id}, std::move(resource));
+          active |= 1u << unsigned(look);
+        }
+      }
+    }
+    PortBallLooks::SetState(wanted, active);
+  }
+
   // Which loose resources each PAK takes. Ids no PAK holds are added to
   // NoARAM.pak, which the game keeps loaded from boot.
   std::set<std::pair<uint32_t, uint32_t>> used;
@@ -694,8 +755,9 @@ void Initialize() {
       extra.push_back(std::move(file));
     }
     for (const auto& [key, resource] : loose) {
-      if (used.count(key) != 0) {
-        ++sStatus.mods[looseMod[key]].resources;
+      const auto mod = looseMod.find(key);
+      if (used.count(key) != 0 && mod != looseMod.end()) {
+        ++sStatus.mods[mod->second].resources;
       }
     }
   }
