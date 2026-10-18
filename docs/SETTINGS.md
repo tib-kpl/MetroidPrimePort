@@ -375,6 +375,10 @@
   its own button. The overlay hides while F1 is open, so Record can't see touch
   controls: the editor's "Add a touch control..." list picks them instead.
   The D-pad, the sticks and the menu button can't be remapped.
+- `stretch_menus=0|1` (Video > Display "Stretch menus to the screen", default off; off
+  under Original experience): the title and file select menus, made for 4:3, are
+  stretched to fill a wide screen (the image is distorted) instead of being kept in
+  proportion with black bars at the sides.
 - `MP_CINEMA_BARS=0|1` (Video > Display "Cutscene black bars", persisted as `cinema_bars`,
   default off): the scripted 16:9 cutscene letterbox. Off, cutscenes narrower than 16:9
   show the cinematic camera's full shot (Vert+); elevator rides and credits keep theirs.
