@@ -776,6 +776,10 @@
   `EUDU`). A USA disc has only English; a PAL disc adds French, German, Spanish
   and Italian, and the Remastered import adds its languages (its text wins).
   Text missing in a language stays English (`MODS.md`).
+- Menu language (no setting; `MP_UI_LANGUAGE=<language>` for one run, `en` for
+  English): the port's own menus (F1, Remap, the overlays) in the first of the
+  system's preferred languages that `translations/` has (`fr`), unless English
+  comes first. Texts with no translation stay English (`translations/README.md`).
 - Settings other pages keep, described with them: F1 > Mods' "Load mods"
   (`mods`, on by default) and per-mod boxes (`mods_disabled`, the names left
   out, `/`-separated), read at startup (`MODS.md`); the Remastered import's "What

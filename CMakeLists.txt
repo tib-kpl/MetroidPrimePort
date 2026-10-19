@@ -215,6 +215,7 @@ set(MP_PORT_SOURCES
     platform/port_ap_solo.cpp
     platform/port_rando_seed.cpp
     platform/port_json.cpp
+    platform/port_translate.cpp
     platform/port_gpu_driver.cpp
     platform/port_discord.cpp
     platform/port_update_check.cpp
@@ -356,6 +357,8 @@ if(ANDROID)
 else()
     add_executable(metroid_prime_port ${MP_PORT_SOURCES})
 endif()
+# The menus' translations (translations/*.json), built in.
+include(cmake/PortTranslations.cmake)
 # disc.cpp and port_pal_languages.cpp inflate compressed images and fonts. Aurora
 # provides ZLIB::ZLIB everywhere (its zlib-ng on Windows).
 target_link_libraries(metroid_prime_port PRIVATE ZLIB::ZLIB)

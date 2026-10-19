@@ -5,6 +5,10 @@
 #include "imgui.h"
 #include "imgui_internal.h"
 
+// The shown texts translated (imgui_translate.cmake): the translation of
+// [text, text_end) and its end, or `text` when there is none.
+const char* (*gImGuiTranslateHook)(const char* text, const char* text_end, const char** out_end) = nullptr;
+
 void (*gImGuiItemAddHook)(ImGuiContext* ctx, ImGuiID id, const ImRect& rect) = nullptr;
 void (*gImGuiItemInfoHook)(ImGuiContext* ctx, ImGuiID id, const char* label,
                            ImGuiItemStatusFlags flags) = nullptr;

@@ -18,6 +18,7 @@
 #include "port_log.h"
 #include "port_paths.h"
 #include "port_pointer.h"
+#include "port_translate.h"
 #include "port_update_check.h"
 
 #include <SDL3/SDL_events.h>
@@ -451,6 +452,8 @@ void EnsureInitialized() {
   }
   sInitialized = true;
   LoadSettings();
+  // The menus in the system's language (translations/*.json).
+  port::InitTranslations();
   // Until a language is chosen, the system's: a European disc has French,
   // German, Spanish and Italian text, and a Remastered import adds more.
   if (!sTextLanguageSaved) {

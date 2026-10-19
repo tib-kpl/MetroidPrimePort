@@ -11,6 +11,7 @@
 #include "port_paths.h"
 #include "port_gci.h"
 #include "port_discord.h"
+#include "port_translate.h"
 
 #include "MetroidPrime/Cameras/CCameraManager.hpp"
 
@@ -21,6 +22,7 @@
 #include <cstring>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -344,9 +346,25 @@ void DrawSearchField() {
 
 bool Searching() { return sSearch[0] != '\0'; }
 
+// A place as shown: its headers (joined with " > ") translated one by one.
+static std::string ShownPlace(const char* place) {
+  std::string shown;
+  std::string_view rest(place);
+  for (;;) {
+    const size_t cut = rest.find(" > ");
+    shown += port::Translate(std::string(rest.substr(0, cut)).c_str());
+    if (cut == std::string_view::npos) {
+      return shown;
+    }
+    shown += " > ";
+    rest.remove_prefix(cut + 3);
+  }
+}
+
 // Every word of the query must be in the row's label, place or keywords. Rows
 // whose label starts with the query come first, then those that contain it,
-// then those whose label has every word.
+// then those whose label has every word. The label and place are searched as
+// shown (port_translate.h) and in English.
 void DrawSearchResults() {
   static std::string sQuery;
   static std::vector< const SettingsIndexRow* > sHits;
@@ -361,9 +379,11 @@ void DrawSearchResults() {
     }
     std::vector< std::pair< int, const SettingsIndexRow* > > scored;
     for (const SettingsIndexRow& row : kSettingsIndex) {
-      const std::string label = port::Lower(row.label);
-      const std::string all = label + ' ' + port::Lower(row.section) + ' ' + port::Lower(row.sub) + ' ' +
-                              port::Lower(row.page) + ' ' + port::Lower(row.keywords);
+      const std::string label = port::Lower(port::Translate(row.label));
+      std::string all = label + ' ' + port::Lower(row.label) + ' ' + port::Lower(row.keywords);
+      for (const char* part : {row.section, row.sub, row.page}) {
+        all += ' ' + port::Lower(part) + ' ' + port::Lower(ShownPlace(part));
+      }
       bool match = true;
       bool inLabel = true;
       for (const std::string& word : words) {
@@ -394,10 +414,10 @@ void DrawSearchResults() {
   const float rowHeight = ImGui::GetTextLineHeight() * 2.f + style.ItemSpacing.y;
   for (size_t i = 0; i < sHits.size(); ++i) {
     const SettingsIndexRow& row = *sHits[i];
-    std::string place = row.page;
+    std::string place = ShownPlace(row.page);
     for (const char* part : {row.sub, row.section}) {
       if (*part != '\0') {
-        place += std::string(" > ") + part;
+        place += " > " + ShownPlace(part);
       }
     }
     ImGui::PushID(static_cast< int >(i));
@@ -407,7 +427,7 @@ void DrawSearchResults() {
     const ImVec2 min = ImGui::GetItemRectMin();
     ImDrawList* draw = ImGui::GetWindowDrawList();
     draw->PushClipRect(min, ImGui::GetItemRectMax(), true); // long labels stop at the row
-    draw->AddText(min, ImGui::GetColorU32(ImGuiCol_Text), row.label);
+    draw->AddText(min, ImGui::GetColorU32(ImGuiCol_Text), port::Translate(row.label));
     draw->AddText(ImVec2(min.x, min.y + ImGui::GetTextLineHeight()),
                   ImGui::GetColorU32(ImGuiCol_TextDisabled), place.c_str());
     draw->PopClipRect();

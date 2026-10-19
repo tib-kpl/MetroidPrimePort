@@ -241,13 +241,14 @@ if (AURORA_ENABLE_GX)
       EXCLUDE_FROM_ALL
     )
     FetchContent_MakeAvailable(imgui)
+    # Port: imgui.cpp and imgui_widgets.cpp with the translation hook.
+    include(${CMAKE_CURRENT_SOURCE_DIR}/imgui_translate.cmake)
 
     add_library(imgui STATIC
-      ${imgui_SOURCE_DIR}/imgui.cpp
+      ${IMGUI_TRANSLATE_SOURCES}
       ${imgui_SOURCE_DIR}/imgui_demo.cpp
       ${imgui_SOURCE_DIR}/imgui_draw.cpp
       ${imgui_SOURCE_DIR}/imgui_tables.cpp
-      ${imgui_SOURCE_DIR}/imgui_widgets.cpp
       ${imgui_SOURCE_DIR}/misc/cpp/imgui_stdlib.cpp
       # Port: item hooks, so the settings search can find a widget by label.
       ${CMAKE_CURRENT_SOURCE_DIR}/imgui_item_hook.cpp
