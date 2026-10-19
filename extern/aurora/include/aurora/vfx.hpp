@@ -37,6 +37,14 @@ enum Feature : uint32_t {
   SceneWarp = 32768,    // VFX_FrameBuffer_Indirect_*: rgb *= the scene copy (capture_scene) at the fragment, offset by
                         // the indirectSlot map d: uv = frag / size + s * k * (d.x * 0.99609375 - 0.5, 0.5 - d.y * 0.99609375),
                         // k = the indirect slot's warpScale (CCH0.xy), s = near / view depth (per vertex)
+  VisorSplat = 65536,   // VFX_VisorSplat: the indirectSlot map read at the world position (extra[2].xy) x PMTR row 1.xy
+                        // + row 0.zw gives w = (d * 0.99609375 - 0.5) * row 0.xy, a view-space offset taken to the quad's
+                        // own axes by extra[3] = the inverse basis's rows 0, 1 (xy each): t = colorSlot at uv + that,
+                        // rgb = t.rgb * vc.rgb, a = max(0, t.w + row 1.z - 1). The runtime fills extra[2..3] (sprites)
+  // VFX_IceChargeBeam (9e0605cd, perms 000_1/000_0): a model particle whose CPU feed (CPortVfxMeshBatch::Add) has
+  // turned and shaken the mesh by the shader's hash and filled tan. colorSlot = BCLR, normalSlot = NMAP, params =
+  // CCH0..2, uv[1].x = the mesh's COLOR.z, extra rows 0..2 = PMTR A, B, C. Unfogged (DFOG 1: perm 000).
+  IceChargeBeam = 1u << 20,
   // Not a shader feature: a VMAT blob's exposure policy, carried in its features word. The loader moves
   // it to DrawDesc::alreadyExposed; a draw ignores it in `features` (no shader or pipeline key sees it).
   AlreadyExposed = 1u << 31
@@ -72,8 +80,11 @@ struct Vertex {
   float color[4];    // rgb is HDR and unclamped
   float extra[4][4]; // PMTR rows 0..3
   float vec[3];      // the vector whose |z|/|v| feeds the fresnel term (view-space quad normal for sprites; the runtime fills it)
+  // IceCharge*: the camera-local tangent in vec's (x, z, y) order (the GX view tangent is (x, y, -z)), w the
+  // handedness with the model matrix's mirror folded in. Unused (zero) elsewhere.
+  float tan[4];
 };
-static_assert(sizeof(Vertex) == 140);
+static_assert(sizeof(Vertex) == 156);
 
 struct Texture {
   const GXTexObj* obj = nullptr;
@@ -113,6 +124,11 @@ struct DrawDesc {
   // room's (the GX tone row's exposure, as every other draw takes it). An LDR draw ignores it.
   // Set only for the material the converter validated (the wave orb's MATI), not for VFX in general.
   bool alreadyExposed = false;
+  // IceCharge*: the NMAP slot, Remastered's CCHn uniforms (MATI with the SMTR overrides) and its modular
+  // simulation time (CScene::GetModularSimulationTime, the port's CGraphics::GetSimTime).
+  int8_t normalSlot = -1;
+  float params[7][4] = {};
+  float time = 0.f;
 };
 
 // Records quadCount quads (4 vertices each, drawn as two triangles) into the current pass with the

@@ -301,6 +301,7 @@ set(MP_PORT_SOURCES
     platform/port_remastered_effect_import.cpp
     platform/port_remastered_report.cpp
     platform/port_remastered_import.cpp
+    platform/port_storage_report.cpp
     platform/port_remastered_import_retail.cpp
     platform/port_remastered_import_remastered.cpp
     platform/port_remastered_jpeg.cpp
@@ -1311,6 +1312,12 @@ if(MP_BUILD_TESTS)
             COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/tests/port_door_save_wiring.py
                     ${CMAKE_CURRENT_SOURCE_DIR})
         set_tests_properties(port_door_save_wiring PROPERTIES TIMEOUT 15 LABELS port)
+        # A state saved in a boss fight restores the fight: delivered activation,
+        # regenerated generator copies and the replayed script message journal.
+        add_test(NAME port_boss_save_wiring
+            COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/tests/port_boss_save_wiring.py
+                    ${CMAKE_CURRENT_SOURCE_DIR})
+        set_tests_properties(port_boss_save_wiring PROPERTIES TIMEOUT 15 LABELS port)
         # The map side file reaches its staging, its flush and its load from the
         # card driver, and the save state carries the same data in its blob.
         add_test(NAME port_map_side_wiring
