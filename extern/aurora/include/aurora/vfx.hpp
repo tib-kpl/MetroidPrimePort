@@ -29,13 +29,20 @@ enum Feature : uint32_t {
   AddColor = 1024,      // extra[addRow] = (add.rgb, scale): rgb = rgb * scale + add
   OpacityFade = 2048,   // a *= S(sat(-p.x / (p.y - p.x))), p = fadeX/fadeY
   ColorRgbOnly = 4096,  // with ColorTex: the map's alpha is not opacity (a stays 1)
+  Pyro = 8192,          // VFX_Pyro: colorSlot = P, rampSlot = gradient LUT read at (P.r, 0), (P.g, 0); e = extra[1]:
+                        // rgb = P.b * (P.r*e.x*G(P.r) + P.g*e.y*G(P.g)) / exposure, a = S(sat((P.a - e.w)/(1 - e.w))) * e.z
+  Disintegration = 16384, // VFX_Disintegration: colorSlot = mask, s = t.x^2, extra[0..2] = A, B, edge E, extra[3] = (thr,
+                          // edge width, alpha lo, alpha hi): m = sat(s - thr), q = sat(1 - m - width), e = q - q^2,
+                          // rgb = mix(A, B, s) * vc.rgb + e * E, a = sat(m * (e > 0 ? hi : lo))
+  SceneWarp = 32768,    // VFX_FrameBuffer_Indirect_*: rgb *= the scene copy (capture_scene) at the fragment, offset by
+                        // the indirectSlot map d: uv = frag / size + s * k * (d.x * 0.99609375 - 0.5, 0.5 - d.y * 0.99609375),
+                        // k = the indirect slot's warpScale (CCH0.xy), s = near / view depth (per vertex)
   // Not a shader feature: a VMAT blob's exposure policy, carried in its features word. The loader moves
   // it to DrawDesc::alreadyExposed; a draw ignores it in `features` (no shader or pipeline key sees it).
   AlreadyExposed = 1u << 31
 };
-// Multiply is port-only: the FrameBuffer_* shaders draw the scene behind them x rgb, warped by an
-// indirect map. The pass can't sample its own target, so the warp is dropped and the target is
-// multiplied by mix(1, rgb, a) instead (exact where the warp scale is 0).
+// Multiply is port-only: the stand-in for the FrameBuffer_* shaders without a SceneWarp recipe
+// (3db95827). The warp is dropped and the target is multiplied by mix(1, rgb, a) instead.
 // AdditiveOne is the wave orb's model blend: RGB One/One, alpha Zero/One, drawn with depth write off.
 // The values are serialised in VMAT blobs (0..4 older, 5 new) and form part of the pipeline key.
 enum class Blend : uint32_t { Alpha = 0, Premultiplied = 1, Additive = 2, Opaque = 3, Multiply = 4, AdditiveOne = 5 };
@@ -121,7 +128,7 @@ void draw_triangles(const DrawDesc& desc, const Vertex* verts, uint32_t triCount
 // EFB's depth (raw, full size) and its colour (half size with a mip chain; linear RGBA16F in the HDR
 // scene, else the RGBA8 display copy) for the later draws of this frame to read, at one pass break.
 // Call once per frame from the game thread. Draws of a frame without a copy, before it, or into
-// another target (an offscreen pass) bind 1x1 dummies and do no DepthSoften.
+// another target (an offscreen pass) bind 1x1 dummies, do no DepthSoften and draw no SceneWarp.
 void capture_scene();
 void shutdown();
 } // namespace aurora::gfx::vfx
