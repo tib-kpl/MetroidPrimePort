@@ -22,6 +22,9 @@ import android.provider.DocumentsContract;
 import android.provider.MediaStore;
 import android.provider.Settings;
 import android.util.Log;
+import android.view.View;
+import android.view.WindowInsets;
+import android.view.WindowInsetsController;
 
 import dev.encounter.aurora.AuroraSurface;
 
@@ -245,6 +248,9 @@ public final class MetroidPrimeActivity extends SDLActivity {
             Log.e(TAG, "Failed to prepare native resources", e);
         }
         super.onCreate(savedInstanceState);
+        // (before the game's surface exists: it is made at the whole screen's
+        // size, not at the size left by the status and navigation bars)
+        hideSystemBars();
         if (mLayout != null) {
             touchControls = new TouchControlsView(this);
             mLayout.addView(touchControls, new android.widget.RelativeLayout.LayoutParams(
@@ -254,6 +260,42 @@ public final class MetroidPrimeActivity extends SDLActivity {
         }
         preferHighestRefreshRate();
         warnIfDataFolderUnreachable();
+    }
+
+    /*
+     * The game is full screen (the fullscreen setting, on by default on
+     * Android), but SDL hides the system bars only once the game's window is
+     * made, after its surface was laid out at the size the bars leave
+     * (1920x970 on a 1920x1080 screen): the picture kept that size, with black
+     * bars above and below it. So they are hidden here from the start, and
+     * again whenever the window gets the focus back (a dialog, the
+     * notification shade and the recents screen show them), unless the
+     * player turned full screen off (SDL's own state).
+     */
+    private void hideSystemBars() {
+        android.view.Window window = getWindow();
+        if (window == null) {
+            return;
+        }
+        if (Build.VERSION.SDK_INT >= 30 /* Android 11 (R) */) {
+            WindowInsetsController controller = window.getInsetsController();
+            if (controller != null) {
+                controller.hide(WindowInsets.Type.statusBars() | WindowInsets.Type.navigationBars());
+                controller.setSystemBarsBehavior(WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+            }
+        }
+        window.getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_FULLSCREEN |
+            View.SYSTEM_UI_FLAG_HIDE_NAVIGATION | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY |
+            View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION |
+            View.SYSTEM_UI_FLAG_LAYOUT_STABLE);
+    }
+
+    @Override
+    public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        if (hasFocus && mFullscreenModeActive) {
+            hideSystemBars();
+        }
     }
 
     // Android runs an app at 60 Hz on a 90/120 Hz panel unless the window asks
