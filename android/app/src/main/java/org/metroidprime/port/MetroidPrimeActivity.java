@@ -16,6 +16,8 @@ import android.media.MediaScannerConnection;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.Environment;
 import android.os.Process;
 import android.provider.DocumentsContract;
@@ -249,8 +251,10 @@ public final class MetroidPrimeActivity extends SDLActivity {
         }
         super.onCreate(savedInstanceState);
         // (before the game's surface exists: it is made at the whole screen's
-        // size, not at the size left by the status and navigation bars)
+        // size, not at the size left by the status and navigation bars), and
+        // once more after SDL's first window style, which shows them
         hideSystemBars();
+        barsHandler.post(hideBars);
         if (mLayout != null) {
             touchControls = new TouchControlsView(this);
             mLayout.addView(touchControls, new android.widget.RelativeLayout.LayoutParams(
@@ -271,7 +275,15 @@ public final class MetroidPrimeActivity extends SDLActivity {
      * again whenever the window gets the focus back (a dialog, the
      * notification shade and the recents screen show them), unless the
      * player turned full screen off (SDL's own state).
+     *
+     * And whenever they come back while the game is full screen: SDL hides
+     * them again with the legacy flags, which Android 11 and later ignore
+     * once the bars were shown by other means (its record of the flags still
+     * says hidden), so the bars stayed and the game drew between them.
      */
+    private final Handler barsHandler = new Handler(Looper.getMainLooper());
+    private final Runnable hideBars = this::hideSystemBars;
+
     private void hideSystemBars() {
         android.view.Window window = getWindow();
         if (window == null) {
@@ -295,6 +307,17 @@ public final class MetroidPrimeActivity extends SDLActivity {
         super.onWindowFocusChanged(hasFocus);
         if (hasFocus && mFullscreenModeActive) {
             hideSystemBars();
+        }
+    }
+
+    @Override
+    public void onSystemUiVisibilityChange(int visibility) {
+        super.onSystemUiVisibilityChange(visibility);
+        final int hidden = View.SYSTEM_UI_FLAG_FULLSCREEN | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION;
+        if (mFullscreenModeActive && (visibility & hidden) != hidden) {
+            // (after a while, as SDL does: a swipe shows them for a moment)
+            barsHandler.removeCallbacks(hideBars);
+            barsHandler.postDelayed(hideBars, 1500);
         }
     }
 
