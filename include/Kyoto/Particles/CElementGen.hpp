@@ -22,6 +22,8 @@ class CModVectorElement;
 #ifdef TARGET_PC
 #include "Kyoto/Particles/CGenDescription.hpp" // PortKssmChild points at a CGenDescription::PortKssm
 #include "Kyoto/Particles/CPortVfxConstants.hpp"
+#include "Kyoto/Particles/PortParticleMath.hpp"
+#include <utility>
 #include <vector>
 struct CPortVfxMeshBatch;
 #endif
@@ -77,6 +79,7 @@ public:
     float xPortColor[4];   // COLR unclamped (HDR), for the VFX paths; x34_color is the clamped one
     float xPortVpmt[4][4]; // VPMT rows
     CVector3f xPortLaunchDir; // unit launch velocity (zero if it launched at rest), for VORN 1
+    SPortKeep xPortKeep;      // KPIN values latched at birth (CREPortKeep)
 #endif
 
     CParticle()
@@ -91,11 +94,17 @@ public:
     , xPortColor{1.f, 1.f, 1.f, 1.f}
     , xPortVpmt{}
     , xPortLaunchDir(CVector3f::Zero())
+    , xPortKeep{}
 #endif
     {}
   };
   struct CAdvancedValues {
+#ifdef TARGET_PC
+    // 0..8 ADV1..9 (ADV9 is Remastered's), 9..12 the bits of IAV0..3 (Remastered's int variables).
+    float values[13] = {};
+#else
     float values[8];
+#endif
   };
 
   CElementGen();
@@ -144,7 +153,7 @@ public:
 
   bool InternalUpdate(double dt);
   void UpdateLightParameters();
-  void UpdateAdvanceAccessParameters(int, int);
+  void UpdateAdvanceAccessParameters(int, int, bool spawn = false);
   bool UpdateVelocitySource(int, int, CParticle&);
   void UpdateExistingParticles();
   void CreateNewParticles(int);
@@ -171,6 +180,9 @@ public:
   bool IsIndirectTextured()
       const; // { return x28_loadedGenDesc->x54_x40_TEXR && x28_loadedGenDesc->x58_x44_TIND; }
   void SetExternalVar(int index, float val);
+#ifdef TARGET_PC
+  const float* PortExternalVars() const { return xPortExternalSet ? x9c_externalVars : nullptr; }
+#endif
   float GetExternalVar(int index) const;
 
   static void Initialize();
@@ -293,6 +305,11 @@ private:
   short x94_randomSeed;
   float x98_generatorRate;
   float x9c_externalVars[16];
+#ifdef TARGET_PC
+  // port-only: SetExternalVar was called (Remastered's external data block exists); a PMXV reads
+  // x9c_externalVars then, else its fallback
+  bool xPortExternalSet = false;
+#endif
   CVector3f xdc_translation;
   CVector3f xe8_globalTranslation;
   CVector3f xf4_POFS;
@@ -333,6 +350,9 @@ private:
   };
   CRandom16 x27c_randState;
   CModVectorElement* x280_VELSources[4];
+#ifdef TARGET_PC
+  bool xPortVelFinalizes = false;
+#endif
   rstl::vector< CParticleGen* > x290_activePartChildren;
   int x2a0_CSSD;
   int x2a4_SISY;
@@ -441,6 +461,28 @@ private:
   // Update, stepped at the start of each tick. Its pos/rot are T_g/Q_g.
   PortKssmChild xPortMover;
   bool xPortMoverInit = false;
+public:
+  // PLNV's index shufflers, one per element (CIndexShuffler's bitset lives in the generator's
+  // variable memory); created zeroed on first use.
+  std::vector< std::pair< const void*, PortParticleMath::IndexShuffler > > xPortShufflers;
+  PortParticleMath::IndexShuffler& PortShuffler(const void* element) {
+    for (auto& entry : xPortShufflers) {
+      if (entry.first == element) {
+        return entry.second;
+      }
+    }
+    xPortShufflers.emplace_back(element, PortParticleMath::IndexShuffler());
+    return xPortShufflers.back().second;
+  }
+  // PEMV (Remastered EMRV, var 0x16, CVEVelocityCalc): the change of the system translation (over
+  // its scale, per component) since the previous tick, 0 on the first. Updated once per tick.
+  CVector3f xPortPemvPrev = CVector3f::Zero();
+  CVector3f xPortPemvDelta = CVector3f::Zero();
+  bool xPortPemvStarted = false;
+  void PortStepPemv();
+  const CVector3f& PortEmitterVelocity() const { return xPortPemvDelta; }
+
+private:
   bool PortHasMover() const;
   void PortInitMover();
   void PortEvalSys(bool init);

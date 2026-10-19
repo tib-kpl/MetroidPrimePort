@@ -385,7 +385,8 @@ if(NOT ANDROID)
         platform/port_remastered_convert_retail.cpp platform/port_remastered_convert_material.cpp
         platform/port_remastered_convert_pbr.cpp platform/port_remastered_convert_skin.cpp
         platform/port_remastered_report.cpp)
-    target_include_directories(remastered_effect_tool PRIVATE platform/include include)
+    target_include_directories(remastered_effect_tool PRIVATE platform/include include extern/aurora/include)
+    target_compile_definitions(remastered_effect_tool PRIVATE TARGET_PC VERSION=0)
     target_link_libraries(remastered_effect_tool PRIVATE astcenc ${CMAKE_THREAD_LIBS_INIT})
     set_target_properties(remastered_effect_tool PROPERTIES EXCLUDE_FROM_ALL ON)
 endif()
@@ -806,9 +807,161 @@ if(MP_BUILD_TESTS)
         INCLUDES platform/include include extern/aurora/include
         DEFINITIONS TARGET_PC VERSION=0
         GC_SECTIONS)
+    # Element batch 2 (NEGT, PLNV counts, CRCV, SPEV, ELPS): converter output.
+    mp_port_test(port_elem2_convert_tests
+        SOURCES tests/port_elem2_convert.cpp
+            platform/port_remastered_effect_convert.cpp platform/port_remastered_effect.cpp
+            src/Kyoto/Particles/CVectorElement.cpp src/Kyoto/Math/CQuaternion.cpp
+            src/Kyoto/Math/CVector3f.cpp src/Kyoto/Math/CMatrix3f.cpp
+        INCLUDES platform/include include extern/aurora/include
+        DEFINITIONS TARGET_PC VERSION=0
+        GC_SECTIONS)
+    # Element batch 3 (T2S_, SCLE, NFOM, DIVD, swoosh SUST): converter output.
+    mp_port_test(port_elem3_convert_tests
+        SOURCES tests/port_elem3_convert.cpp
+            platform/port_remastered_effect_convert.cpp platform/port_remastered_effect.cpp
+            src/Kyoto/Particles/CVectorElement.cpp src/Kyoto/Particles/CRealElement.cpp
+            src/Kyoto/Particles/CIntElement.cpp src/Kyoto/Math/CQuaternion.cpp
+            src/Kyoto/Math/CVector3f.cpp src/Kyoto/Math/CMatrix3f.cpp
+        INCLUDES platform/include include extern/aurora/include
+        DEFINITIONS TARGET_PC VERSION=0
+        GC_SECTIONS)
+    mp_port_test(port_remastered_effect_convert_vars_tests
+        SOURCES tests/port_remastered_effect_convert_vars.cpp
+            platform/port_remastered_effect_convert.cpp platform/port_remastered_effect.cpp
+            src/Kyoto/Particles/CVectorElement.cpp src/Kyoto/Math/CQuaternion.cpp
+            src/Kyoto/Math/CVector3f.cpp src/Kyoto/Math/CMatrix3f.cpp
+        INCLUDES platform/include include extern/aurora/include
+        DEFINITIONS TARGET_PC VERSION=0
+        GC_SECTIONS)
+    # ADV9 / IAV0..3 / PAP0 / PAP9 converter output (PPVR).
+    mp_port_test(port_remastered_effect_convert_pap_tests
+        SOURCES tests/port_remastered_effect_convert_pap.cpp
+            platform/port_remastered_effect_convert.cpp platform/port_remastered_effect.cpp
+            src/Kyoto/Particles/CVectorElement.cpp src/Kyoto/Math/CQuaternion.cpp
+            src/Kyoto/Math/CVector3f.cpp src/Kyoto/Math/CMatrix3f.cpp
+        INCLUDES platform/include include extern/aurora/include
+        DEFINITIONS TARGET_PC VERSION=0
+        GC_SECTIONS)
+
     mp_port_test(port_electric2_bolt_tests
         SOURCES tests/port_electric2_bolt.cpp
         INCLUDES platform/include)
+    # Curl noise math, the VECF field and PCRM; the token half (CPortCurlNoiseField.cpp) is
+    # left out and GC_SECTIONS drops what refers to it.
+    mp_port_test(port_curl_noise_tests
+        SOURCES tests/port_curl_noise.cpp src/Kyoto/Particles/CPortCurlNoise.cpp
+            src/Kyoto/Streams/CInputStream.cpp src/Kyoto/Streams/CMemoryInStream.cpp
+            src/Kyoto/Math/CVector3f.cpp
+        INCLUDES include extern/aurora/include
+        DEFINITIONS TARGET_PC VERSION=0
+        GC_SECTIONS)
+    mp_port_test(port_curl_noise_octave_tests
+        SOURCES tests/port_curl_noise_octave.cpp src/Kyoto/Particles/CPortCurlNoise.cpp
+            src/Kyoto/Streams/CInputStream.cpp src/Kyoto/Streams/CMemoryInStream.cpp
+            src/Kyoto/Math/CVector3f.cpp
+        INCLUDES include extern/aurora/include
+        DEFINITIONS TARGET_PC VERSION=0
+        GC_SECTIONS)
+    mp_port_test(port_remastered_effect_convert_crlnoct_tests
+        SOURCES tests/port_remastered_effect_convert_crlnoct.cpp
+            platform/port_remastered_effect_convert.cpp platform/port_remastered_effect.cpp
+            src/Kyoto/Particles/CVectorElement.cpp src/Kyoto/Math/CQuaternion.cpp
+            src/Kyoto/Math/CVector3f.cpp src/Kyoto/Math/CMatrix3f.cpp
+        INCLUDES platform/include include extern/aurora/include
+        DEFINITIONS TARGET_PC VERSION=0
+        GC_SECTIONS)
+    # ABS_, COSE, RSGN and PIRS: header-only elements (CPortParticleVars.hpp).
+    mp_port_test(port_scalar_elements_tests
+        SOURCES tests/port_scalar_elements.cpp src/Kyoto/Particles/CParticleGlobals.cpp src/Kyoto/CRandom16.cpp src/Kyoto/Math/CVector3f.cpp
+        INCLUDES include extern/aurora/include
+        DEFINITIONS TARGET_PC VERSION=0
+        GC_SECTIONS)
+    # ADV9, IAV0..3 and the constant-after-start rule (CPortPartVars).
+    mp_port_test(port_part_vars_tests
+        SOURCES tests/port_part_vars.cpp src/Kyoto/Particles/CParticleGlobals.cpp src/Kyoto/CRandom16.cpp src/Kyoto/Math/CVector3f.cpp
+        INCLUDES include extern/aurora/include
+        DEFINITIONS TARGET_PC VERSION=0
+        GC_SECTIONS)
+    # MPAC, MPCN and ANCM (Remastered's vector elements).
+    mp_port_test(port_vector_elements_tests
+        SOURCES tests/port_vector_elements.cpp src/Kyoto/Particles/CParticleGlobals.cpp src/Kyoto/CRandom16.cpp
+            src/Kyoto/Particles/CVectorElement.cpp src/Kyoto/Math/CQuaternion.cpp
+            src/Kyoto/Math/CVector3f.cpp src/Kyoto/Math/CMatrix3f.cpp
+        INCLUDES include extern/aurora/include
+        DEFINITIONS TARGET_PC VERSION=0
+        GC_SECTIONS)
+    # PNCV and ROTV outside a component tree (Remastered's CVENormalizedCompensatedVelocity and
+    # CVERotateVector).
+    mp_port_test(port_rotv_pncv_tests
+        SOURCES tests/port_rotv_pncv.cpp src/Kyoto/Particles/CParticleGlobals.cpp src/Kyoto/CRandom16.cpp
+            src/Kyoto/Math/CTransform4f.cpp
+            src/Kyoto/Particles/CVectorElement.cpp src/Kyoto/Math/CQuaternion.cpp
+            src/Kyoto/Math/CVector3f.cpp src/Kyoto/Math/CMatrix3f.cpp
+        INCLUDES include extern/aurora/include
+        DEFINITIONS TARGET_PC VERSION=0
+        GC_SECTIONS)
+    mp_port_test(port_remastered_effect_convert_rotv_tests
+        SOURCES tests/port_remastered_effect_convert_rotv.cpp
+            platform/port_remastered_effect_convert.cpp platform/port_remastered_effect.cpp
+            src/Kyoto/Particles/CVectorElement.cpp src/Kyoto/Math/CQuaternion.cpp
+            src/Kyoto/Math/CVector3f.cpp src/Kyoto/Math/CMatrix3f.cpp
+        INCLUDES platform/include include extern/aurora/include
+        DEFINITIONS TARGET_PC VERSION=0
+        GC_SECTIONS)
+    # KEYF (Remastered's CREKeyframeInput): header-only, and its converter output.
+    mp_port_test(port_keyf_tests
+        SOURCES tests/port_keyf.cpp
+        INCLUDES include extern/aurora/include
+        DEFINITIONS TARGET_PC VERSION=0
+        GC_SECTIONS)
+    mp_port_test(port_remastered_effect_convert_keyf_tests
+        SOURCES tests/port_remastered_effect_convert_keyf.cpp
+            platform/port_remastered_effect_convert.cpp platform/port_remastered_effect.cpp
+            src/Kyoto/Particles/CVectorElement.cpp src/Kyoto/Math/CQuaternion.cpp
+            src/Kyoto/Math/CVector3f.cpp src/Kyoto/Math/CMatrix3f.cpp
+        INCLUDES platform/include include extern/aurora/include
+        DEFINITIONS TARGET_PC VERSION=0
+        GC_SECTIONS)
+    # SLTW (Remastered's lifetime tween on the system slot): the element and its converter output.
+    mp_port_test(port_system_tween_tests
+        SOURCES tests/port_system_tween.cpp src/Kyoto/Particles/CParticleGlobals.cpp src/Kyoto/CRandom16.cpp
+            src/Kyoto/Math/CVector3f.cpp
+        INCLUDES include extern/aurora/include
+        DEFINITIONS TARGET_PC VERSION=0
+        GC_SECTIONS)
+    mp_port_test(port_remastered_effect_convert_sltw_tests
+        SOURCES tests/port_remastered_effect_convert_sltw.cpp
+            platform/port_remastered_effect_convert.cpp platform/port_remastered_effect.cpp
+            src/Kyoto/Particles/CVectorElement.cpp src/Kyoto/Math/CQuaternion.cpp
+            src/Kyoto/Math/CVector3f.cpp src/Kyoto/Math/CMatrix3f.cpp
+        INCLUDES platform/include include extern/aurora/include
+        DEFINITIONS TARGET_PC VERSION=0
+        GC_SECTIONS)
+    # PLNE and PLNV (Remastered's plane emitters), their spread and PLNV's shuffler.
+    mp_port_test(port_plane_emitters_tests
+        SOURCES tests/port_plane_emitters.cpp src/Kyoto/Particles/CParticleGlobals.cpp src/Kyoto/CRandom16.cpp
+            src/Kyoto/Particles/CEmitterElement.cpp
+            src/Kyoto/Math/CVector3f.cpp src/Kyoto/Math/CMatrix3f.cpp
+        INCLUDES include extern/aurora/include
+        DEFINITIONS TARGET_PC VERSION=0
+        GC_SECTIONS)
+    # SPEV and ELPS (Remastered's sphere with variance and ellipsoid, the port-only PSPV and PELP).
+    mp_port_test(port_sphere_emitters_tests
+        SOURCES tests/port_sphere_emitters.cpp src/Kyoto/Particles/CParticleGlobals.cpp src/Kyoto/CRandom16.cpp
+            src/Kyoto/Particles/CEmitterElement.cpp
+            src/Kyoto/Math/CVector3f.cpp src/Kyoto/Math/CMatrix3f.cpp
+        INCLUDES include extern/aurora/include
+        DEFINITIONS TARGET_PC VERSION=0
+        GC_SECTIONS)
+    # CRCV (Remastered's circle with variance, the port-only PCRC).
+    mp_port_test(port_circle_variance_tests
+        SOURCES tests/port_circle_variance.cpp src/Kyoto/Particles/CParticleGlobals.cpp src/Kyoto/CRandom16.cpp
+            src/Kyoto/Particles/CVectorElement.cpp src/Kyoto/Math/CQuaternion.cpp
+            src/Kyoto/Math/CVector3f.cpp src/Kyoto/Math/CMatrix3f.cpp
+        INCLUDES include extern/aurora/include
+        DEFINITIONS TARGET_PC VERSION=0
+        GC_SECTIONS)
     mp_port_test(port_ice_rotation_element_tests
         SOURCES tests/port_ice_rotation_element.cpp
             src/Kyoto/Particles/CVectorElement.cpp src/Kyoto/Math/CQuaternion.cpp
@@ -830,7 +983,8 @@ if(MP_BUILD_TESTS)
         SOURCES tests/port_remastered_effect_import.cpp
             platform/port_remastered_effect_import.cpp platform/port_remastered_effect_convert.cpp
             platform/port_remastered_effect.cpp platform/port_remastered_image.cpp
-        INCLUDES platform/include include
+        INCLUDES platform/include include extern/aurora/include
+        DEFINITIONS TARGET_PC VERSION=0
         LIBRARIES astcenc)
     mp_port_test(port_remastered_import_tests
         SOURCES tests/port_remastered_import.cpp platform/port_remastered_effect.cpp
@@ -1088,10 +1242,6 @@ if(MP_BUILD_TESTS)
     mp_port_test(port_power_charge_release_tests
         SOURCES tests/port_power_charge_release.cpp
         INCLUDES platform/include
-        DEFINITIONS TARGET_PC VERSION=0)
-    mp_port_test(port_power_flash_frame_tests
-        SOURCES tests/port_power_flash_frame.cpp
-        INCLUDES platform/include include extern/aurora/include
         DEFINITIONS TARGET_PC VERSION=0)
     mp_port_test(port_particle_math_tests
         SOURCES tests/port_particle_math.cpp src/Kyoto/Particles/CParticleGlobals.cpp src/Kyoto/CRandom16.cpp

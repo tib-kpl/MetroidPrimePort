@@ -141,6 +141,9 @@ public:
   // port-only PMRF: Remastered PMRB/PMCF. 0 = retail (orientation * PMRT, PMOP turned by the
   // orientation), 1 = PMRT alone, 2 = orientation * PMRT; for 1 and 2 PMOP turns with the model.
   u8 xPortPmrqFrame = 0;
+  // port-only PEMV (Remastered EMRV, var 0x16): the description reads the per-tick system
+  // velocity. 0 none, 1 the external (global + local) translation, 2 the local translation.
+  u8 xPortPemv = 0;
   // port-only PIRN: a converted Remastered effect, whose nested IRND elements are stable per particle
   bool xPortIrnd = false;
   // port-only PGID: the first word of a converted Remastered PART's GUID (CElementGen::PortChildSeed)
@@ -152,10 +155,24 @@ public:
   CRealElement* xPortNestedLightOuterRadius = nullptr;
   // port-only PVRT: Remastered particle variables (names, types, defaults)
   std::unique_ptr< CPortVarTable > xPortVars;
+  // port-only: the PKPR elements (per-particle KPIN latches), latched at birth in this order;
+  // owned by the element trees
+  std::vector< const CREPortKeep* > xPortKeeps;
+  // port-only: an EMTR CODE (desc[0x2fa] bit 4): the rate-driven spawn (GRTE) is skipped, particles
+  // come only from code (CElementGen::TickSystem_Node 0x24a16c)
+  bool xPortCodeSpawn = false;
+  // port-only PADO: the order ADV1..8 are evaluated in (0-based), when it is not 1..8
+  std::vector< u8 > xPortAdvOrder;
+  // port-only PPVR: ADV1..9 and IAV0..3 in Remastered's sorted order with constant-after-start
+  // flags; supersedes PADO (CElementGen::UpdateAdvanceAccessParameters).
+  std::unique_ptr< CPortPartVars > xPortPartVars;
   // Port-only PSYS: the system variables (CElementGen::PortEvalSys).
   std::unique_ptr< CPortSys > xPortSys;
   // port-only PSHP: Remastered SSHP sprite mesh (0 quad; 3 triangle, 4 pentagon, 5 hexagon, 6 octagon)
   u8 xPortSpriteShape = 0;
+  // port-only PBDM: Remastered's blend row where the alpha blend stands in for it
+  // (CElementGen::PortBlendSrc/Dst). 0 = retail alpha, 1 premultiplied, 3 opaque; 2 is AAPH.
+  u8 xPortBlend = 0;
   // port-only PSWX: swooshes started beyond SSWH's one, each with its start frame
   struct PortExtraSwoosh {
     TCachedToken< CSwooshDescription > swoosh;
