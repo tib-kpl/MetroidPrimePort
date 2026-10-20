@@ -327,6 +327,11 @@ jobs:
           path: android/app/.cxx
           key: cxx-android-${{ github.sha }}
           restore-keys: cxx-android-
+      # A precompiled header records the NDK headers' times, which differ from
+      # one runner image to the next: clang then refuses the cached one. Ninja
+      # makes the missing headers again (and only what includes them).
+      - name: Drop the cached precompiled headers
+        run: find android/app/.cxx -name '*.pch' -delete 2>/dev/null || true
       - name: Signing key
         env:
           KEYSTORE_BASE64: ${{ secrets.MP_APK_KEYSTORE_BASE64 }}
