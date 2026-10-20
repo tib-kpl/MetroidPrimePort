@@ -14,6 +14,7 @@
 #include "port_input_remap_ui.h"
 #include "port_data_folder.h"
 #include "port_build_info.h"
+#include "port_translate.h"
 
 #include "MetroidPrime/Player/CGameOptions.hpp"
 #include "MetroidPrime/Player/CGameState.hpp"
@@ -43,14 +44,16 @@ void DrawGameSection() {
   ImGui::SameLine();
   const std::string shotKeys = PortInputRemap::BindingsText(PortInput::Action::Screenshot, " / ");
   const std::string shotLabel =
-      (shotKeys.empty() ? std::string("Screenshot") : "Screenshot (" + shotKeys + ")") + "###screenshot";
+      (shotKeys.empty() ? std::string("Screenshot") : port::Translate("Screenshot") + (" (" + shotKeys + ")")) +
+      "###screenshot";
   if (ImGui::Button(shotLabel.c_str())) {
     aurora::request_screenshot();
   }
   ImGui::SameLine();
   const std::string photoKeys = PortInputRemap::BindingsText(PortInput::Action::PhotoMode, " / ");
   const std::string photoLabel =
-      (photoKeys.empty() ? std::string("Photo mode") : "Photo mode (" + photoKeys + ")") + "###photomode";
+      (photoKeys.empty() ? std::string("Photo mode") : port::Translate("Photo mode") + (" (" + photoKeys + ")")) +
+      "###photomode";
   if (ImGui::Button(photoLabel.c_str())) {
     PortPhoto::RequestEnter();
     // The overlay would cover the picture; photo mode starts at the next game tick.

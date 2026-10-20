@@ -88,6 +88,10 @@ imgui_translate_insert(_imgui_widgets
 imgui_translate_insert(_imgui_widgets
   "    const char* text_begin, *text_end;\n    ImFormatStringToTempBufferV(&text_begin, &text_end, fmt, args);\n    const ImVec2 label_size = CalcTextSize(text_begin, text_end, false);"
   "    fmt = PortTranslateFormat(fmt);\n")
+# InputTextEx's hint
+imgui_translate_insert(_imgui_widgets
+  "    }\n\n    // Render text. We currently only render selection"
+  "        PortTranslateText(&buf_display, &buf_display_end);\n")
 imgui_translate_write(imgui_widgets.cpp "${_imgui_widgets}")
 
 set(IMGUI_TRANSLATE_SOURCES
