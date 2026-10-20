@@ -275,6 +275,7 @@ set(MP_PORT_SOURCES
     platform/port_remastered_map.cpp
     platform/port_remastered_movie.cpp
     platform/port_room_env.cpp
+    platform/port_clustered_lights.cpp
     platform/port_room_env_script.cpp
     platform/port_room_env_load.cpp
     platform/port_room_env_file.cpp
@@ -851,6 +852,10 @@ if(MP_BUILD_TESTS)
     mp_port_test(port_electric2_bolt_tests
         SOURCES tests/port_electric2_bolt.cpp
         INCLUDES platform/include)
+    # Remastered's clustered light gather on the CPU: the grid, the 80-byte records and the mask.
+    mp_port_test(port_clustered_lights_tests
+        SOURCES tests/port_clustered_lights.cpp platform/port_clustered_lights.cpp
+        INCLUDES platform/include)
     # Curl noise math, the VECF field and PCRM; the token half (CPortCurlNoiseField.cpp) is
     # left out and GC_SECTIONS drops what refers to it.
     mp_port_test(port_curl_noise_tests
@@ -1270,6 +1275,12 @@ if(MP_BUILD_TESTS)
         DEFINITIONS TARGET_PC VERSION=0
         GC_SECTIONS)
     mp_port_test(port_swoosh_ring_tests SOURCES tests/port_swoosh_ring.cpp INCLUDES platform/include)
+    # Remastered's visor goo splat manager maths (include/MetroidPrime/PortVisorGoo.hpp).
+    mp_port_test(port_visor_goo_tests
+        SOURCES tests/port_visor_goo_tests.cpp src/Kyoto/CRandom16.cpp src/Kyoto/Math/CVector3f.cpp
+        INCLUDES include extern/aurora/include
+        DEFINITIONS TARGET_PC VERSION=0
+        GC_SECTIONS)
     # Every port_settings.ini key reads back as written (platform/debug_ui/settings.cpp,
     # kSettingKeys); the game binary checks itself and exits before starting.
     add_test(NAME port_settings_roundtrip COMMAND metroid_prime_port --settings-selftest)

@@ -89,9 +89,10 @@ struct CPortVfxData {
   u32 meshStride = 8, meshFlags = 0;
   float meshOrient[9] = {1.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 1.f};
   float meshOffset[3] = {0.f, 0.f, 0.f};
-  // VPRM: the shader's NMAP slot and its CCHn uniforms (the MATI's), which VSMT targets
-  // kPortVfxParamTarget.. override.
+  // VPRM: the shader's NMAP slot (v2: and TCH0 env slot) and its CCHn uniforms (the MATI's), which
+  // VSMT targets kPortVfxParamTarget.. override.
   s32 normalSlot = -1;
+  s32 envSlot = -1;
   u32 paramCount = 0;
   float params[7][4] = {};
   CPortVfxData() = default;
@@ -157,6 +158,11 @@ public:
   u8 xPortPemv = 0;
   // port-only PIRN: a converted Remastered effect, whose nested IRND elements are stable per particle
   bool xPortIrnd = false;
+  // port-only PVSD/PVSN/PVSM: Remastered's visor effect data (any VE* property) and its splat
+  // size range VESN/VESM, read by the VisorGoo splat manager (PortVisorGoo).
+  bool xPortVisorData = false;
+  float xPortVisorMinScale = 1.4f;
+  float xPortVisorMaxScale = 2.1f;
   // port-only PGID: the first word of a converted Remastered PART's GUID (CElementGen::PortChildSeed)
   u32 xPortGuidWord = 0;
   // Exact-source nested Remastered point-light metadata (PHDR/PIR0/POR0). The

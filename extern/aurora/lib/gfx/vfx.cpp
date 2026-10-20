@@ -39,8 +39,10 @@ namespace {
 Module Log("aurora::gfx::vfx");
 
 constexpr uint32_t MaxQuads = 1u << 14; // 65536 vertices
-constexpr uint32_t UniformSize = 512;
+constexpr uint32_t UniformSize = VfxUniformSize;
 constexpr uint32_t SlotCount = 4;
+// The cluster mask (IceChargeCollisionLit): a texture_2d<u32>, bound after the scene copy's three entries.
+constexpr uint32_t ClusterMaskBinding = 4 + 2 * SlotCount;
 constexpr auto EvictAfter = std::chrono::seconds(10);
 
 // The scalar sources, in the order the shader indexes them (Uniform::srcs).
@@ -74,13 +76,27 @@ struct Uniform {
   float warp[2][4]; // per slot (x, y): slots 0, 1 in warp[0], slots 2, 3 in warp[1]
   float soft[4];    // DepthSoften: the viewport's depth range (min, max) and whether the scene depth is bound
   float scene[4];   // SceneWarp: 1 / the copied target's size (x, y), the camera's near plane, whether the colour is bound
-  float ice[4][4];  // IceChargeBeam: CCH0..2, then (modular simulation time, 0, 0, 0)
-  float pad[8];
+  // IceCharge*: CCH0..6 (IceChargeBeam: 0..2) and, at [7], the modular simulation time; VisorRunOff:
+  // CCH0..4. Rows past the recipe's stay zero.
+  float ice[8][4];
+  // IceChargeCollisionLit: AMBS (ambient), the probe's mean, its lobe, then (view-space direction,
+  // 1 + 2 * sharpness) per colour channel, and BLCM. These are the 7 vec4f of padding the uniform
+  // already had before the cluster block, so nothing above or below moves.
+  float lit[7][4];
+  float pad[28];
+  // IceChargeCollisionLit: Remastered's clustered light block, c5[0..2] then 32 records of 20 floats, at
+  // ClusterBlockOffset (after every field above, so no earlier recipe's offsets move). Zero elsewhere.
+  float cluster[ClusterBlockFloats];
 };
 static_assert(sizeof(Uniform) == UniformSize);
 static_assert(offsetof(Uniform, misc2) == 208 && offsetof(Uniform, srcs) == 224 && offsetof(Uniform, soft) == 384 &&
               offsetof(Uniform, scene) == 400);
 static_assert(offsetof(Uniform, ice) == 416);
+// The block starts at ClusterBlockOffset, where the ShaderSource's 14 vec4f of padding put it, and fills
+// the rest of the uniform: 163 vec4f. The lit block takes the padding's first 7 vec4f.
+static_assert(offsetof(Uniform, lit) == 544 && offsetof(Uniform, cluster) == ClusterBlockOffset);
+static_assert(544 + 7 * 16 + sizeof(Uniform::pad) == ClusterBlockOffset && ClusterBlockFloats == 163 * 4 &&
+              UniformSize == 3376);
 
 // ---- Array textures ----
 // A slot's texture as a texture_2d_array: a 1-layer view of the GX texture itself, or, for an atlas,
@@ -110,7 +126,7 @@ struct State_ {
   wgpu::BindGroupLayout bindLayout;
   wgpu::PipelineLayout pipelineLayout;
   std::map<std::array<uint64_t, 7>, wgpu::RenderPipeline> pipelines;
-  std::map<std::array<const void*, 3 + 2 * SlotCount>, wgpu::BindGroup> groups;
+  std::map<std::array<const void*, 4 + 2 * SlotCount>, wgpu::BindGroup> groups;
   // Set when an atlas is evicted: the cached bind groups still hold its views, so the render thread drops them.
   std::atomic<bool> groupsStale{false};
   wgpu::Texture dummyTexture;
@@ -118,6 +134,19 @@ struct State_ {
   wgpu::TextureView dummyColorView; // dummyTexture as a texture_2d
   wgpu::Texture dummyDepthTexture;  // 1x1 R32Float
   wgpu::TextureView dummyDepthView;
+  wgpu::Texture dummyMaskTexture;   // 1x1 R32Uint: the cluster mask of a draw that has none
+  wgpu::TextureView dummyMaskView;
+  // The cluster mask per frame slot (IceChargeCollisionLit), like the scene copy: the game thread writes a
+  // slot's only while it records that slot, which it gets back once the render worker has encoded it, so
+  // the render thread reads it unlocked.
+  struct ClusterMask {
+    uint32_t frame = UINT32_MAX; // current_frame() it was uploaded for
+    uint32_t width = 0, height = 0;
+    uint64_t signature = 0; // of the words in it
+    wgpu::Texture texture;
+    wgpu::TextureView view;
+  };
+  std::array<ClusterMask, detail::FrameSlotCount> masks;
   // The scene copy per frame slot. The game thread writes a slot's only while it records that slot,
   // which it gets back once the render worker has encoded it, so the render thread reads it unlocked.
   struct SceneCopy {
@@ -146,9 +175,11 @@ struct Payload {
   uint8_t wrapT[SlotCount];
   uint8_t linear[SlotCount];
   uint8_t sceneSlot; // the frame slot whose scene copy the draw binds, NoScene: the dummies
+  uint8_t maskSlot;  // the frame slot whose cluster mask the draw binds, NoMask: the dummy
 };
 static_assert(sizeof(Payload) <= InlineDrawPayloadSize);
 constexpr uint8_t NoScene = 0xff;
+constexpr uint8_t NoMask = 0xff;
 
 const char* ShaderSource = R"(
 struct U {
@@ -172,6 +203,22 @@ struct U {
   ice1: vec4f,
   ice2: vec4f,
   ice3: vec4f,
+  ice4: vec4f,
+  ice5: vec4f,
+  ice6: vec4f,
+  ice7: vec4f,
+  // The clustered light block (IceChargeCollisionLit) at ClusterBlockOffset: c5[0..2] then 32 records of
+  // 5 vec4f. The 14 vec4f before it keep every member above at its old offset; lit0..lit6 are the first
+  // seven (the baked ambient and probe), the rest is padding.
+  lit0: vec4f,
+  lit1: vec4f,
+  lit2: vec4f,
+  lit3: vec4f,
+  lit4: vec4f,
+  lit5: vec4f,
+  lit6: vec4f,
+  padCluster: array<vec4f, 7>,
+  cluster: array<vec4f, 163>,
 }
 @group(0) @binding(0) var<uniform> u: U;
 @group(0) @binding(1) var t0: texture_2d_array<f32>;
@@ -186,6 +233,9 @@ struct U {
 @group(0) @binding(9) var sceneDepth: texture_2d<f32>;
 @group(0) @binding(10) var sceneColor: texture_2d<f32>;
 @group(0) @binding(11) var sceneSampler: sampler;
+// The clustered light gather's mask (IceChargeCollisionLit): one R32Uint word per (tile, slice). A draw
+// without a mask binds a 1x1 dummy.
+@group(0) @binding(12) var clusterMask: texture_2d<u32>;
 
 struct VIn {
   @location(0) pos: vec3f,
@@ -237,6 +287,10 @@ fn vs_main(in: VIn) -> VOut {
   if ((FEAT & 32768u) != 0u) {
     // SceneWarp: the warp's perspective scale, near / view distance (the VS's o3.x = vp_c4[0].w / -viewZ).
     out.sw = u.scene.z / -mv.z;
+  }
+  if ((FEAT & 2097152u) != 0u || (FEAT & 33554432u) != 0u) {
+    // IceChargeCollision: the refraction's perspective scale, min(|INDP.w / -viewZ|, 0.2) (VS o5.x / o6.x).
+    out.sw = min(abs(u.scene.z / -mv.z), 0.2);
   }
   return out;
 }
@@ -323,6 +377,65 @@ fn tone(c: vec3f) -> vec3f {
   return select(1.055 * pow(l, vec3f(1.0 / 2.4)) - 0.055, 12.92 * l, l <= vec3f(0.0031308));
 }
 
+// The clustered light gather's mask word for this fragment (390fc33b): c5[0] holds 1/ppt and the tile grid,
+// c5[1] the depth mapping (slices / maxDepth and the depth origin), c5[2].y the row pitch as int bits. The
+// word's bit i says unshadowed record i reaches this (tile, slice); 0 means the light loop is skipped.
+// c5[i] is u.cluster[i]: c5[0..2] are the block's first 12 floats, c5[3] record 0.
+fn cluster_mask_word(in: VOut) -> u32 {
+  let h0 = u.cluster[0];
+  let h1 = u.cluster[1];
+  let h2 = u.cluster[2];
+  let tile = vec2i(i32(trunc(in.pos.x * h0.x)), i32(trunc(in.pos.y * h0.y)));
+  let pitch = bitcast<i32>(h2.y);
+  let slice = clamp(i32((-in.vz - h1.z) * h1.y), 0, 31);
+  let row = clamp(tile.y, 0, i32(h0.w) - 1) * pitch;
+  let col = clamp(tile.x, 0, i32(h0.z) - 1);
+  return textureLoad(clusterMask, vec2i(row + col, slice), 0).x;
+}
+
+// One colour channel of Remastered's baked probe (BLPD, REPORT.md section 4): the record's mean and range
+// with its own lobe direction. `sharp` is the record's lane w, 1 + 2 * s, so 0.5 * w + 0.5 is 1 + s.
+fn ambient_lobe(mean: f32, lobe: f32, sharp: f32, dir: vec3f, n: vec3f) -> f32 {
+  let q = sat(dot(n, dir) * 0.5 + 0.5);
+  return fma(lobe * (sharp + 1.0), pow(q, sharp), mean - lobe);
+}
+
+// The probe's three channels. The port has no BLPD buffer and no BLPI index; the runtime fills u.lit1..
+// lit5 from the room's baked ambient at the particle (PortRoomEnv::AmbientAt), view space.
+fn probe_ambient(ngeo: vec3f) -> vec3f {
+  return vec3f(ambient_lobe(u.lit1.x, u.lit2.x, u.lit3.w, u.lit3.xyz, ngeo),
+               ambient_lobe(u.lit1.y, u.lit2.y, u.lit4.w, u.lit4.xyz, ngeo),
+               ambient_lobe(u.lit1.z, u.lit2.z, u.lit5.w, u.lit5.xyz, ngeo));
+}
+
+// The clustered lights 390fc33b sums (REPORT.md section 3): one 32-bit word per (tile, slice) names the
+// records that reach this cluster, each 80 bytes = 5 vec4f after the 3-slot header. A light adds its
+// colour x intensity x sat(dot(N, L)) x the cone x the falloff cubic at t = sat(d * A + B), with L from
+// the view position and no shadow and no specular term. Record 0 is c5[3], record i at c5[3 + 5i].
+fn cluster_lights(in: VOut, ngeo: vec3f) -> vec3f {
+  var mask = cluster_mask_word(in);
+  var sum = vec3f(0.0);
+  loop {
+    if (mask == 0u) { break; }
+    let bit = firstTrailingBit(mask);
+    mask = mask & (mask - 1u);
+    let i = 3u + bit * 5u;
+    let r0 = u.cluster[i];      // +0x00 colour x intensity, +0x0c widen
+    let r1 = u.cluster[i + 1u]; // +0x10 view position, +0x1c cone scale
+    let r2 = u.cluster[i + 2u]; // +0x20 unit direction surface -> light, +0x2c cone bias
+    let r3 = u.cluster[i + 3u]; // +0x30 A, +0x34 B
+    let r4 = u.cluster[i + 4u]; // +0x40 a3, a2, a1, a0
+    let dv = r1.xyz - in.vp;
+    let d = length(dv);
+    let l = dv / max(d, 1e-8);
+    let cone = sat(dot(l, r2.xyz) * r1.w + r2.w);
+    let t = sat(fma(d, r3.x, r3.y));
+    let poly = ((r4.x * t + r4.y) * t + r4.z) * t + r4.w;
+    sum = sum + r0.rgb * (sat(dot(ngeo, l)) * cone * poly);
+  }
+  return sum;
+}
+
 fn fog_factor(fz: f32) -> f32 {
   let ft = i32(u.fog.x);
   if (ft == 0) { return 0.0; }
@@ -376,7 +489,7 @@ fn fs_main(in: VOut) -> @location(0) vec4f {
     let c0 = u.ice0;
     let c1 = u.ice1;
     let c2 = u.ice2;
-    let tm = u.ice3.x;
+    let tm = u.ice7.x;
     let uv = in.uv0.xy;
     let d = c1.y * 0.1 * ((sample_raw(S_COLOR, uv, 0).w - 0.5) * sin(tm));
     let uv2 = vec2f(fma(tm, c1.z, fma(d, 2.0, uv.x)), fma(d, 2.0, uv.y));
@@ -396,6 +509,100 @@ fn fs_main(in: VOut) -> @location(0) vec4f {
     let m = nm.x * tc.x;
     let ka = sat(max(tc.w, 0.25));
     rgb = (c0.x * in.e2.rgb * in.uv1.x * c2.x + mix(in.e0.rgb, in.e1.rgb, m) * ka * c1.x + fr * tc.rgb) * vc.rgb * M;
+  } else if ((FEAT & (2097152u | 33554432u)) != 0u) {
+    // VFX_IceChargeCollision_Unlit (1c651f97, FS perm 000_0; ICECHARGE.md). BCLR.y at the mesh uv wobbles
+    // both uvs by CCH2.x x 0.01 x sin(tm) x 2 (tm = CCH2.z x time x 0.01, which also scrolls u); NMAP there
+    // bumps the view normal in the tangent frame. R1 (bump x CCH3.w) gives the facing term g and the
+    // TCH0 reflection; R2 (bump x CCH3.z) the rim. The scene copy at the fragment, offset by
+    // (g + BCLR.y) x sw x CCH2.w (v down), is desaturated by CCH3.x. The copy is exposed, so x the
+    // inverse exposure (no copy bound: no scene term). Alpha is the instance alpha alone.
+    let c0 = u.ice0;
+    let c1 = u.ice1;
+    let c2 = u.ice2;
+    let c3 = u.ice3;
+    let c5 = u.ice5;
+    let tm = c2.z * u.ice7.x * 0.01;
+    let uv = in.uv0.xy;
+    let d = c2.x * 0.01 * (sin(tm) * (sample_raw(S_COLOR, uv, 0).y - 0.5));
+    let uv2 = vec2f(tm + fma(d, 2.0, uv.x), fma(d, 2.0, uv.y));
+    let nm = sample_raw(S_NORMAL, uv2, 0).xy;
+    let b = sample_raw(S_COLOR, uv2, 0).xy;
+    // vec and tan are camera-local in (x, z, y) order; Remastered's view space is (x, y, -z) of that.
+    let N = normalize(vec3f(in.nrm.x, in.nrm.y, -in.nrm.z));
+    let T = normalize(vec3f(in.tan.x, in.tan.y, -in.tan.z));
+    let B = cross(N, T) * in.tan.w;
+    let bx = fma(nm.x, 1.9921875, -1.0);
+    let by = fma(nm.y, 1.9921875, -1.0);
+    let bz = sqrt(1.0 - sat(bx * bx + by * by));
+    let D = N * bz + T * bx + B * by - N;
+    let V = normalize(in.vp);
+    let R1 = normalize(N + D * c3.w);
+    let fp = sat(pow(max(0.0, dot(R1, -V)), 2.0));
+    let g = 1.0 - smooth3(fp);
+    let ofs = (g + b.y) * in.sw * c2.w;
+    var ie = 1.0;
+    if (u.tone1.x > 0.0 && u.tone0.w > 0.0) { ie = 1.0 / u.tone0.w; }
+    var sc = vec3f(0.0);
+    if (u.scene.w > 0.5) {
+      let fbuv = vec2f(in.pos.x * u.scene.x + ofs, in.pos.y * u.scene.y - ofs);
+      sc = scene_light(textureSampleLevel(sceneColor, sceneSampler, fbuv, 0.0).rgb) * ie;
+    }
+    let env = sample_raw(S_ENV, fma(R1.xy, vec2f(0.5), vec2f(0.5)), 0).rgb;
+    let R2 = N + D * c3.z;
+    let f = sat(1.0 - pow(max(0.0, -dot(V, normalize(R2))), c3.y));
+    let fs = smooth3(f);
+    let sum = sc.r + sc.g + sc.b;
+    let desat = (sc - vec3f(sum * 0.33)) * c3.x + vec3f(sum * 0.33);
+    let col = b.x * b.x * (c1.rgb - c0.rgb) + c0.rgb;
+    let base = desat + b.y * c5.x * col + b.x * g * env * c2.y * u.ice4.rgb;
+    // VFX_IceChargeCollision_Lit (390fc33b, perm 000; REPORT.md sections 3 to 5). Same front end; the tail
+    // is Remastered's "ambient + probes + clustered lights" instead of the unlit rim:
+    //   lit = AMBS + probe + sum over the mask's records
+    //   rgb = (vc.rgb * base * lit * BLCM) / pi + base * CCH5.z / exposure, then x PCMD
+    // with N_geo the interpolated view normal (no bump), and no CCH6 rim term in this perm.
+    if ((FEAT & 33554432u) != 0u) {
+      let lighting = u.lit0.xyz + probe_ambient(N) + cluster_lights(in, N);
+      let shaded = vc.rgb * base * lighting * u.lit6.rgb;
+      rgb = (shaded * 0.3183098862 + base * (c5.z * ie)) * M;
+    } else {
+      rgb = (fs * u.ice6.rgb * c5.y + base) * (c5.z * ie + vc.rgb) * M;
+    }
+  } else if ((FEAT & (8388608u | 16777216u)) != 0u) {
+    // VFX_VisorRunOff (b5e12668 unlit, d85d4169 lit; FS perm 000; SPEC-fb-visor.md sections 5/6). The
+    // TCH0 flow map, scrolled by CCH1 (u by .w, v by .x x CCH2.y), gives the mask m from its y and w and
+    // the glow's signed u. The scene copy at the fragment is offset by CCH0.x x CCH1.z x the map x
+    // 0.01 (c1[0].x) and tinted between CCH3.rgb and CCH4.rgb by m: x the tint (b5e12668) or lerped
+    // toward it by m^CCH4.w (d85d4169). The fade (CCH1.z x CCH3.w) is per particle; v2.w is unresolved
+    // and taken as 1, so alpha is the instance alpha (x stays 1 below).
+    let c0 = u.ice0;
+    let c1 = u.ice1;
+    let c2 = u.ice2;
+    let c3 = u.ice3;
+    let c4 = u.ice4;
+    let uvs = uv_of(in, u.uvSets[max(S_COLOR, 0)]);
+    let g = sample_raw(S_COLOR, vec2f(uvs.x + c1.w, uvs.y + c1.x * c2.y), layer(uvs.z, u.layers[max(S_COLOR, 0)]));
+    let uu = g.y * 2.0 - 1.0;
+    let k = g.w * c2.x;
+    let m = 1.0 - sat(sat(c1.x * c1.y + uvs.y + k - 1.0) * sat(c1.x * c0.y + g.z * c0.z + uvs.y - 1.0) * c2.w);
+    let T = c0.x * c1.z;
+    var fb = vec3f(0.0);
+    if (u.scene.w > 0.5) {
+      // v down: the y offset negates. The copy is exposed, so x the inverse exposure (the tail re-exposes).
+      let o = vec2f(T * (g.x * 2.0 - 1.0) * c1.z * 0.01,
+                    -(T * uu * c1.z + m * k * (-(c1.z * c0.w))) * 0.01);
+      let fbuv = vec2f(in.pos.x * u.scene.x + o.x, in.pos.y * u.scene.y + o.y);
+      var ie = 1.0;
+      if (u.tone1.x > 0.0 && u.tone0.w > 0.0) { ie = 1.0 / u.tone0.w; }
+      fb = scene_light(textureSampleLevel(sceneColor, sceneSampler, fbuv, 0.0).rgb) * ie;
+    }
+    let fade = (c1.z * c3.w - c1.z) + 1.0;
+    let glow = (m * 0.5 + 0.5) * uu * uu * c2.z * c1.z * 0.01;
+    let tint = mix(c3.rgb, c4.rgb, m);
+    if ((FEAT & 16777216u) != 0u) {
+      rgb = (glow + fb + pow(max(m, 0.0), c4.w) * (tint - fb)) * fade * vc.rgb * M;
+    } else {
+      rgb = ((tint + c1.x * (vec3f(1.0) - tint)) * fb + glow) * fade * vc.rgb * M;
+    }
   } else if ((FEAT & 16384u) != 0u) {
     // VFX_Disintegration (d749057f, perm 000_0): the mask's x squared, PMTR rows 0..2 as the colours at
     // s = 0 and 1 and the edge colour, row 3 as (threshold, edge width, alpha lo, alpha hi). ceil(e)
@@ -527,8 +734,8 @@ fn fs_main(in: VOut) -> @location(0) vec4f {
   // BLEND 5 (AdditiveOne) takes no alpha compensation above and no fog below, as Additive; its tone is unchanged.
   // Remastered sets a no-fog bit for every particle blend but alpha and opaque
   // (SetupFogFromBlendMode), so additive and premultiplied draws are not fogged at all.
-  // IceChargeBeam: DFOG 1 (perm 000), so unfogged in either blend.
-  if ((BLEND == 0u || BLEND == 3u) && (FEAT & 1048576u) == 0u) {
+  // IceChargeBeam: DFOG 1 (perm 000), so unfogged in either blend; IceChargeCollision too where Unfogged.
+  if ((BLEND == 0u || BLEND == 3u) && (FEAT & 1048576u) == 0u && (FEAT & 4194304u) == 0u) {
     col = mix(col, u.fogColor.rgb, fog_factor(in.pos.z));
   }
   return vec4f(col, alpha);
@@ -651,7 +858,7 @@ void ensure_static(const wgpu::Device& device) {
   if (g_state.pipelineLayout) {
     return;
   }
-  wgpu::BindGroupLayoutEntry entries[4 + 2 * SlotCount]{};
+  wgpu::BindGroupLayoutEntry entries[ClusterMaskBinding + 1]{};
   entries[0] = {
       .binding = 0,
       .visibility = wgpu::ShaderStage::Vertex | wgpu::ShaderStage::Fragment,
@@ -684,6 +891,11 @@ void ensure_static(const wgpu::Device& device) {
       .binding = 3 + 2 * SlotCount,
       .visibility = wgpu::ShaderStage::Fragment,
       .sampler = {.type = wgpu::SamplerBindingType::Filtering},
+  };
+  entries[ClusterMaskBinding] = {
+      .binding = ClusterMaskBinding,
+      .visibility = wgpu::ShaderStage::Fragment,
+      .texture = {.sampleType = wgpu::TextureSampleType::Uint, .viewDimension = wgpu::TextureViewDimension::e2D},
   };
   const wgpu::BindGroupLayoutDescriptor layoutDescriptor{
       .label = "VFX Bind Group Layout",
@@ -811,6 +1023,18 @@ void ensure_dummy(const DrawContext& ctx) {
   const wgpu::TexelCopyTextureInfo depthDst{.texture = g_state.dummyDepthTexture};
   ctx.queue.WriteTexture(&depthDst, &zero, 4, &layout, &size);
   g_state.dummyDepthView = g_state.dummyDepthTexture.CreateView();
+  const wgpu::TextureDescriptor maskDescriptor{
+      .label = "VFX Dummy Cluster Mask",
+      .usage = wgpu::TextureUsage::TextureBinding | wgpu::TextureUsage::CopyDst,
+      .size = {1, 1, 1},
+      .format = wgpu::TextureFormat::R32Uint,
+  };
+  AURORA_NOTE_TEXTURE(&maskDescriptor);
+  g_state.dummyMaskTexture = ctx.device.CreateTexture(&maskDescriptor);
+  const uint32_t noLight = 0;
+  const wgpu::TexelCopyTextureInfo maskDst{.texture = g_state.dummyMaskTexture};
+  ctx.queue.WriteTexture(&maskDst, &noLight, sizeof(noLight), &layout, &size);
+  g_state.dummyMaskView = g_state.dummyMaskTexture.CreateView();
 }
 
 std::shared_ptr<ArrayEntry> find_entry(uint32_t id) {
@@ -967,14 +1191,23 @@ bool ensure_registered() {
               .mipmapFilter = wgpu::MipmapFilterMode::Nearest,
               .maxAnisotropy = 1,
           });
-          std::array<const void*, 3 + 2 * SlotCount> groupKey{};
+          std::array<const void*, 4 + 2 * SlotCount> groupKey{};
           for (uint32_t i = 0; i < SlotCount; ++i) {
             groupKey[i] = views[i].Get();
             groupKey[SlotCount + i] = samplers[i].Get();
           }
+          // The cluster mask: this frame's slot when the draw carries one, else the dummy.
+          wgpu::TextureView clusterMask = g_state.dummyMaskView;
+          if (p.maskSlot < detail::FrameSlotCount) {
+            const auto& mask = g_state.masks[p.maskSlot];
+            if (mask.view) {
+              clusterMask = mask.view;
+            }
+          }
           groupKey[2 * SlotCount] = ctx.uniformBuffer.Get();
           groupKey[2 * SlotCount + 1] = sceneDepth.Get();
           groupKey[2 * SlotCount + 2] = sceneColor.Get();
+          groupKey[3 + 2 * SlotCount] = clusterMask.Get();
           if (g_state.groupsStale.exchange(false, std::memory_order_acq_rel)) {
             g_state.groups.clear();
           }
@@ -983,7 +1216,7 @@ bool ensure_registered() {
             if (g_state.groups.size() > 512) {
               g_state.groups.clear();
             }
-            std::array<wgpu::BindGroupEntry, 4 + 2 * SlotCount> entries{};
+            std::array<wgpu::BindGroupEntry, 5 + 2 * SlotCount> entries{};
             entries[0] = {.binding = 0, .buffer = ctx.uniformBuffer, .offset = 0, .size = UniformSize};
             for (uint32_t i = 0; i < SlotCount; ++i) {
               entries[1 + i] = {.binding = 1 + i, .textureView = views[i]};
@@ -992,6 +1225,7 @@ bool ensure_registered() {
             entries[1 + 2 * SlotCount] = {.binding = 1 + 2 * SlotCount, .textureView = sceneDepth};
             entries[2 + 2 * SlotCount] = {.binding = 2 + 2 * SlotCount, .textureView = sceneColor};
             entries[3 + 2 * SlotCount] = {.binding = 3 + 2 * SlotCount, .sampler = sceneSampler};
+            entries[ClusterMaskBinding] = {.binding = ClusterMaskBinding, .textureView = clusterMask};
             const wgpu::BindGroupDescriptor descriptor{
                 .label = "VFX Bind Group",
                 .layout = g_state.bindLayout,
@@ -1076,12 +1310,67 @@ void evict_idle() {
     }
   }
 }
+
+// FNV-1a over the mask words: what tells a rebuilt gather from the one already uploaded.
+uint64_t mask_signature(const uint32_t* words, size_t count) {
+  uint64_t h = 0xcbf29ce484222325ull;
+  for (size_t i = 0; i < count; ++i) {
+    h = (h ^ words[i]) * 0x100000001b3ull;
+  }
+  return h;
+}
+
+// Game thread, once a draw that carries a mask: this frame slot's R32Uint mask texture, written again only
+// when the words changed (native rebuilds them only when the camera, the viewport or the lights did).
+// False: no usable mask, so the draw binds the 1x1 dummy.
+bool upload_cluster_mask(const ClusterView& view) {
+  if (!webgpu::g_device || view.mask == nullptr || !valid_cluster_view(view)) {
+    return false;
+  }
+  const size_t words = size_t(view.maskWidth) * size_t(view.maskHeight);
+  const uint64_t signature = mask_signature(view.mask, words);
+  auto& slot = g_state.masks[current_frame_slot()];
+  if (slot.texture && slot.frame == current_frame() && slot.signature == signature &&
+      slot.width == view.maskWidth && slot.height == view.maskHeight) {
+    return true;
+  }
+  if (!slot.texture || slot.width != view.maskWidth || slot.height != view.maskHeight) {
+    const wgpu::TextureDescriptor descriptor{
+        .label = "VFX Cluster Mask",
+        .usage = wgpu::TextureUsage::TextureBinding | wgpu::TextureUsage::CopyDst,
+        .size = {view.maskWidth, view.maskHeight, 1},
+        .format = wgpu::TextureFormat::R32Uint,
+    };
+    AURORA_NOTE_TEXTURE(&descriptor);
+    slot.texture = webgpu::g_device.CreateTexture(&descriptor);
+    slot.view = slot.texture.CreateView();
+    slot.width = view.maskWidth;
+    slot.height = view.maskHeight;
+    slot.frame = UINT32_MAX;
+    // Bind groups still hold the old view.
+    g_state.groupsStale.store(true, std::memory_order_release);
+  }
+  const wgpu::TexelCopyTextureInfo dst{.texture = slot.texture};
+  const wgpu::TexelCopyBufferLayout layout{.bytesPerRow = 4 * view.maskWidth, .rowsPerImage = view.maskHeight};
+  const wgpu::Extent3D size{view.maskWidth, view.maskHeight, 1};
+  webgpu::g_queue.WriteTexture(&dst, view.mask, words * sizeof(uint32_t), &layout, &size);
+  slot.frame = current_frame();
+  slot.signature = signature;
+  return true;
+}
 } // namespace
 
 wgpu::RenderPipeline create_pipeline(const PipelineConfig& config) { return make_pipeline(config); }
 
 wgpu::BlendState pipeline_blend(const PipelineConfig& config) {
   return blend_state(static_cast<Blend>(config.blend & ~BlendSceneHdr));
+}
+
+void write_cluster_block(const ClusterView& view, float* uniform) {
+  if (uniform == nullptr || view.block == nullptr) {
+    return;
+  }
+  std::memcpy(uniform + ClusterBlockOffset / 4, view.block, sizeof(float) * ClusterBlockFloats);
 }
 
 bool scene_format_matches(const RenderTargetLayout& layout, uint32_t blend) noexcept {
@@ -1094,7 +1383,8 @@ std::string pipeline_source(const PipelineConfig& p) {
   const bool hdr = (p.blend & BlendSceneHdr) != 0;
   // The slot a feature reads is a pipeline constant (3 bits each, 7 = none).
   static constexpr const char* SlotNames[] = {"S_COLOR",  "S_OPACITY",   "S_RAMP",   "S_RAMP2",
-                                              "S_THRESHOLD", "S_INDIRECT", "S_PALETTE", "S_NORMAL"};
+                                              "S_THRESHOLD", "S_INDIRECT", "S_PALETTE", "S_NORMAL",
+                                              "S_ENV"};
   std::string source = "const FEAT: u32 = " + std::to_string(p.features) + "u;\nconst BLEND: u32 = " +
                        std::to_string(p.blend & ~BlendSceneHdr) + "u;\n";
   for (uint32_t i = 0; i < std::size(SlotNames); ++i) {
@@ -1109,7 +1399,7 @@ std::string pipeline_source(const PipelineConfig& p) {
   if (!hdr) {
     // LDR: the source as it always was, and the curve's inverse only where SceneWarp reads it.
     source += ShaderSource;
-    if ((p.features & SceneWarp) != 0) {
+    if ((p.features & (SceneWarp | IceChargeCollision | IceChargeCollisionLit | VisorRunOff | VisorRunOffLit)) != 0) {
       source += SceneLightDisplay;
       source += hdr::ToneWgsl;
     } else {
@@ -1128,7 +1418,7 @@ std::string pipeline_source(const PipelineConfig& p) {
   static constexpr std::string_view HdrTail = R"(  if (HDR) {
     var lin = max(rgb, vec3f(0.0));
     if (u.tone1.x > 0.0 && u.tone0.w > 0.0) { lin = lin * u.tone0.w; }
-    if ((BLEND == 0u || BLEND == 3u) && (FEAT & 1048576u) == 0u) {
+    if ((BLEND == 0u || BLEND == 3u) && (FEAT & 1048576u) == 0u && (FEAT & 4194304u) == 0u) {
       lin = mix(lin, hdr_exposed(u.fogColor.rgb, u.tone0, u.tone1, u.tone2), fog_factor(in.pos.z));
     }
     return vec4f(lin, alpha);
@@ -1154,14 +1444,17 @@ static void draw_prims(const DrawDesc& desc, const Vertex* verts, uint32_t verte
   const uint32_t features = shader_features(desc.features);
   // The slots each enabled feature reads; a slot nothing reads is left unbound (the dummy).
   const std::pair<uint32_t, int8_t> reads[] = {
-      {ColorTex | ColorIndexing | Pyro | Disintegration | VisorSplat | IceChargeBeam, desc.colorSlot},
+      {ColorTex | ColorIndexing | Pyro | Disintegration | VisorSplat | IceChargeBeam | IceChargeCollision |
+           IceChargeCollisionLit | VisorRunOff | VisorRunOffLit,
+       desc.colorSlot},
       {OpacityTex, desc.opacitySlot},
       {Ramp | Pyro, desc.rampSlot},
       {Ramp | DualMod, desc.ramp2Slot},
       {Thresholding, desc.thresholdSlot},
       {Indirect | SceneWarp | VisorSplat, desc.indirectSlot},
       {ColorIndexing, desc.paletteSlot},
-      {IceChargeBeam, desc.normalSlot},
+      {IceChargeBeam | IceChargeCollision | IceChargeCollisionLit, desc.normalSlot},
+      {IceChargeCollision | IceChargeCollisionLit, desc.envSlot},
   };
   uint32_t slotKey = 0;
   bool used[SlotCount]{};
@@ -1232,19 +1525,44 @@ static void draw_prims(const DrawDesc& desc, const Vertex* verts, uint32_t verte
     u.soft[1] = gx::UseReversedZ ? 1.f - vp.znear : vp.zfar;
     u.soft[2] = u.soft[1] > u.soft[0] ? 1.f : 0.f;
   }
-  // SceneWarp: the copy of this pass's scene (HDR or display), under a perspective camera, whose near
-  // plane GX's projection gives as m23 / (m22 - 1).
+  // SceneWarp, IceChargeCollision: the copy of this pass's scene (HDR or display), under a perspective
+  // camera, whose near plane GX's projection gives as m23 / (m22 - 1).
   if (sceneValid && scene.color && scene.hdr == hdr && gx.projType == GX_PERSPECTIVE && gx.proj.m2[2] != 1.f) {
     u.scene[0] = 1.f / float(scene.width);
     u.scene[1] = 1.f / float(scene.height);
     u.scene[2] = gx.proj.m2[3] / (gx.proj.m2[2] - 1.f);
     u.scene[3] = 1.f;
   }
-  if ((features & IceChargeBeam) != 0) {
-    for (uint32_t i = 0; i < 3; ++i) {
+  if ((features & (IceChargeBeam | IceChargeCollision | IceChargeCollisionLit | VisorRunOff | VisorRunOffLit)) != 0) {
+    const uint32_t rows = (features & (IceChargeCollision | IceChargeCollisionLit)) != 0 ? 7
+                          : (features & (VisorRunOff | VisorRunOffLit)) != 0 ? 5
+                                                                             : 3;
+    for (uint32_t i = 0; i < rows; ++i) {
       std::memcpy(u.ice[i], desc.params[i], sizeof(u.ice[i]));
     }
-    u.ice[3][0] = desc.time;
+    u.ice[7][0] = desc.time;
+  }
+  // IceChargeCollisionLit: AMBS, the probe record's mean/lobe/three lobes and BLCM into the padding before
+  // the cluster block (u.lit0..u.lit6).
+  if ((features & IceChargeCollisionLit) != 0) {
+    const LitAmbient& lit = desc.lit;
+    std::memcpy(u.lit[0], lit.ambient, sizeof(lit.ambient));
+    std::memcpy(u.lit[1], lit.mean, sizeof(lit.mean));
+    std::memcpy(u.lit[2], lit.lobe, sizeof(lit.lobe));
+    for (int c = 0; c < 3; ++c) {
+      std::memcpy(u.lit[3 + c], lit.dir[c], sizeof(lit.dir[c]));
+    }
+    std::memcpy(u.lit[6], lit.modulate, sizeof(lit.modulate));
+  }
+  // IceChargeCollisionLit: the gather's block into the uniform (c5[0] at ClusterBlockOffset) and its mask
+  // into this frame slot's texture. Validated once here; an unusable view leaves the block zeroed and the
+  // draw on the dummy mask.
+  uint8_t maskSlot = NoMask;
+  if ((features & IceChargeCollisionLit) != 0 && valid_cluster_view(desc.cluster)) {
+    write_cluster_block(desc.cluster, reinterpret_cast<float*>(&u));
+    if (upload_cluster_mask(desc.cluster)) {
+      maskSlot = uint8_t(frameSlot);
+    }
   }
   const Src* srcs[SrcCount] = {&desc.erosion,   &desc.thrX,      &desc.thrY,        &desc.thrW,
                                &desc.fresnelX,  &desc.fresnelY,  &desc.fadeX,       &desc.fadeY,
@@ -1299,6 +1617,7 @@ static void draw_prims(const DrawDesc& desc, const Vertex* verts, uint32_t verte
     p.linear[i] = t.linear ? 1 : 0;
   }
   p.sceneSlot = sceneValid ? uint8_t(frameSlot) : NoScene;
+  p.maskSlot = maskSlot;
   push_custom_draw(g_state.drawType, &p, sizeof(p));
 }
 
@@ -1366,6 +1685,9 @@ void shutdown() {
   g_state.pipelines.clear();
   g_state.groups.clear();
   g_state.scene = {};
+  g_state.masks = {};
+  g_state.dummyMaskView = {};
+  g_state.dummyMaskTexture = {};
   g_state.dummyColorView = {};
   g_state.dummyDepthView = {};
   g_state.dummyDepthTexture = {};

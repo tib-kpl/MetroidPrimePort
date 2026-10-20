@@ -1,4 +1,5 @@
 #include "port_fx_debug.h"
+#include "port_room_env.h"
 #include "port_vfx_opacity.h"
 #include "port_vfx_particles.h"
 
@@ -119,14 +120,24 @@ struct Mat3 {
     return m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0]) +
            m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
   }
-  // The cofactor matrix over the determinant: the inverse transpose.
-  Mat3 InverseTranspose() const {
+  // The cofactor matrix: det x the inverse transpose.
+  Mat3 Cofactor() const {
     Mat3 r;
-    const float k = 1.f / Det();
     for (int i = 0; i < 3; ++i) {
       for (int j = 0; j < 3; ++j) {
         const int i1 = (i + 1) % 3, i2 = (i + 2) % 3, j1 = (j + 1) % 3, j2 = (j + 2) % 3;
-        r.m[i][j] = (m[i1][j1] * m[i2][j2] - m[i1][j2] * m[i2][j1]) * k;
+        r.m[i][j] = m[i1][j1] * m[i2][j2] - m[i1][j2] * m[i2][j1];
+      }
+    }
+    return r;
+  }
+  // The cofactor matrix over the determinant: the inverse transpose.
+  Mat3 InverseTranspose() const {
+    Mat3 r = Cofactor();
+    const float k = 1.f / Det();
+    for (int i = 0; i < 3; ++i) {
+      for (int j = 0; j < 3; ++j) {
+        r.m[i][j] *= k;
       }
     }
     return r;
@@ -376,6 +387,11 @@ void CElementGen::PortRenderParticlesVfx() {
   aurora::gfx::vfx::DrawDesc desc;
   if (!PortVfxBuildDesc(vfx, xPortVsmt, xPortVsmtMask, desc)) {
     return; // a texture is not streamed in yet
+  }
+  // VisorRunOff is a PMDL model particle (the mesh path below), but a sprite generator sharing its
+  // material still reads CCH0..4: evaluate them rather than draw from zeroed uniforms.
+  if ((desc.features & (aurora::gfx::vfx::VisorRunOff | aurora::gfx::vfx::VisorRunOffLit)) != 0) {
+    PortVfxEvalParams(vfx, x74_curFrame, desc.params);
   }
 
   // The retail frame: the same model matrix as the non-ORNT path. Particles are placed in a
@@ -686,12 +702,83 @@ static void AddIce(const CPortVfxData& vfx, const CTransform4f& model, const CEl
   }
 }
 
+// IceChargeCollision's vertices into `world`: its VS (1c651f97 perm 000_1) on the CPU. No hash or
+// shake: the position is the model's; the view normal and tangent are the instance matrix's (model x
+// orient) cofactor times the Remastered-space ones, unnormalised (det x the inverse transpose: the FS
+// normalises, but a mirrored instance flips both), and the handedness is sign(det inst) x v3.w, as
+// ICECHARGE.md has it. det inst = det model x det orient, so the sign is the instance's, not the
+// model's. The instance colour is in `color`.
+static void AddIceCollision(const CPortVfxData& vfx, const CTransform4f& model, const CElementGen::CParticle& p,
+                            const Tm (&tm)[3], const float (&color)[4],
+                            std::vector< aurora::gfx::vfx::Vertex >& world) {
+  const CTransform4f view(CGraphics::GetViewMatrix());
+  Mat3 orient;
+  for (int i = 0; i < 9; ++i) {
+    orient.m[i / 3][i % 3] = vfx.meshOrient[i];
+  }
+  const Mat3 unorient = orient.InverseTranspose().Transposed();
+  const CVector3f cols[3] = {model.Rotate(CVector3f(1.f, 0.f, 0.f)), model.Rotate(CVector3f(0.f, 1.f, 0.f)),
+                             model.Rotate(CVector3f(0.f, 0.f, 1.f))};
+  Mat3 m3;
+  for (int r = 0; r < 3; ++r) {
+    for (int c = 0; c < 3; ++c) {
+      m3.m[r][c] = r == 0 ? cols[c].GetX() : r == 1 ? cols[c].GetY() : cols[c].GetZ();
+    }
+  }
+  Mat3 inst;
+  for (int r = 0; r < 3; ++r) {
+    for (int c = 0; c < 3; ++c) {
+      inst.m[r][c] = m3.m[r][0] * orient.m[0][c] + m3.m[r][1] * orient.m[1][c] + m3.m[r][2] * orient.m[2][c];
+    }
+  }
+  const Mat3 cof = inst.Cofactor();
+  const float mirror = inst.Det() < 0.f ? -1.f : 1.f;
+  for (u32 i = 0; i < vfx.meshVerts; ++i) {
+    const float* m = &vfx.meshV[size_t(i) * 16];
+    const CVector3f pos = model * CVector3f(m[0], m[1], m[2]);
+    const CVector3f nl = view.TransposeRotate(cof * (unorient * CVector3f(m[3], m[4], m[5])));
+    const CVector3f tl = view.TransposeRotate(cof * (unorient * CVector3f(m[8], m[9], m[10])));
+    aurora::gfx::vfx::Vertex& v = world[i];
+    v.pos[0] = pos.GetX();
+    v.pos[1] = pos.GetY();
+    v.pos[2] = pos.GetZ();
+    for (int st = 0; st < 3; ++st) {
+      const Tm& t = tm[st];
+      const float dx = (m[6] - 0.5f) * t.c;
+      const float dy = (m[7] - 0.5f) * t.d;
+      v.uv[st][0] = t.a + 0.5f + t.cosE * dx - t.sinE * dy;
+      v.uv[st][1] = t.b + 0.5f + t.sinE * dx + t.cosE * dy;
+      v.uv[st][2] = t.f;
+    }
+    for (int k = 0; k < 4; ++k) {
+      v.color[k] = color[k];
+      for (int j = 0; j < 4; ++j) {
+        v.extra[k][j] = p.xPortVpmt[k][j];
+      }
+    }
+    v.vec[0] = nl.GetX();
+    v.vec[1] = nl.GetZ();
+    v.vec[2] = nl.GetY();
+    v.tan[0] = tl.GetX();
+    v.tan[1] = tl.GetZ();
+    v.tan[2] = tl.GetY();
+    v.tan[3] = mirror * m[11];
+  }
+}
+
 void CPortVfxMeshBatch::Add(const CPortVfxData& vfx, const CTransform4f& model,
                             const CElementGen::CParticle& p, int partFrame,
                             const CColor& modulate) {
   const u32 nv = vfx.meshVerts;
   const bool wide = !vfx.meshIdx32.empty();
   const CTransform4f view(CGraphics::GetViewMatrix());
+  if (!probePosSet) {
+    const CVector3f origin = model.GetTranslation();
+    probePos[0] = origin.GetX();
+    probePos[1] = origin.GetY();
+    probePos[2] = origin.GetZ();
+    probePosSet = true;
+  }
 
   Tm tm[3];
   for (u32 s = 0; s < 3 && s < vfx.vtmtCount; ++s) {
@@ -714,8 +801,11 @@ void CPortVfxMeshBatch::Add(const CPortVfxData& vfx, const CTransform4f& model,
   // particle (the render thread is the only caller), so a frame allocates nothing per particle.
   static std::vector< aurora::gfx::vfx::Vertex > world;
   world.resize(nv);
-  const bool ice = (vfx.mat.features & aurora::gfx::vfx::IceChargeBeam) != 0;
-  if (ice) {
+  const bool collision = (vfx.mat.features & aurora::gfx::vfx::IceChargeCollision) != 0;
+  const bool ice = collision || (vfx.mat.features & aurora::gfx::vfx::IceChargeBeam) != 0;
+  if (collision) {
+    AddIceCollision(vfx, model, p, tm, color, world);
+  } else if (ice) {
     AddIce(vfx, model, p, tm, color, world);
   }
   for (u32 i = 0; !ice && i < nv; ++i) {
@@ -752,6 +842,85 @@ void CPortVfxMeshBatch::Add(const CPortVfxData& vfx, const CTransform4f& model,
   }
 }
 
+namespace {
+
+// The camera Remastered's cluster grid and its cull are built from: GX's view matrix as rows (the same
+// rows CStateManager hands the PBR lights) and the projection's half tangents, near and far.
+void PortVfxClusterCamera(PortClusteredLights::Camera& camera) {
+  const CTransform4f& view = CGraphics::GetViewMatrix();
+  const CVector3f eye = view.GetTranslation();
+  const float axes[3][3] = {
+      {view.Get00(), view.Get10(), view.Get20()},
+      {view.Get02(), view.Get12(), view.Get22()},
+      {-view.Get01(), -view.Get11(), -view.Get21()},
+  };
+  float worldToView[3][4];
+  for (int r = 0; r < 3; ++r) {
+    worldToView[r][0] = axes[r][0];
+    worldToView[r][1] = axes[r][1];
+    worldToView[r][2] = axes[r][2];
+    worldToView[r][3] = -(axes[r][0] * eye.GetX() + axes[r][1] * eye.GetY() + axes[r][2] * eye.GetZ());
+  }
+  const CGraphics::CProjectionState& proj = CGraphics::GetProjectionState();
+  camera = PortClusteredLights::MakeCamera(worldToView, proj.GetLeft(), proj.GetRight(), proj.GetTop(),
+                                          proj.GetBottom(), proj.GetNear(), proj.GetFar());
+}
+
+// The Lit material's baked ambient: Remastered indexes a BLPD probe record with the instance's BLPI, which
+// the port has no equivalent of, so the room's grid at the particle stands in (unexposed, as the bake's
+// record is). The record's lobe directions are view space, as the fragment's normal is.
+void PortVfxClusterAmbient(const PortClusteredLights::Camera& camera, const float pos[3],
+                           aurora::gfx::vfx::LitAmbient& lit) {
+  PortRoomEnv::Ambient ambient;
+  if (!PortRoomEnv::AmbientAt(pos, ambient)) {
+    return;
+  }
+  for (int c = 0; c < 3; ++c) {
+    lit.mean[c] = ambient.mean[c];
+    lit.lobe[c] = ambient.lobe[c];
+    for (int r = 0; r < 3; ++r) {
+      const float* m = camera.worldToView[r];
+      lit.dir[c][r] = m[0] * ambient.direction[c][0] + m[1] * ambient.direction[c][1] +
+                      m[2] * ambient.direction[c][2];
+    }
+    lit.dir[c][3] = 1.f + 2.f * ambient.sharpness[c];
+  }
+}
+
+// The clustered gather for this camera, from the port's room lights. Remastered masks every light scene node
+// in the scene (muzzle, beam, ball and explosion lights included) and culls it on the GPU; the port has only
+// the room's LightDynamic lights, which is what RoomLights walks. AMBS (the flat ambient c6[0].xyz) is the
+// ambient colour the game set for this area (CGraphics::SetAmbientColor, GX channel 0's), which is the same
+// quantity Remastered's lighting manager hands the material.
+void PortVfxClusterView(const float pos[3], aurora::gfx::vfx::DrawDesc& desc) {
+  PortClusteredLights::Camera camera;
+  PortVfxClusterCamera(camera);
+  static std::vector< PortClusteredLights::LightSource > sources;
+  sources.clear();
+  PortRoomEnv::RoomLights(sources);
+  static std::vector< PortClusteredLights::RawLight > lights;
+  lights.clear();
+  for (const PortClusteredLights::LightSource& source : sources) {
+    lights.push_back(PortClusteredLights::MakeLight(source, camera.worldToView));
+  }
+  const PortClusteredLights::Frame& frame = PortClusteredLights::Update(
+      camera, uint32_t(CGraphics::GetViewportWidth()), uint32_t(CGraphics::GetViewportHeight()), lights.data(),
+      int(lights.size()));
+  desc.cluster.block = frame.header;
+  if (!frame.mask.empty() && frame.grid.tilesX > 0 && frame.grid.tilesY > 0) {
+    desc.cluster.mask = frame.mask.data();
+    desc.cluster.maskWidth = uint32_t(frame.grid.tilesX * frame.grid.tilesY);
+    desc.cluster.maskHeight = uint32_t(PortClusteredLights::kSlices);
+  }
+  PortVfxClusterAmbient(camera, pos, desc.lit);
+  const CColor ambient = CGraphics::GetAmbientColor();
+  desc.lit.ambient[0] = ambient.GetRed();
+  desc.lit.ambient[1] = ambient.GetGreen();
+  desc.lit.ambient[2] = ambient.GetBlue();
+}
+
+} // namespace
+
 void CElementGen::PortRenderMeshesVfx(CPortVfxMeshBatch& batch) {
   if (batch.verts.empty()) {
     return;
@@ -762,10 +931,20 @@ void CElementGen::PortRenderMeshesVfx(CPortVfxMeshBatch& batch) {
     return;
   }
   const CPortVfxData& vfx = *x28_loadedGenDesc->xPortVfx;
-  if ((vfx.mat.features & aurora::gfx::vfx::IceChargeBeam) != 0) {
+  const uint32_t features = vfx.mat.features;
+  if ((features & (aurora::gfx::vfx::IceChargeBeam | aurora::gfx::vfx::IceChargeCollision)) != 0) {
     desc.normalSlot = static_cast< int8_t >(vfx.normalSlot);
-    PortVfxEvalParams(vfx, x74_curFrame, desc.params);
+    desc.envSlot = static_cast< int8_t >(vfx.envSlot);
     desc.time = CGraphics::GetSimTime();
+  }
+  // VPRM's CCHn rows, with the VSMT overrides, at this frame: IceCharge* and VisorRunOff's 5 rows.
+  if ((features & (aurora::gfx::vfx::IceChargeBeam | aurora::gfx::vfx::IceChargeCollision |
+                   aurora::gfx::vfx::VisorRunOff | aurora::gfx::vfx::VisorRunOffLit)) != 0) {
+    PortVfxEvalParams(vfx, x74_curFrame, desc.params);
+  }
+  // VFX_IceChargeCollision_Lit's lighting: the clustered gather (block and mask) and the baked probe.
+  if ((features & aurora::gfx::vfx::IceChargeCollisionLit) != 0) {
+    PortVfxClusterView(batch.probePos, desc);
   }
   // This is a model draw, so a material whose mesh permutation was read against the shader takes its
   // fade from the view-space normal (aurora's OpacityFresnel); every other material keeps the form
@@ -781,4 +960,5 @@ void CElementGen::PortRenderMeshesVfx(CPortVfxMeshBatch& batch) {
   ++PortFx::gDraws;
   aurora::gfx::vfx::draw_triangles(desc, batch.verts.data(), static_cast< uint32_t >(batch.verts.size() / 3));
   batch.verts.clear();
+  batch.probePosSet = false;
 }
