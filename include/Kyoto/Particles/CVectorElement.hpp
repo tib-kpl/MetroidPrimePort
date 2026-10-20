@@ -359,6 +359,25 @@ private:
   mutable PortParticleMath::IndexShuffler mFallbackShuffler;
 };
 
+// Remastered LINV (CVELineWithVariance::GetValue 0x2a119c), in Remastered's numbers: a point of the
+// segment start..end divided into n steps, visited in creation order or, with a shuffler of n cells, a
+// random one, jittered by one draw. A segment shorter than 1e-5 gives the start and takes no draw.
+class CVEPortLine : public CVectorElement {
+public:
+  CVEPortLine(CVectorElement* start, CVectorElement* end, CIntElement* count, CRealElement* variance, u8 shuffle);
+  ~CVEPortLine() override;
+
+  bool GetValue(int frame, CVector3f& valOut) const override;
+
+private:
+  CVectorElement* mStart;
+  CVectorElement* mEnd;
+  CIntElement* mCount;
+  CRealElement* mVariance;
+  u8 mShuffle; // the size of Remastered's index shuffler, 0 for none
+  mutable PortParticleMath::IndexShuffler mFallbackShuffler;
+};
+
 // Remastered NORM (CVENormalizeVector::GetValue 0x29e620): the child scaled to unit length,
 // unchanged when its length is at most 2^-23.
 class CVEPortNormalize : public CVectorElement {
@@ -415,7 +434,7 @@ public:
 // Remastered system vectors of the generator being evaluated: CMPS (the camera position in world
 // space, CVECameraPositionInWorldSpace 0x2a23ec), CPSS (the camera position in the system's global
 // frame, CVECameraPositionInSystemSpace 0x2a24fc), EXTT and EXTS (the external translation and
-// scale, CVEExternalValue 0x2a2774). Zero outside a generator evaluation (swooshes).
+// scale, CVEExternalValue 0x2a2774), and CMRT (the camera's rotation as EXTR's Euler vector). Zero outside a generator evaluation (swooshes).
 class CVEPortSystemVector : public CVectorElement {
 public:
   explicit CVEPortSystemVector(FourCC kind) : mKind(kind) {}

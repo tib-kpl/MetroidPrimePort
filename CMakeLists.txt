@@ -165,6 +165,12 @@ target_link_libraries(mp_game PUBLIC
 if(MSVC)
     target_compile_options(mp_game PRIVATE /W3
         /FI${CMAKE_CURRENT_SOURCE_DIR}/platform/compat.h)
+    # C++20 makes cl.exe /permissive-, which rejects a string literal bound to
+    # char* (C2440, CZipSupport.cpp); the decomp does that, as -Wno-write-strings
+    # allows elsewhere (issue #170). clang-cl only warns.
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+        target_compile_options(mp_game PRIVATE $<$<COMPILE_LANGUAGE:CXX>:/Zc:strictStrings->)
+    endif()
 else()
     target_compile_options(mp_game PRIVATE
         -Wformat -Werror=return-type -Wno-narrowing -Wno-multichar -Wno-write-strings
@@ -974,6 +980,14 @@ if(MP_BUILD_TESTS)
         SOURCES tests/port_sphere_emitters.cpp src/Kyoto/Particles/CParticleGlobals.cpp src/Kyoto/CRandom16.cpp
             src/Kyoto/Particles/CEmitterElement.cpp
             src/Kyoto/Math/CVector3f.cpp src/Kyoto/Math/CMatrix3f.cpp
+        INCLUDES include extern/aurora/include
+        DEFINITIONS TARGET_PC VERSION=0
+        GC_SECTIONS)
+    # ASPV and LINV (Remastered's angle sphere and line with variance, the port-only PASV and PLWV).
+    mp_port_test(port_variance_emitters_tests
+        SOURCES tests/port_variance_emitters.cpp src/Kyoto/Particles/CParticleGlobals.cpp src/Kyoto/CRandom16.cpp
+            src/Kyoto/Particles/CEmitterElement.cpp src/Kyoto/Particles/CVectorElement.cpp
+            src/Kyoto/Math/CQuaternion.cpp src/Kyoto/Math/CVector3f.cpp src/Kyoto/Math/CMatrix3f.cpp
         INCLUDES include extern/aurora/include
         DEFINITIONS TARGET_PC VERSION=0
         GC_SECTIONS)

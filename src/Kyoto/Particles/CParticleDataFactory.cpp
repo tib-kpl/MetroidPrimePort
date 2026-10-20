@@ -846,6 +846,11 @@ bool CParticleDataFactory::CreateGPSM(CGenDescription* desc, CInputStream& in,
       GetClassID(in);
       desc->xPortBlend = u8(in.ReadLong());
       break;
+    // Port-only: Remastered's DFOG 1 (xPortUnfogged).
+    case SBIG('PDFG'):
+      GetClassID(in);
+      desc->xPortUnfogged = in.ReadLong() != 0;
+      break;
     // Port-only Remastered particle material (build/mpr/vfx/DESIGN.md section 1).
     case SBIG('VMAT'):
     case SBIG('VMSH'):
@@ -1638,6 +1643,22 @@ CVectorElement* CParticleDataFactory::GetVectorElement(CInputStream& in) {
     ret = rs_new CVEPortCircle(centre, axis, start, count, variance, radius, shuffle);
     break;
   }
+  case SBIG('PLWV'): {
+    CVectorElement* start = GetVectorElement(in);
+    CVectorElement* end = GetVectorElement(in);
+    CIntElement* count = GetIntElement(in);
+    CRealElement* variance = GetRealElement(in);
+    const u8 shuffle = u8(in.ReadChar());
+    if (start == nullptr || end == nullptr || count == nullptr || variance == nullptr) {
+      delete start;
+      delete end;
+      delete count;
+      delete variance;
+      return nullptr;
+    }
+    ret = rs_new CVEPortLine(start, end, count, variance, shuffle);
+    break;
+  }
   case SBIG('PMCN'): {
     CVectorElement* direction = GetVectorElement(in);
     CRealElement* radius = GetRealElement(in);
@@ -1676,6 +1697,7 @@ CVectorElement* CParticleDataFactory::GetVectorElement(CInputStream& in) {
   case SBIG('EXTT'):
   case SBIG('EXTS'):
   case SBIG('EXTR'):
+  case SBIG('CMRT'):
     ret = rs_new CVEPortSystemVector(clsId);
     break;
 #endif
@@ -1901,6 +1923,26 @@ CEmitterElement* CParticleDataFactory::GetEmitterElement(CInputStream& in) {
     CRealElement* speed = GetRealElement(in);
     ret = rs_new CEEPortAngleSphere(origin, rotateX, rotateY, rotateZ, range1, range2, radius,
                                     speed);
+    break;
+  }
+  case SBIG('PASV'): {
+    CVectorElement* origin = GetVectorElement(in);
+    CRealElement* rotateX = GetRealElement(in);
+    CRealElement* rotateY = GetRealElement(in);
+    CRealElement* rotateZ = GetRealElement(in);
+    CRealElement* range1 = GetRealElement(in);
+    CRealElement* range2 = GetRealElement(in);
+    CIntElement* polarCount = GetIntElement(in);
+    CRealElement* polarVariance = GetRealElement(in);
+    CRealElement* azimuthRange = GetRealElement(in);
+    CIntElement* azimuthCount = GetIntElement(in);
+    CRealElement* azimuthVariance = GetRealElement(in);
+    CRealElement* radius = GetRealElement(in);
+    CRealElement* speed = GetRealElement(in);
+    const u8 shuffle = u8(in.ReadChar());
+    ret = rs_new CEEPortAngleSphereVariance(origin, rotateX, rotateY, rotateZ, range1, range2, polarCount,
+                                            polarVariance, azimuthRange, azimuthCount, azimuthVariance, radius, speed,
+                                            shuffle);
     break;
   }
   case SBIG('PLNE'): {

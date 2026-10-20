@@ -2193,6 +2193,28 @@ void TestBlendMode() {
             "PBDM 4 is listed as approximated");
 }
 
+// DFOG 1 (Remastered's no-fog bit, CreateGPSM 0x25a560) becomes the port-only PDFG; DFOG 0 is
+// the default and writes nothing. The effects store it as an element, CNST and a byte.
+void TestUnfogged() {
+  for (uint8_t on : {uint8_t(1), uint8_t(0)}) {
+    const auto parts = ConvertOne(OneGenerator([on](auto& o) {
+                                    PutProperty(o, "DFOG", 0);
+                                    PutFourCC(o, "CNST");
+                                    o.push_back(on);
+                                    PutTexr(o, 0x1234ABCD);
+                                  }),
+                                  {});
+    Retail want;
+    want.f("GPSM").f("TEXR").f("CNST").f("CNST").w(0x1234ABCD);
+    if (on != 0) {
+      want.f("PDFG").f("CNST").w(1);
+    }
+    want.end();
+    CHECK_MSG(parts.size() == 1 && parts[0].part == want.bytes, "DFOG 1 becomes PDFG, DFOG 0 nothing");
+    CHECK_MSG(!parts.empty() && parts[0].dropped.empty() && parts[0].approximated.empty(), "DFOG is exact");
+  }
+}
+
 // GPUA (how much GPU time is free) is 1.0 exactly at a GPU frame time of 14 ms or less.
 void TestGpuAvailability() {
   auto parts = ConvertOne(OneGenerator([](auto& o) {
@@ -2575,7 +2597,7 @@ void TestComposedModelRotation() {
               }),
               {});
   CHECK_MSG(!parts.empty() && parts[0].dropped.size() == 1 &&
-                parts[0].dropped[0] == "PMRQ: a rotation that is not REUL/RADD/RAZY/MPCB/EXTR",
+                parts[0].dropped[0] == "PMRQ: a rotation that is not REUL/RADD/RAZY/MPCB/EXTR/CMRT",
             "ordered PMRQ refuses a non-REUL operand rather than adding Euler components");
 }
 
@@ -2683,9 +2705,57 @@ void TestIntFrame() {
     PutConstant(o, 0);
     o.push_back(0);
   });
-  CHECK_MSG(part.dropped.size() == 1 &&
-                part.dropped[0] == "INTR: IRND, drawn again on each evaluation of the system orientation",
-            "INTR with IRND is dropped, naming it");
+  // REUL(IRND(230, 300), 0, 0): the draw becomes a hidden init-only PSYR slot (one per system).
+  CHECK_MSG(part.dropped.empty(), "INTR with IRND is no longer dropped");
+  Retail head, slot;
+  head.f("CNST").f("PSYR").w(10).f("CNST").w(Bits(0.f)).f("CNST").w(Bits(0.f));
+  slot.f("PSYS").f("CNST").w(1).w(0).w(10).w(1).f("RAND").f("CNST").w(Bits(230.f)).f("CNST").w(Bits(300.f));
+  CHECK_MSG(Contains(part.part, head.bytes), "INTR REUL(IRND, 0, 0) reads the hidden PSYR slot 10");
+  CHECK_MSG(Contains(part.part, slot.bytes), "the hidden slot is an init-only RAND(230, 300) in PSYS");
+
+  // KPIN(REUL(0, 0, 0)) is a constant identity: the KPIN is stripped, no slot.
+  part = convert(2, [](auto& o) {
+    PutProperty(o, "INTR", 3);
+    PutFourCC(o, "KPIN");
+    PutStaticEuler(o, 0.f, 0.f, 0.f);
+  });
+  Retail kconst;
+  kconst.f("PINR").f("PQAD");
+  basis(kconst);
+  kconst.f("PQAD");
+  RetailVector(kconst, 0.f, 0.f, 0.f);
+  basis(kconst);
+  CHECK_MSG(Contains(part.part, kconst.bytes) && part.dropped.empty() && !Contains(part.part, {'P', 'S', 'Y', 'S'}),
+            "INTR KPIN(REUL(0, 0, 0)) is PINR CNST");
+
+  // KPIN(REUL(SINE, 0, 0)): the non-constant angle goes through a hidden init-only slot; the
+  // constant angles stay constants.
+  part = convert(2, [](auto& o) {
+    PutProperty(o, "INTR", 3);
+    PutFourCC(o, "KPIN");
+    PutFourCC(o, "REUL");
+    PutFourCC(o, "SINE");
+    PutConstant(o, Bits(1.f));
+    PutConstant(o, Bits(2.f));
+    PutConstant(o, Bits(3.f));
+    PutConstant(o, 0);
+    PutConstant(o, 0);
+    o.push_back(0);
+  });
+  CHECK_MSG(part.dropped.empty() && Contains(part.part, {'P', 'S', 'Y', 'R'}) && Contains(part.part, {'P', 'S', 'Y', 'S'}),
+            "INTR KPIN(REUL(non-constant, ...)) keeps the angle through a hidden init-only slot");
+
+  // CMRT: the camera's rotation, converted as PINR PQAD(B, PQAD(CMRT, B)); never constant.
+  part = convert(3, [](auto& o) {
+    PutProperty(o, "INTR", 3);
+    PutFourCC(o, "CMRT");
+  });
+  Retail cmrt;
+  cmrt.f("PINR").f("PQAD");
+  basis(cmrt);
+  cmrt.f("PQAD").f("CMRT");
+  basis(cmrt);
+  CHECK_MSG(Contains(part.part, cmrt.bytes) && part.dropped.empty(), "INTR CMRT is PINR B * CMRT * B");
 
   part = convert(5, [](auto& o) {
     PutProperty(o, "INTR", 3);
@@ -4570,7 +4640,7 @@ void TestFacingRotation() {
   plain.f("GPSM").f("TEXR").f("CNST").f("CNST").w(0x1234ABCD).end();
   CHECK_MSG(parts.size() == 1 && parts[0].part == plain.bytes, "a RAZY with a vector fallback writes nothing");
   CHECK_MSG(!parts.empty() && parts[0].dropped.size() == 1 &&
-                parts[0].dropped[0] == "PMRQ: a rotation that is not REUL/RADD/RAZY/MPCB/EXTR",
+                parts[0].dropped[0] == "PMRQ: a rotation that is not REUL/RADD/RAZY/MPCB/EXTR/CMRT",
             "a RAZY with a vector fallback is dropped");
 }
 
@@ -4606,6 +4676,7 @@ int main() {
   TestPortMover();
   TestDrawsNothing();
   TestBlendMode();
+  TestUnfogged();
   TestGpuAvailability();
   TestCurlNoise();
   TestParentRead();
