@@ -170,6 +170,14 @@ public:
   bool xPortNestedHdrLight = false;
   CRealElement* xPortNestedLightInnerRadius = nullptr;
   CRealElement* xPortNestedLightOuterRadius = nullptr;
+  // port-only PINS: Remastered's INTS, the system scale in place of the external one (EXTS still
+  // reads the external scale; CElementGen::PortSystemScale). Owned here; null = the external scale.
+  CVectorElement* xPortIntScale = nullptr;
+  // port-only PINR/PINT: Remastered's INTR/INTT, the system orientation (an Euler vector in the
+  // port's space, as PMRT's) and translation in place of the external ones (EXTR/EXTT still read
+  // the external ones; CElementGen::PortApplyIntFrame). Owned here; null = the external one.
+  CVectorElement* xPortIntRotation = nullptr;
+  CVectorElement* xPortIntTranslation = nullptr;
   // port-only PVRT: Remastered particle variables (names, types, defaults)
   std::unique_ptr< CPortVarTable > xPortVars;
   // port-only: the PKPR elements (per-particle KPIN latches), latched at birth in this order;

@@ -82,6 +82,9 @@ endfunction()
 # /vmg uses the general representation everywhere, as Itanium's fixed one does.
 if(MSVC)
     add_compile_options($<$<COMPILE_LANGUAGE:CXX>:/vmg>)
+    # cl.exe reports __cplusplus as 199711L without this whatever the standard,
+    # so the SDK's AUTO fell back to __typeof__, which it lacks (issue #170).
+    add_compile_options($<$<COMPILE_LANGUAGE:CXX>:/Zc:__cplusplus>)
 endif()
 
 if(MP_ANDROID_NOD_STUB)
@@ -105,6 +108,13 @@ endif()
 add_subdirectory(extern/aurora EXCLUDE_FROM_ALL)
 if(TARGET aurora_mtx)
     target_compile_definitions(aurora_mtx PRIVATE MTX_USE_PS=1)
+endif()
+# EXCLUDE_FROM_ALL also keeps Aurora's tests out of the default build, but ctest still runs them,
+# so a stale binary from an older build passed or failed in place of the current code.
+if(AURORA_ENABLE_TESTS)
+    get_property(aurora_test_targets DIRECTORY extern/aurora/tests PROPERTY BUILDSYSTEM_TARGETS)
+    add_custom_target(aurora_tests ALL)
+    add_dependencies(aurora_tests ${aurora_test_targets})
 endif()
 
 # MusyX is the game's audio engine; the vendored fork is portable.
@@ -336,11 +346,15 @@ endif()
 # FourCC constants. -Wno-unused-parameter and -Wno-ignored-qualifiers: every hit
 # is inside decompiled headers (include/) that platform sources include and that
 # must not be edited (named-but-unused params and const-qualified return types
-# are the decomp style); platform sources themselves have none. MSVC gets nothing
-# here (its own flags live elsewhere).
-if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+# are the decomp style); platform sources themselves have none. clang-cl reads
+# -Wall as -Weverything (540k warnings per Windows CI run), so it gets /W4, its
+# spelling of -Wall -Wextra. cl.exe gets nothing here (its own flags live elsewhere).
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" AND NOT MSVC)
     set_source_files_properties(${MP_PORT_SOURCES} platform/smoke.cpp PROPERTIES
         COMPILE_OPTIONS "-Wall;-Wextra;-Wno-multichar;-Wno-unused-parameter;-Wno-ignored-qualifiers")
+elseif(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+    set_source_files_properties(${MP_PORT_SOURCES} platform/smoke.cpp PROPERTIES
+        COMPILE_OPTIONS "/W4;-Wno-multichar;-Wno-unused-parameter;-Wno-ignored-qualifiers")
 endif()
 if(ANDROID)
     add_library(metroid_prime_port SHARED ${MP_PORT_SOURCES})
@@ -1332,6 +1346,17 @@ if(MP_BUILD_TESTS)
             COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/tests/port_boss_save_wiring.py
                     ${CMAKE_CURRENT_SOURCE_DIR})
         set_tests_properties(port_boss_save_wiring PROPERTIES TIMEOUT 15 LABELS port)
+        # A totem scan, not the text refresh at room load, asks the AP server for
+        # the artifact hint (issue #170).
+        add_test(NAME port_ap_scan_hint_wiring
+            COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/tests/port_ap_scan_hint_wiring.py
+                    ${CMAKE_CURRENT_SOURCE_DIR})
+        set_tests_properties(port_ap_scan_hint_wiring PROPERTIES TIMEOUT 15 LABELS port)
+        # No raw string literal piece grows past MSVC's 16 KB limit (issue #170).
+        add_test(NAME port_msvc_string_limit
+            COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/tests/port_msvc_string_limit.py
+                    ${CMAKE_CURRENT_SOURCE_DIR})
+        set_tests_properties(port_msvc_string_limit PROPERTIES TIMEOUT 30 LABELS port)
         # The map side file reaches its staging, its flush and its load from the
         # card driver, and the save state carries the same data in its blob.
         add_test(NAME port_map_side_wiring

@@ -2,6 +2,7 @@
 
 #include "port_console.h"
 #include "port_debug.h"
+#include "port_hints.h"
 #include "port_mouse.h"
 #include "port_freecam.h"
 
@@ -909,6 +910,10 @@ bool CPlayer::MouseControlsAllowed(const CStateManager& mgr) const {
 
 bool CPlayer::MouseLookIsFree(const CStateManager& mgr) const {
   return MouseControlsAllowed(mgr) && (x304_orbitState == kOS_NoOrbit || x304_orbitState == kOS_Grapple);
+}
+
+bool CPlayer::PortEmptyLockKeepsPitch(const CStateManager& mgr) const {
+  return MouseControlsAllowed(mgr) && PortDebug::LockKeepsPitch() && x304_orbitState == kOS_OrbitPoint;
 }
 
 void CPlayer::UpdateMouseAim(CStateManager& mgr) {
@@ -2836,6 +2841,7 @@ void CPlayer::UpdateScanningState(const CFinalInput& input, CStateManager& mgr, 
                                          x3ac_scanningTime / totalTime);
           if (x3ac_scanningTime >= totalTime &&
               x3b0_curScanTime >= gpTweakGui->GetScanSidesStartTime()) {
+            PortHints::ScanCompleted(static_cast< uint32_t >(scanInfo->GetStringTableId()));
             SetScanningState(kSS_ScanComplete, mgr);
           }
         }

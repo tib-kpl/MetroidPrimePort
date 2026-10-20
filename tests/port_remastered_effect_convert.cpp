@@ -12,6 +12,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <functional>
 #include <memory>
 #include <string>
 #include <utility>
@@ -2578,6 +2579,167 @@ void TestComposedModelRotation() {
             "ordered PMRQ refuses a non-REUL operand rather than adding Euler components");
 }
 
+// INTS is the system scale in place of the external one (Compile 0x289af0): the port-only PINS,
+// turned into the port's numbers by BSSC; EXTS inside it stays the external scale. XFMD 5 frees it.
+void TestIntScale() {
+  const auto withInts = [](int mode, bool exts) {
+    return ConvertOne(OneGenerator([&](auto& o) {
+                        PutProperty(o, "INTS", 3);
+                        if (exts) {
+                          PutFourCC(o, "MULT");
+                          PutFourCC(o, "EXTS");
+                        }
+                        PutFourCC(o, "RTOV");
+                        PutConstant(o, Bits(0.6f));
+                        if (mode != 0) {
+                          PutProperty(o, "XFMD", 0);
+                          PutConstant(o, mode);
+                        }
+                        PutTexr(o, 0x1234ABCD);
+                      }),
+                      {});
+  };
+  auto parts = withInts(0, false);
+  Retail want;
+  want.f("GPSM").f("PINS").f("BSSC").f("RTOV").f("CNST").w(Bits(0.6f));
+  want.f("TEXR").f("CNST").f("CNST").w(0x1234ABCD).end();
+  CHECK_MSG(parts.size() == 1 && parts[0].part == want.bytes && parts[0].dropped.empty(), "INTS RTOV(0.6) is PINS");
+  if (!parts.empty()) {
+    std::vector<RetailPartProperty> properties;
+    std::string error;
+    CHECK_MSG(SplitRetailPart(parts[0].part.data(), parts[0].part.size(), properties, error),
+              "a PART with PINS passes the retail element reader");
+  }
+  parts = withInts(0, true);
+  Retail scaled;
+  scaled.f("GPSM").f("PINS").f("BSSC").f("MULT").f("BSSC").f("EXTS").f("RTOV").f("CNST").w(Bits(0.6f));
+  scaled.f("TEXR").f("CNST").f("CNST").w(0x1234ABCD).end();
+  CHECK_MSG(parts.size() == 1 && parts[0].part == scaled.bytes && parts[0].dropped.empty(),
+            "INTS MULT(EXTS, RTOV(0.6)) reads the external scale");
+  parts = withInts(5, false);
+  CHECK_MSG(parts.size() == 1 && parts[0].dropped.empty() &&
+                std::search(parts[0].part.begin(), parts[0].part.end(), want.bytes.begin() + 4,
+                            want.bytes.begin() + 8) == parts[0].part.end(),
+            "INTS under XFMD 5 writes no PINS");
+}
+
+bool Contains(const std::vector<uint8_t>& bytes, const std::vector<uint8_t>& what);
+
+// INTR and INTT are the system orientation and translation in place of the external ones (Compile
+// 0x289af0): the port-only PINR (an Euler vector, as PMRQ's) and PINT, read through EXTR/EXTT.
+// XFMD 5 frees INTR and makes INTT each particle's spawn offset, retail's POFS.
+void TestIntFrame() {
+  const auto convert = [](int mode, const std::function<void(std::vector<uint8_t>&)>& body) {
+    auto parts = ConvertOne(OneGenerator([&](auto& o) {
+                              body(o);
+                              if (mode != 0) {
+                                PutProperty(o, "XFMD", 0);
+                                PutConstant(o, mode);
+                              }
+                              PutTexr(o, 0x1234ABCD);
+                            }),
+                            {});
+    return parts.size() == 1 ? parts[0] : ConvertedPart{};
+  };
+  const auto basis = [](Retail& r) { RetailVector(r, 90.f, 0.f, 180.f); };
+  ConvertedPart part = convert(0, [](auto& o) {
+    PutProperty(o, "INTR", 3);
+    PutStaticEuler(o, -90.f, 0.f, 0.f);
+  });
+  Retail reul;
+  reul.f("GPSM").f("PINR").f("PQAD");
+  basis(reul);
+  reul.f("PQAD");
+  RetailVector(reul, -90.f, 0.f, 0.f);
+  basis(reul);
+  reul.f("TEXR").f("CNST").f("CNST").w(0x1234ABCD).end();
+  CHECK_MSG(part.part == reul.bytes && part.dropped.empty(), "INTR REUL(-90, 0, 0) is PINR B * R * B");
+  std::vector<RetailPartProperty> properties;
+  std::string error;
+  CHECK_MSG(SplitRetailPart(part.part.data(), part.part.size(), properties, error),
+            "a PART with PINR passes the retail element reader");
+
+  part = convert(3, [](auto& o) {
+    PutProperty(o, "INTR", 3);
+    PutFourCC(o, "RADD");
+    PutFourCC(o, "EXTR");
+    PutStaticEuler(o, -15.f, 0.f, 0.f);
+  });
+  Retail radd;
+  radd.f("PINR").f("PQAD");
+  basis(radd);
+  radd.f("PQAD").f("PQAD").f("EXTR");
+  RetailVector(radd, -15.f, 0.f, 0.f);
+  basis(radd);
+  CHECK_MSG(Contains(part.part, radd.bytes) && part.dropped.empty(), "INTR RADD(EXTR, REUL) under XFMD 3 is PINR");
+
+  part = convert(2, [](auto& o) {
+    PutProperty(o, "INTR", 3);
+    PutFourCC(o, "REUL");
+    PutFourCC(o, "IRND");
+    PutConstant(o, Bits(230.f));
+    PutConstant(o, Bits(300.f));
+    PutConstant(o, 0);
+    PutConstant(o, 0);
+    o.push_back(0);
+  });
+  CHECK_MSG(part.dropped.size() == 1 &&
+                part.dropped[0] == "INTR: IRND, drawn again on each evaluation of the system orientation",
+            "INTR with IRND is dropped, naming it");
+
+  part = convert(5, [](auto& o) {
+    PutProperty(o, "INTR", 3);
+    PutStaticEuler(o, -90.f, 0.f, 0.f);
+  });
+  CHECK_MSG(part.dropped.empty() && !Contains(part.part, {'P', 'I', 'N', 'R'}), "INTR under XFMD 5 is freed");
+
+  part = convert(3, [](auto& o) {
+    PutProperty(o, "INTT", 3);
+    PutFourCC(o, "ADD_");
+    PutFourCC(o, "EXTT");
+    PutFourCC(o, "CNST");
+    PutConstant(o, 0);
+    PutConstant(o, Bits(0.75f));
+    PutConstant(o, 0);
+  });
+  Retail add;
+  add.f("PINT").f("BSIS").f("ADD_").f("BSIS").f("EXTT");
+  RetailVector(add, 0.f, 0.75f, 0.f);
+  CHECK_MSG(Contains(part.part, add.bytes) && part.dropped.empty(), "INTT ADD_(EXTT, c) under XFMD 3 is PINT");
+  CHECK_MSG(SplitRetailPart(part.part.data(), part.part.size(), properties, error),
+            "a PART with PINT passes the retail element reader");
+
+  const auto constant = [](auto& o) {
+    PutProperty(o, "INTT", 3);
+    PutFourCC(o, "CNST");
+    PutConstant(o, 0);
+    PutConstant(o, Bits(0.4f));
+    PutConstant(o, Bits(0.1f));
+  };
+  Retail pofs;
+  pofs.f("POFS").f("CNST").f("CNST").w(0x80000000u).f("CNST").w(Bits(0.1f)).f("CNST").w(Bits(0.4f));
+  for (int mode : {2, 3}) {
+    part = convert(mode, constant);
+    CHECK_MSG(Contains(part.part, pofs.bytes) && part.dropped.empty() && !Contains(part.part, {'P', 'I', 'N', 'T'}),
+              "a constant INTT under XFMD 2/3 is the retail POFS");
+  }
+  part = convert(2, [&](auto& o) {
+    constant(o);
+    PutProperty(o, "POFS", 3);
+    PutFourCC(o, "CNST");
+    PutConstant(o, 0);
+    PutConstant(o, Bits(1.f));
+    PutConstant(o, 0);
+  });
+  Retail both;
+  both.f("POFS").f("BSIS").f("ADD_");
+  CHECK_MSG(Contains(part.part, both.bytes) && part.dropped.empty() && !Contains(part.part, {'P', 'I', 'N', 'T'}),
+            "a constant INTT and a POFS under XFMD 2 are added");
+  part = convert(5, constant);
+  CHECK_MSG(Contains(part.part, pofs.bytes) && part.dropped.empty() && !Contains(part.part, {'P', 'I', 'N', 'T'}),
+            "INTT under XFMD 5 is the spawn offset POFS");
+}
+
 bool HasPmrf(const ConvertedPart& part, uint32_t frame) {
   Retail pmrf;
   pmrf.f("PMRF").f("CNST").w(frame);
@@ -4472,6 +4634,8 @@ int main() {
   TestModelsOnly();
   TestFacingRotation();
   TestModelRotationFrames();
+  TestIntScale();
+  TestIntFrame();
   if (port_test::Failures() == 0) {
     std::printf("port_remastered_effect_convert: ok\n");
   }
