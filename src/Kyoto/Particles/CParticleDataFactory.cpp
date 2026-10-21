@@ -3,6 +3,7 @@
 #include <algorithm>
 
 #ifdef TARGET_PC
+#include <cstdlib>
 #include "aurora/vfx.hpp"
 #include "port_log.h"
 #include "port_vfx_read.h"
@@ -52,6 +53,16 @@ CElementAllocationChunk* IElement::CElementAllocator::sFreeChunk = nullptr;
 static bool sPortCodeEmitter = false;
 // Set by a PEMV vector (CGenDescription::xPortPemv), collected per description in GetGPSM.
 static u8 sPortPemv = 0;
+// A PITP mode word with this bit is an ITPE the effect left out (Remastered's default 1);
+// MP_ITPE_DEFAULT=0 drops those, to compare.
+static const u32 kPortSpreadDefault = 0x100;
+static bool PortSpreadDefault() {
+  static const bool on = [] {
+    const char* env = getenv("MP_ITPE_DEFAULT");
+    return env == nullptr || env[0] != '0';
+  }();
+  return on;
+}
 
 namespace {
 // Port-only SLCT (the converter's Writer::Element): an int index, a count word, then count
@@ -725,6 +736,10 @@ bool CParticleDataFactory::CreateGPSM(CGenDescription* desc, CInputStream& in,
       GetClassID(in);
       desc->xPortNestedLightFalloff = static_cast< u8 >(in.ReadLong() & 3);
       break;
+    case SBIG('PLIX'):
+      GetClassID(in);
+      desc->xPortNestedLightInverseExposure = in.ReadLong() != 0;
+      break;
     case SBIG('POR0'):
       delete desc->xPortNestedLightOuterRadius;
       desc->xPortNestedLightOuterRadius = GetRealElement(in);
@@ -850,10 +865,61 @@ bool CParticleDataFactory::CreateGPSM(CGenDescription* desc, CInputStream& in,
       GetClassID(in);
       desc->xPortBlend = u8(in.ReadLong());
       break;
+    // Port-only: Remastered's ZTES 0 (xPortNoZTest).
+    case SBIG('PZTS'):
+      GetClassID(in);
+      desc->xPortNoZTest = in.ReadLong() == 0;
+      break;
+    // Port-only: Remastered's IVSE 0 (xPortNoIvse).
+    case SBIG('PIVS'):
+      GetClassID(in);
+      desc->xPortNoIvse = in.ReadLong() == 0;
+      break;
+    // Port-only: Remastered's ISVF (xPortInheritVel), after PEMV's mode word.
+    case SBIG('PISV'): {
+      GetClassID(in);
+      sPortPemv = u8(in.ReadLong() + 1);
+      delete desc->xPortInheritVel;
+      desc->xPortInheritVel = GetRealElement(in);
+      break;
+    }
+    // Port-only: Remastered's ITPE 1 (xPortSpread), with PEMV's mode word.
+    case SBIG('PITP'): {
+      GetClassID(in);
+      const u32 word = in.ReadLong();
+      if ((word & kPortSpreadDefault) == 0 || PortSpreadDefault()) {
+        sPortPemv = u8((word & 0xff) + 1);
+        desc->xPortSpread = true;
+      }
+      break;
+    }
+    // Port-only: Remastered's SHTM, SHTT, PMOV and PMPV (CGenDescription::xPortShutdownMode and
+    // the elements after it).
+    case SBIG('PSHM'):
+      GetClassID(in);
+      desc->xPortShutdownMode = u8(in.ReadLong());
+      break;
+    case SBIG('PSHT'):
+      delete desc->xPortShutdownTime;
+      desc->xPortShutdownTime = GetIntElement(in);
+      break;
+    case SBIG('PMOV'):
+      delete desc->xPortPmov;
+      desc->xPortPmov = GetVectorElement(in);
+      break;
+    case SBIG('PMPV'):
+      delete desc->xPortPmpv;
+      desc->xPortPmpv = GetVectorElement(in);
+      break;
     // Port-only: Remastered's DFOG 1 (xPortUnfogged).
     case SBIG('PDFG'):
       GetClassID(in);
       desc->xPortUnfogged = in.ReadLong() != 0;
+      break;
+    // Port-only: Remastered's DBIS (xPortDepthBias), a constant real.
+    case SBIG('PDBS'):
+      GetClassID(in);
+      desc->xPortDepthBias = in.ReadFloat();
       break;
     // Port-only Remastered particle material (build/mpr/vfx/DESIGN.md section 1).
     case SBIG('VMAT'):
@@ -1210,6 +1276,9 @@ CRealElement* CParticleDataFactory::GetRealElement(CInputStream& in) {
   // Port-only VARF: a Remastered particle variable of the system being evaluated (PVRT index).
   case SBIG('VARF'):
     return rs_new CREPortVar(in.ReadLong());
+  // Port-only PSDT: the system's shutdown countdown fraction left (SDTR).
+  case SBIG('PSDT'):
+    return rs_new CREPortShutdownRemaining();
   // Port-only PSYR: a PSYS real slot of the system being evaluated.
   case SBIG('PSYR'):
     return rs_new CREPortSysVar(in.ReadLong());

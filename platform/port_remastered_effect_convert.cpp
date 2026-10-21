@@ -22,6 +22,9 @@ constexpr uint32_t F(const char (&text)[5]) { return EffectFourCC(text); }
 
 // The per-particle KPIN latches a generator or swoosh can carry (SPortKeep::kMax).
 constexpr uint32_t kKeepSlots = 8;
+// PITP's mode word with this bit: an ITPE that was absent (Remastered's default 1), which
+// MP_ITPE_DEFAULT=0 turns off at load.
+constexpr int kSpreadDefault = 0x100;
 
 // The types CParticleDataFactory reads a value as.
 enum class Type : uint8_t { Int, Real, Vector, ModVector, Color, Emitter, Texture, Bool, Asset };
@@ -2072,10 +2075,16 @@ public:
     if (value.fourcc == F("SUST") && type == Type::Real && value.args.size() == 1 && m_swoosh) {
       return Element(value.args[0], type, out, why);
     }
-    // SDTR (CREShutdownTimeRemaining 0x2999e0) is the shutdown countdown's remaining over total.
+    // SDTR (CREShutdownTimeRemaining 0x2999e0) is the shutdown countdown's remaining over total
+    // (1 with none running): the port-only PSDT, read off the generator's SHTT countdown. A
+    // swoosh or electric has none in the port.
     if (value.fourcc == F("SDTR") && type == Type::Real) {
-      why = "SDTR needs Remastered's shutdown countdown (SHTT)";
-      return false;
+      if (!m_gpsm || !value.args.empty()) {
+        why = "SDTR outside a generator needs Remastered's shutdown countdown";
+        return false;
+      }
+      AppendBE32(out, F("PSDT"));
+      return true;
     }
     const Signatures& elements = ElementsOf(type);
     const auto found = elements.find(value.fourcc);
@@ -3982,6 +3991,8 @@ public:
     std::vector<uint8_t> nestedLightOuterRadius;
     bool nestedHdrLight = false;
     uint32_t nestedLightFalloff = 3;
+    // LIXP: CParticleLight::Create 0x2df010 multiplies LINT by the static inverse exposure.
+    bool nestedLightInverseExposure = false;
     if (part) {
       auto unique = [&node](uint32_t fourcc) -> const EffectProperty* {
         const EffectProperty* found = nullptr;
@@ -4017,6 +4028,9 @@ public:
                        Element(lord->value[0], Type::Real, nestedLightOuterRadius, why);
       if (nestedHdrLight) {
         nestedLightFalloff = falloff;
+        const EffectProperty* lixp = unique(F("LIXP"));
+        uint32_t inverseExposed = 0;
+        nestedLightInverseExposure = lixp != nullptr && SmallInteger(*lixp, inverseExposed) && inverseExposed != 0;
       } else if (ltyp != nullptr && SmallInteger(*ltyp, lightType) && lightType == 2) {
         result.dropped.push_back("PHDR: point light lacks constant LFOT or supported LCLR/LINT/LIRD/LORD");
       }
@@ -4028,6 +4042,7 @@ public:
       additive = additive || property.fourcc == F("AALP");
     }
     m_swoosh = node.form == F("SWSH");
+    m_gpsm = node.form == F("GPSM");
     m_xfmd = 2;
     m_pofs = 0;
     m_maxp = -1;
@@ -4173,6 +4188,11 @@ public:
     const EffectProperty* xfmd = nullptr;
     uint32_t spriteShape = 0;
     bool unfogged = false;  // DFOG 1, port-only PDFG
+    bool noZTest = false;   // ZTES 0, port-only PZTS
+    bool noIvse = false;    // IVSE 0, port-only PIVS
+    int spreadMode = -1;    // ITPE 1, port-only PITP with EMRV's mode word (-1 none)
+    bool itpe = false;      // the node has an ITPE of its own
+    uint32_t depthBias = 0;  // DBIS as float bits (nonzero), port-only PDBS
     const EffectProperty* mover = nullptr;
     std::vector<uint32_t> portOnly;  // material data, written only with a VMAT
     const bool textured = retail.count(F("TEXR")) != 0;
@@ -4237,6 +4257,88 @@ public:
           result.dropped.push_back("DFOG: not a constant");
         } else {
           unfogged = on != 0;
+        }
+        continue;
+      }
+      // ZTES 0 (GPSM desc+0x1b8 bit 1, SWSH desc+0x22c bit 9) makes the static render state's depth
+      // compare 1 instead of 4 (ctor 0x28c2fc/0x28c384); the GPU's table 0x1d0c3a8 maps 1 to ALWAYS
+      // and 4 to LEQUAL, so the test passes everywhere (writes stay with ZBUF). Default on.
+      // Retail has no such property: the port-only PZTS.
+      if ((part || swoosh) && fourcc == F("ZTES")) {
+        uint32_t on = 0;
+        if (!SmallInteger(property, on)) {
+          result.dropped.push_back("ZTES: not a constant");
+        } else {
+          noZTest = on == 0;
+        }
+        continue;
+      }
+      // IVSE (desc+0x2fa bit 2, default on): the initial velocity goes through
+      // CCoords::TransformVelocity (CreateNewParticles 0x24a9fc). Retail always turns it by the
+      // system orientation, so only IVSE 0 differs: the port-only PIVS.
+      if (part && fourcc == F("IVSE")) {
+        uint32_t on = 0;
+        if (!SmallInteger(property, on)) {
+          result.dropped.push_back("IVSE: not a constant");
+        } else {
+          noIvse = on == 0;
+        }
+        continue;
+      }
+      // ISVF and ITPE read the system's per-tick change of translation (EMRV, var 0x16: the delta
+      // CreateNewParticles gets as its third argument). XFMD 0, 3 and 6 give it a constant zero, so
+      // neither does anything there; 2 and 5 are PEMV's modes; the others are not decoded. ITPE is
+      // on by default in Remastered (desc ctor 0x290c10): one that is absent is written after the
+      // loop, flagged kSpreadDefault.
+      if (part && (fourcc == F("ISVF") || fourcc == F("ITPE"))) {
+        const std::string name = EffectFourCCString(property.fourcc);
+        itpe = itpe || fourcc == F("ITPE");
+        uint32_t on = 1;
+        if (fourcc == F("ITPE") && !SmallInteger(property, on)) {
+          result.dropped.push_back("ITPE: not a constant");
+          continue;
+        }
+        if (fourcc == F("ITPE") && on == 0) {
+          continue;  // retail never spreads
+        }
+        if (m_xfmd == 0 || m_xfmd == 3 || m_xfmd == 6) {
+          continue;
+        }
+        if (m_xfmd != 2 && m_xfmd != 5) {
+          result.dropped.push_back(name + " under XFMD " + std::to_string(m_xfmd));
+          continue;
+        }
+        if (m_xfmd == 5 && m_pofs == 2) {
+          result.dropped.push_back(name + " under XFMD 5 with a POFS that is not a constant");
+          continue;
+        }
+        const uint32_t mode = m_xfmd == 5 ? (m_pofs == 1 ? 2 : 1) : 0;
+        if (fourcc == F("ITPE")) {
+          spreadMode = int(mode);
+          continue;
+        }
+        std::vector<uint8_t> inner;
+        std::string why = "not one element";
+        if (property.value.size() != 1 || !Element(property.value[0], Type::Real, inner, why)) {
+          result.dropped.push_back("ISVF: " + why);
+          continue;
+        }
+        AppendBE32(out, F("PISV"));
+        AppendBE32(out, F("CNST"));
+        AppendBE32(out, mode);
+        out.insert(out.end(), inner.begin(), inner.end());
+        continue;
+      }
+      // DBIS is the particle depth bias (desc+0xd4 of CreateGPSM, the SWSH one too; constant only),
+      // a world-unit shift along the view depth that CParticleSceneNode::ConstructDepthBias 0x2b1004
+      // turns into a projection m22 offset (CScopedGraphicsDepthBias::CalculateProjMatrixDepthBias
+      // 0x22a604). Retail has no such property: the port-only PDBS.
+      if ((part || swoosh) && fourcc == F("DBIS")) {
+        uint32_t bits = 0;
+        if (property.value.size() != 1 || !ConstWord(property.value[0], bits)) {
+          result.dropped.push_back("DBIS: not a constant");
+        } else if ((bits & 0x7fffffffu) != 0) {
+          depthBias = bits;
         }
         continue;
       }
@@ -4400,12 +4502,13 @@ public:
         continue;
       }
       if (part && (fourcc == F("TMTR") || fourcc == F("PMTR") || fourcc == F("SMTR") || fourcc == F("SSZE") ||
-                   fourcc == F("ITEN") || fourcc == F("SCTR"))) {
+                   fourcc == F("ITEN") || fourcc == F("SCTR") || fourcc == F("SFTD"))) {
         portOnly.push_back(fourcc);
         continue;
       }
       if ((swoosh || electric) &&
-          (fourcc == F("TMTR") || fourcc == F("PMTR") || fourcc == F("SMTR") || fourcc == F("ITEN"))) {
+          (fourcc == F("TMTR") || fourcc == F("PMTR") || fourcc == F("SMTR") || fourcc == F("ITEN") ||
+           fourcc == F("SFTD"))) {
         portOnly.push_back(fourcc);
         continue;
       }
@@ -4671,14 +4774,80 @@ public:
         Basis(F("BSIS"), inner, out);
         continue;
       }
+      // SHTM (CreateGPSM 0x256b7c, CreateSWSH 0x2db8a4, CreateELSM/CreateELC2, desc+0xcc): what a shutdown
+      // does (CParticleGen::DoShutdownBehavior 0x27b88c). 0 stops emission, 1 also destroys the live
+      // particles: the port-only PSHM, for a PART and a swoosh (CParticleSwoosh::DestroyParticles
+      // 0x27f744 empties the ring). An electric's DestroyParticles (0x286554, 0xb78e8c) is a no-op,
+      // so its 0 and 1 both just stop emitting, which is what the port's ShutdownEffect does.
+      if ((part || swoosh || type == F("ELSC")) && fourcc == F("SHTM")) {
+        uint32_t mode = 0;
+        if (!SmallInteger(property, mode) || mode > 1) {
+          result.dropped.push_back(mode > 1 ? "SHTM: mode " + std::to_string(mode)
+                                            : std::string("SHTM: not a constant"));
+        } else if (mode == 1 && (part || swoosh)) {
+          AppendBE32(out, F("PSHM"));
+          AppendBE32(out, F("CNST"));
+          AppendBE32(out, 1);
+        }
+        continue;
+      }
+      // SHTT, the delayed shutdown (ShutdownEffect 0x27a66c, UpdateCountdownTimerForShutdown
+      // 0x27b864): an int number of ticks, counted down once per tick after the owner's shutdown.
+      if (part && fourcc == F("SHTT")) {
+        std::vector<uint8_t> inner;
+        std::string why = "not one element";
+        if (property.value.size() != 1 || !Element(property.value[0], Type::Int, inner, why)) {
+          result.dropped.push_back("SHTT: " + why);
+          continue;
+        }
+        AppendBE32(out, F("PSHT"));
+        out.insert(out.end(), inner.begin(), inner.end());
+        continue;
+      }
+      // PMOV, the per-particle model direction (SolveParticleTransform 0x246f14), and PMPV, the
+      // pivot offset in the model's final frame: vectors in Remastered's numbers, as the port-only
+      // properties of the same names, in the port's space (BSIS, as PMOP's). Fixup 0x28ec98 deletes
+      // PMOV under a PMRQ base rotation (PMRB or PMCF); EMTU makes the model's up the system's.
+      if (part && (fourcc == F("PMOV") || fourcc == F("PMPV"))) {
+        std::vector<uint8_t> inner;
+        std::string why = "not one element";
+        if (fourcc == F("PMOV")) {
+          bool pmrqBase = false;
+          bool emtu = false;
+          bool emtuUnknown = false;
+          for (const EffectProperty& other : node.properties) {
+            uint32_t word = 0;
+            if (other.fourcc == F("PMRB") || other.fourcc == F("PMCF")) {
+              pmrqBase = pmrqBase || (SmallConst(other, word) && word != 0);
+            } else if (other.fourcc == F("EMTU")) {
+              emtuUnknown = !SmallConst(other, word);
+              emtu = word != 0;
+            }
+          }
+          if (pmrqBase) {
+            continue;
+          }
+          if (emtu || emtuUnknown) {
+            result.dropped.push_back("PMOV: EMTU makes its up the system's");
+            continue;
+          }
+        }
+        if (property.value.size() != 1 || !Element(property.value[0], Type::Vector, inner, why)) {
+          result.dropped.push_back(EffectFourCCString(property.fourcc) + ": " + why);
+          continue;
+        }
+        AppendBE32(out, fourcc);
+        Basis(F("BSIS"), inner, out);
+        continue;
+      }
       // A POFS goes out with an INTT written as POFS above, added to it.
       if (part && fourcc == F("POFS") &&
           std::any_of(node.properties.begin(), node.properties.end(),
                       [this](const EffectProperty& other) { return other.fourcc == F("INTT") && IntIsPofs(other); })) {
         continue;
       }
-      if (nestedHdrLight && (fourcc == F("LIRD") || fourcc == F("LORD"))) {
-        continue;  // consumed as PIR0/POR0 below
+      if (nestedHdrLight && (fourcc == F("LIRD") || fourcc == F("LORD") || fourcc == F("LIXP"))) {
+        continue;  // consumed as PIR0/POR0/PLIX below
       }
       const auto found = retail.find(fourcc);
       if (found == retail.end()) {
@@ -4776,6 +4945,20 @@ public:
       AppendBE32(out, F("SIZE"));
       AppendBE32(out, F("CNST"));
       AppendBE32(out, FloatBits(0.0f));
+    } else if (part && !has(F("SIZE"))) {
+      // DVVN 1..4 makes a sprite's missing SIZE 1.0 (SSpritePrim::Fixup 0x28e640,
+      // GetDefaultParticleSize 0x28e6c8), where retail's default is 0.1.
+      uint32_t dvvn = 0;
+      for (const EffectProperty& property : node.properties) {
+        if (property.fourcc == F("DVVN") && !SmallInteger(property, dvvn)) {
+          dvvn = 0;
+        }
+      }
+      if (dvvn >= 1 && dvvn <= 4) {
+        AppendBE32(out, F("SIZE"));
+        AppendBE32(out, F("CNST"));
+        AppendBE32(out, FloatBits(1.0f));
+      }
     }
     // A material instance draws with its texture where there is no TEXR.
     if (material != nullptr && !texture && !electric) {
@@ -4869,6 +5052,31 @@ public:
       AppendBE32(out, F("PDFG"));
       AppendBE32(out, F("CNST"));
       AppendBE32(out, 1);
+    }
+    if (noZTest) {
+      AppendBE32(out, F("PZTS"));
+      AppendBE32(out, F("CNST"));
+      AppendBE32(out, 0);
+    }
+    if (noIvse) {
+      AppendBE32(out, F("PIVS"));
+      AppendBE32(out, F("CNST"));
+      AppendBE32(out, 0);
+    }
+    // No ITPE: Remastered's default 1, where the system's translation change is decoded.
+    if (part && m_io.spreadDefault && !itpe && (m_xfmd == 2 || m_xfmd == 5) && !(m_xfmd == 5 && m_pofs == 2)) {
+      spreadMode = int(m_xfmd == 5 ? (m_pofs == 1 ? 2 : 1) : 0) | kSpreadDefault;
+      m_approximated.push_back("ITPE: absent, Remastered's default 1");
+    }
+    if (spreadMode >= 0) {
+      AppendBE32(out, F("PITP"));
+      AppendBE32(out, F("CNST"));
+      AppendBE32(out, uint32_t(spreadMode));
+    }
+    if (depthBias != 0) {
+      AppendBE32(out, F("PDBS"));
+      AppendBE32(out, F("CNST"));
+      AppendBE32(out, depthBias);
     }
     if ((part || swoosh) && !m_vars.empty()) {
       // Port-only: the effect's PVAR table (names, kinds, defaults) for VARF/VARI/VARV/VARC.
@@ -5034,6 +5242,11 @@ public:
         AppendBE32(out, F("CNST"));
         AppendBE32(out, nestedLightFalloff);
       }
+      if (nestedLightInverseExposure) {  // absent PLIX is LIXP off, CParticleLightDescription's default
+        AppendBE32(out, F("PLIX"));
+        AppendBE32(out, F("CNST"));
+        AppendBE32(out, 1);
+      }
     }
     AppendBE32(out, F("_END"));
     result.approximated = std::move(m_approximated);
@@ -5066,6 +5279,7 @@ private:
   mutable uint32_t m_keepNext = 0;                  // the next PKPR slot
   mutable uint32_t m_varReads = 0;                  // the particle variables Element() has read
   mutable bool m_swoosh = false;                    // the node being written is a SWSH
+  mutable bool m_gpsm = false;                      // the node being written is a GPSM
   mutable uint32_t m_xfmd = 2;                      // its XFMD mode, 2 without one
   mutable const EffectValue* m_semrPos = nullptr;   // the position child of the SEMR being written
   mutable int64_t m_maxp = -1;                      // its MAXP when a constant, else -1
@@ -5130,6 +5344,10 @@ public:
     if ((fourcc == F("VARF") && type == Type::Real) || (fourcc == F("VARI") && type == Type::Int) ||
         (fourcc == F("VARV") && type == Type::Vector) || (fourcc == F("VARC") && type == Type::Color)) {
       return Skip(4);
+    }
+    // Port-only PSDT: the shutdown countdown's remaining over its total, no payload.
+    if (fourcc == F("PSDT") && type == Type::Real) {
+      return true;
     }
     // Port-only PSYR/PSYI: a PSYS slot.
     if ((fourcc == F("PSYR") && type == Type::Real) || (fourcc == F("PSYI") && type == Type::Int)) {
@@ -5654,13 +5872,17 @@ bool SplitRetailEffect(uint32_t type, const uint8_t* data, size_t size, std::vec
     } else if (vfx && (fourcc == F("VPMT") || fourcc == F("VSMT"))) {
       ok = reader.PerParticle(fourcc == F("VSMT"));
     } else if ((part && (fourcc == F("SSZE") || fourcc == F("PIR0") || fourcc == F("POR0"))) ||
-               (vfx && fourcc == F("ITEN"))) {
+               (vfx && (fourcc == F("ITEN") || fourcc == F("PDBS")))) {
       ok = reader.Element(Type::Real);
-    } else if (part && (fourcc == F("PINS") || fourcc == F("PINR") || fourcc == F("PINT"))) {
+    } else if (part && (fourcc == F("PINS") || fourcc == F("PINR") || fourcc == F("PINT") || fourcc == F("PMOV") ||
+                        fourcc == F("PMPV"))) {
       ok = reader.Element(Type::Vector);
+    } else if (part && fourcc == F("PSHT")) {
+      ok = reader.Element(Type::Int);
     } else if ((part && (fourcc == F("VORN") || fourcc == F("XFMD") ||
-                         fourcc == F("PSHP") || fourcc == F("PHDR") || fourcc == F("PHFO") || fourcc == F("PGID") || fourcc == F("PBDM") ||
-                         fourcc == F("PDFG") ||
+                         fourcc == F("PSHP") || fourcc == F("PHDR") || fourcc == F("PHFO") || fourcc == F("PLIX") || fourcc == F("PGID") || fourcc == F("PBDM") ||
+                         fourcc == F("PDFG") || fourcc == F("PZTS") || fourcc == F("PIVS") ||
+                         fourcc == F("PITP") || fourcc == F("PSHM") ||
                          fourcc == F("PMRF") || fourcc == F("PVSD") || fourcc == F("PVSN") ||
                          fourcc == F("PVSM"))) ||
                (vfx && fourcc == F("PIRN"))) {
@@ -5679,8 +5901,11 @@ bool SplitRetailEffect(uint32_t type, const uint8_t* data, size_t size, std::vec
       ok = reader.PortSpawnTables();
     } else if (part && fourcc == F("PSMV")) {
       ok = reader.PortMover();
-    } else if (!part && vfx && (fourcc == F("PSRO") || fourcc == F("PRAF") || fourcc == F("XFMD") || fourcc == F("PDFG"))) {
+    } else if (!part && vfx && (fourcc == F("PSRO") || fourcc == F("PRAF") || fourcc == F("XFMD") || fourcc == F("PDFG") ||
+                          fourcc == F("PZTS") || fourcc == F("PSHM"))) {
       ok = reader.PortWord();
+    } else if (part && fourcc == F("PISV")) {
+      ok = reader.PortWord() && reader.Element(Type::Real);
     } else if (!part && vfx && fourcc == F("PRAZ")) {
       ok = reader.Element(Type::Vector);
     } else if (!part && vfx && fourcc == F("PROZ")) {

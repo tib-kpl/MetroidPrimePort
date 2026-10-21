@@ -82,6 +82,7 @@ int sVolFog = -1;
 bool sFogRegions = true;
 bool sPlayerFluid = false;
 bool sCameraWater = false;
+uint64_t sItems = 0;
 std::vector<WorldVolume> sWorldVolumes;
 WorldVolumeState sWorldVolumeState;
 float sCameraPoint[3] = {};
@@ -856,6 +857,18 @@ float GlowGain(bool frameExposed) {
   // exposure is in use; this is the rest of Remastered's 2^(3 - EV).
   const float gain = frameExposed || SkyGain() <= 0.f ? sFrame.exposure : SkyGain();
   return std::isfinite(gain) && gain > 0.f ? gain : kFallback;
+}
+
+float ParticleLightGain(bool inverseExposed) {
+  // MP_PARTICLE_LIGHT_SCALE multiplies it (debug).
+  static const float sScale = std::max(port::EnvFloat("MP_PARTICLE_LIGHT_SCALE", 1.f), 0.f);
+  const float invPi = sScale / 3.14159265f;
+  const float exposure = Enabled() && RoomExposed() ? sFrame.exposure : 0.f;
+  if (!(exposure > 0.f) || !std::isfinite(exposure)) {
+    return invPi;
+  }
+  // GlowScale is E / E_static, or 1 where the static exposure is off (the frame's stands in).
+  return (inverseExposed ? GlowScale() : exposure) * LightGain() * invPi;
 }
 
 float UnlitGain(bool frameExposed) {
@@ -1733,7 +1746,8 @@ void SendScriptState(uint32_t sender, int state) {
   }
 }
 
-void SetFluid(bool player, bool camera) {
+void SetFluid(bool player, bool camera, uint64_t items) {
+  sItems = items;
   // State 0 as the fluid is entered, 1 as it is left (the writer's convention).
   if (player != sPlayerFluid) {
     sPlayerFluid = player;
@@ -1745,6 +1759,9 @@ void SetFluid(bool player, bool camera) {
     sCameraWater = camera;
     for (auto& [mrea, area] : sAreas) {
       DriveGrades(mrea, area, kSenderCameraWater, camera ? 0 : 1);
+      if (camera) {
+        DriveCameraWaterItems(mrea, area, items);
+      }
       // The hints hear the camera's fluid state in every loaded area (once their file is in).
       if (area.hasFile && area.hints.Set(area.file.fluidHints, camera)) {
         area.hintSnap = true;

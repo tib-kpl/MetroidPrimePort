@@ -992,6 +992,12 @@ if(MP_BUILD_TESTS)
         INCLUDES include extern/aurora/include
         DEFINITIONS TARGET_PC VERSION=0
         GC_SECTIONS)
+    # DBIS (Remastered's particle depth bias, the port-only PDBS): the projection m22 offset.
+    mp_port_test(port_particle_depth_bias_tests
+        SOURCES tests/port_particle_depth_bias.cpp
+        INCLUDES include extern/aurora/include
+        DEFINITIONS TARGET_PC VERSION=0
+        GC_SECTIONS)
     # CRCV (Remastered's circle with variance, the port-only PCRC).
     mp_port_test(port_circle_variance_tests
         SOURCES tests/port_circle_variance.cpp src/Kyoto/Particles/CParticleGlobals.cpp src/Kyoto/CRandom16.cpp
@@ -1096,6 +1102,19 @@ if(MP_BUILD_TESTS)
             platform/port_remastered_astc_decode.cpp
             platform/port_room_env_tiles.cpp platform/port_room_geo_file.cpp
         INCLUDES platform/include include extern/aurora/include
+        DEFINITIONS TARGET_PC VERSION=0
+        LIBRARIES mp_test_remastered_convert)
+    # The world master's script resolver, over synthetic ROOM files.
+    mp_port_test(port_remastered_room_scripts_tests
+        SOURCES tests/port_remastered_room_scripts.cpp
+            platform/port_remastered_room_file.cpp platform/port_remastered_room_retail.cpp
+            platform/port_remastered_room_scripts.cpp
+            platform/port_remastered_anim.cpp platform/port_remastered_cmdl.cpp
+            platform/port_remastered_txtr.cpp platform/port_room_env_file.cpp
+            platform/port_remastered_tegra_swizzle.cpp platform/port_remastered_bcdec.cpp
+            platform/port_remastered_astc_decode.cpp
+            platform/port_room_env_tiles.cpp platform/port_room_geo_file.cpp
+        INCLUDES platform/include platform include extern/aurora/include
         DEFINITIONS TARGET_PC VERSION=0
         LIBRARIES mp_test_remastered_convert)
     mp_port_test(port_remastered_blend_tests

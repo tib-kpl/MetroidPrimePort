@@ -121,6 +121,14 @@ public:
   virtual void SetGlobalScale(const CVector3f& scale) override;
   virtual void SetLocalScale(const CVector3f& scale) override;
   virtual void SetParticleEmission(const bool emission) override;
+#ifdef TARGET_PC
+  // SHTM/SHTT (PSHM/PSHT). ShutdownEffect starts the countdown if the description has one, else
+  // acts at once; PortDoShutdownBehavior(0xff) uses the description's mode.
+  void ShutdownEffect() override;
+  void PortDoShutdownBehavior(u32 mode);
+  // SDTR: the countdown's remaining over its total, 1 when none is running.
+  float PortShutdownTimeRemaining() const;
+#endif
   virtual void SetModulationColor(const CColor& col) override;
   virtual void SetGeneratorRate(float rate) override;
 #ifdef TARGET_PC
@@ -249,6 +257,12 @@ public:
                                   sourceRgba[2] * intensity};
     const CVector3f noOffset = CVector3f::Zero();
     light.SetPosition(noOffset);
+    // Draws without PBR (TEV) take the retail light: GetLight's custom light carries the raw LINT
+    // (up to 256) as its angle constant over 1/d^2, which whites out everything near it. Give it
+    // the same intensity, bounded at the source and at half strength halfway to the outer radius.
+    const float half = outerRadius > 0.f ? 0.5f * outerRadius : 1.f;
+    light.SetAttenuation(1.f, 0.f, 1.f / (half * half));
+    light.SetAngleAttenuation(intensity, 0.f, 0.f);
     light.SetPortHdr(linearColor, noOffset, innerRadius, outerRadius,
                       static_cast< CLight::EPortHdrFalloff >(falloff & 3));
     light.SetPortHdrBoundsRadius(outerRadius);
@@ -386,6 +400,8 @@ private:
   CModVectorElement* x280_VELSources[4];
 #ifdef TARGET_PC
   bool xPortVelFinalizes = false;
+  int xPortShutdownCountdown = -1; // ticks to the delayed shutdown, -1 = not counting
+  int xPortShutdownTotal = 0;
 #endif
   rstl::vector< CParticleGen* > x290_activePartChildren;
   int x2a0_CSSD;
@@ -515,6 +531,8 @@ public:
   bool xPortPemvStarted = false;
   void PortStepPemv();
   const CVector3f& PortEmitterVelocity() const { return xPortPemvDelta; }
+  // PZTS (Remastered ZTES 0): the depth test passes everywhere (static render state compare 1 = ALWAYS)
+  bool PortNoZTest() const { return x28_loadedGenDesc->xPortNoZTest; }
 
 private:
   bool PortHasMover() const;
