@@ -635,7 +635,12 @@ std::string vtx_attr(const ShaderConfig& config, GXAttr attr) {
       return "vec3f(1.0, 0.0, 0.0)"s;
     }
     if (attr == GX_VA_CLR0 || attr == GX_VA_CLR1) {
-      return "vec4f(0.0, 0.0, 0.0, 0.0)"s;
+      // A channel reading a colour the vertices don't carry gets opaque white, as Dolphin's
+      // missing colour value does (0xFFFFFFFF). The game sets only GX_COLOR1's control for its
+      // modulation channel (CGX::FlushState), so GX_ALPHA1 keeps GXInit's GX_SRC_VTX source, and
+      // a zero there made every modulated particle (boost ball glow, coloured inner glows)
+      // invisible.
+      return "vec4f(1.0, 1.0, 1.0, 1.0)"s;
     }
     if (attr >= GX_VA_TEX0 && attr <= GX_VA_TEX7) {
       // A texgen reading a UV set the vertices don't carry (seen with a mod model): draw
@@ -2316,6 +2321,7 @@ auto pbr_func(const ShaderConfig& config, const ShaderInfo& info, std::string& v
       let inv_a = {2};)""",
                          base, config.pbrKind == 36 ? "\n      let inv_c = ubuf.pbr_model_coverage.x;" : "", InvAlphaExpr);
   }
+  // In pieces: MSVC rejects one string literal over 16 KB (adjacent ones join).
   std::string source = fmt::format(R"""(
     // PBR (GX_AURORA_SET_PBR)
     {{
@@ -2513,7 +2519,8 @@ auto pbr_func(const ShaderConfig& config, const ShaderInfo& info, std::string& v
           let pbr_vr = textureSampleLevel(pbr_vol_r, pbr_cube_samp, pbr_vuv, 0.0);
           let pbr_vg = textureSampleLevel(pbr_vol_g, pbr_cube_samp, pbr_vuv, 0.0);
           let pbr_vb = textureSampleLevel(pbr_vol_b, pbr_cube_samp, pbr_vuv, 0.0);
-          let pbr_vn = vec3f(dot(ubuf.pbr_volume[3].xyz, pbr_n), dot(ubuf.pbr_volume[4].xyz, pbr_n),
+)"""
+R"""(          let pbr_vn = vec3f(dot(ubuf.pbr_volume[3].xyz, pbr_n), dot(ubuf.pbr_volume[4].xyz, pbr_n),
                              dot(ubuf.pbr_volume[5].xyz, pbr_n));
           let pbr_vq = clamp(vec3f(dot(pbr_vn, pbr_vr.xyz * 2.0 - 1.0), dot(pbr_vn, pbr_vg.xyz * 2.0 - 1.0),
                                    dot(pbr_vn, pbr_vb.xyz * 2.0 - 1.0)) * 0.5 + 0.5, vec3f(0.0), vec3f(1.0));
@@ -2694,7 +2701,8 @@ auto pbr_func(const ShaderConfig& config, const ShaderInfo& info, std::string& v
       }} else if (ubuf.pbr_light_scale.w < -0.5) {{
           pbr_alpha *= -ubuf.pbr_light_scale.w - 1.0;
       }}
-      // Encoded as Remastered's sRGB swapchain does it: the exact piecewise sRGB curve.
+)"""
+R"""(      // Encoded as Remastered's sRGB swapchain does it: the exact piecewise sRGB curve.
       prev = vec4f(srgb_enc(pbr_tm + pbr_pass), pbr_alpha);
       // A debug view (GXSetPBRDebugView): one input of the shading in place of the result.
       if (ubuf.pbr_layer.w > 0.5) {{
@@ -2962,6 +2970,38 @@ void add_cut_caster(std::string& source, const ShaderConfig& config) {
   source += "\n\n" + vs + "\n\n" + fs + "\n";
 }
 } // namespace
+
+bool apply_dst_alpha_mode(std::string& source, DstAlphaMode mode) noexcept {
+  if (mode == DstAlphaMode::None) {
+    return true;
+  }
+  // fs_main's own return (the draw-id and actor-decal tails replace it and return alpha 1 already).
+  constexpr std::string_view tail = "    return prev;\n}";
+  const size_t at = source.rfind(tail);
+  if (mode == DstAlphaMode::Replace) {
+    if (at == std::string::npos) {
+      return false;
+    }
+    source.replace(at, tail.size(), "    return vec4f(prev.rgb, 1.0);\n}");
+    return true;
+  }
+  constexpr std::string_view head = "fn fs_main(in: VertexOutput) -> @location(0) vec4f {";
+  const size_t headAt = source.find(head);
+  if (at == std::string::npos || headAt == std::string::npos) {
+    Log.error("dual-source dst alpha: no fs_main to rewrite, using plain blending");
+    return false;
+  }
+  source.replace(at, tail.size(), "    return GxDstAlphaOut(vec4f(prev.rgb, 1.0), prev);\n}");
+  source.replace(headAt, head.size(), "fn fs_main(in: VertexOutput) -> GxDstAlphaOut {");
+  source.insert(0, "enable dual_source_blending;\n");
+  source += R"(
+struct GxDstAlphaOut {
+    @location(0) @blend_src(0) color: vec4f,
+    @location(0) @blend_src(1) blend: vec4f,
+};
+)";
+  return true;
+}
 
 bool shader_has_cut_caster(const ShaderConfig& config) noexcept {
   return build_shader_source(config).find("fn fs_shadow(") != std::string::npos;
@@ -3277,14 +3317,21 @@ std::string build_shader_source(const ShaderConfig& config) noexcept {
   std::array<bool, MaxTevRegs> alphaNormalized{};
   for (u32 idx = 0; idx < config.tevStageCount; ++idx) {
     const auto& stage = config.tevStages[idx];
+    const auto color_arg = [&](GXTevColorArg arg) {
+      auto value = color_arg_reg(arg, idx, config, stage);
+      if (tev_color_arg_is_normalized(arg, colorNormalized, alphaNormalized)) {
+        return fmt::format("vec3f({})", value);
+      }
+      return fmt::format("tev_overflow_vec3f({})", value);
+    };
+    const bool alphaCompareColor =
+        stage.alphaOp.op >= GX_TEV_COMP_R8_GT && stage.alphaOp.op <= GX_TEV_COMP_BGR24_EQ;
+    // Packed alpha comparisons use color A/B from before this stage writes its color result.
+    if (alphaCompareColor) {
+      fragmentFn += fmt::format("\n    let tev_cmp_a{0} = {1};\n    let tev_cmp_b{0} = {2};", idx,
+                                color_arg(stage.colorPass.a), color_arg(stage.colorPass.b));
+    }
     {
-      const auto color_arg = [&](GXTevColorArg arg) {
-        auto value = color_arg_reg(arg, idx, config, stage);
-        if (tev_color_arg_is_normalized(arg, colorNormalized, alphaNormalized)) {
-          return fmt::format("vec3f({})", value);
-        }
-        return fmt::format("tev_overflow_vec3f({})", value);
-      };
       std::string_view outReg = regName[stage.colorOp.outReg];
       std::string op = tev_color_op(stage.colorOp.op, tev_bias(stage.colorOp.bias), tev_scale(stage.colorOp.scale),
                                     stage.colorOp.clamp, color_arg(stage.colorPass.a), color_arg(stage.colorPass.b),
@@ -3301,9 +3348,11 @@ std::string build_shader_source(const ShaderConfig& config) noexcept {
         return fmt::format("tev_overflow_f32({})", value);
       };
       std::string_view outReg = regName[stage.alphaOp.outReg];
-      std::string op = tev_alpha_op(stage.alphaOp.op, tev_bias(stage.alphaOp.bias), tev_scale(stage.alphaOp.scale),
-                                    stage.alphaOp.clamp, alpha_arg(stage.alphaPass.a), alpha_arg(stage.alphaPass.b),
-                                    alpha_arg(stage.alphaPass.c), alpha_arg_reg(stage.alphaPass.d, idx, config, stage));
+      std::string op = tev_alpha_op(
+          stage.alphaOp.op, tev_bias(stage.alphaOp.bias), tev_scale(stage.alphaOp.scale), stage.alphaOp.clamp,
+          alphaCompareColor ? fmt::format("tev_cmp_a{}", idx) : alpha_arg(stage.alphaPass.a),
+          alphaCompareColor ? fmt::format("tev_cmp_b{}", idx) : alpha_arg(stage.alphaPass.b),
+          alpha_arg(stage.alphaPass.c), alpha_arg_reg(stage.alphaPass.d, idx, config, stage));
       fragmentFn += fmt::format("\n    {0}.a = {1};", outReg, op);
       alphaNormalized[stage.alphaOp.outReg] = stage.alphaOp.clamp;
     }
@@ -3433,14 +3482,26 @@ std::string build_shader_source(const ShaderConfig& config) noexcept {
     if (tcg.src >= GX_TG_TEX0 && tcg.src <= GX_TG_TEX7) {
       vtxXfrAttrs += fmt::format("\n    var tc{} = vec4f({}, 1.0, 1.0);", i,
                                  vtx_attr(config, GXAttr(GX_VA_TEX0 + (tcg.src - GX_TG_TEX0))));
+    } else if (tcg.src >= GX_TG_TEXCOORD0 && tcg.src <= GX_TG_TEXCOORD6) {
+      vtxXfrAttrs += fmt::format("\n    var tc{} = tc{};", i, (tcg.src - GX_TG_TEXCOORD0));
     } else if (tcg.src == GX_TG_POS) {
       vtxXfrAttrs += fmt::format("\n    var tc{} = vec4f({}, 1.0);", i, vtx_attr(config, GX_VA_POS));
     } else if (tcg.src == GX_TG_NRM) {
       vtxXfrAttrs += fmt::format("\n    var tc{} = vec4f({}, 1.0);", i, vtx_attr(config, GX_VA_NRM));
     } else if (tcg.src == GX_TG_COLOR0) {
-      vtxXfrAttrs += fmt::format("\n    var tc{} = {};", i, vtx_attr(config, GX_VA_CLR0));
+      // Per-pixel lighting has no vertex-stage out.cc0; fall back to the raw vertex colour there.
+      if (config.perPixelLight) {
+        vtxXfrAttrs += fmt::format("\n    var tc{} = {};", i, vtx_attr(config, GX_VA_CLR0));
+      } else {
+        vtxXfrAttrs += fmt::format("\n    var tc{} = out.cc0;", i);
+      }
     } else if (tcg.src == GX_TG_COLOR1) {
-      vtxXfrAttrs += fmt::format("\n    var tc{} = {};", i, vtx_attr(config, GX_VA_CLR1));
+      // Per-pixel lighting has no vertex-stage out.cc1; fall back to the raw vertex colour there.
+      if (config.perPixelLight) {
+        vtxXfrAttrs += fmt::format("\n    var tc{} = {};", i, vtx_attr(config, GX_VA_CLR1));
+      } else {
+        vtxXfrAttrs += fmt::format("\n    var tc{} = out.cc1;", i);
+      }
     } else if (tcg.src == GX_TG_BINRM) {
       vtxXfrAttrs += fmt::format("\n    var tc{} = vec4f({}, 1.0);", i, nbt_slice_local(NbtSlice::B));
     } else if (tcg.src == GX_TG_TANGENT) {
@@ -4854,10 +4915,14 @@ bool shader_overridden(u64 hash) noexcept {
   return std::filesystem::exists(std::filesystem::path{dir} / fmt::format("{:016x}.wgsl", hash), error);
 }
 
-wgpu::ShaderModule build_shader(const ShaderConfig& config) noexcept {
+wgpu::ShaderModule build_shader(const ShaderConfig& config, DstAlphaMode& dstAlphaMode) noexcept {
   ZoneScoped;
-  const auto shaderSource = build_shader_source(config);
-  const auto hash = xxh3_hash(config);
+  auto shaderSource = build_shader_source(config);
+  if (!apply_dst_alpha_mode(shaderSource, dstAlphaMode)) {
+    dstAlphaMode = DstAlphaMode::None;
+  }
+  // A dst alpha mode is its own module (a plain one keeps the config's hash, as dumps and overrides name it).
+  const auto hash = dstAlphaMode == DstAlphaMode::None ? xxh3_hash(config) : xxh3_hash(dstAlphaMode, xxh3_hash(config));
   const auto label = fmt::format("GX Shader {:x}", hash);
   auto& dbg = shader_debug();
   std::string overrideDir;
@@ -4874,7 +4939,11 @@ wgpu::ShaderModule build_shader(const ShaderConfig& config) noexcept {
     if (file) {
       const std::string edited{std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
       std::string error;
-      if (auto module = create_module_checked(edited, label.c_str(), error)) {
+      if (dstAlphaMode == DstAlphaMode::DualSource && edited.find("@blend_src(1)") == std::string::npos) {
+        // The pipeline blends with the second source, which this module wouldn't write.
+        Log.error("wgsl override {:016x} has no @blend_src(1) output, using the generated source",
+                  static_cast<u64>(hash));
+      } else if (auto module = create_module_checked(edited, label.c_str(), error)) {
         Log.info("wgsl override {:016x}", static_cast<u64>(hash));
         return module;
       }

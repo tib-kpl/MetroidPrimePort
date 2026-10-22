@@ -15,6 +15,7 @@
 #include "port_paths.h"
 #include "port_mods.h"
 #include "port_ball_looks.h"
+#include "port_suit_colours.h"
 #include "port_remastered_text.h"
 #include "port_discord.h"
 #include "port_savestate.h"
@@ -314,8 +315,12 @@ void SetVsyncEnabled(bool enabled) {
   // Always re-apply: the stored value can match while the surface still has the
   // previous present mode (e.g. the persisted value applied before the first
   // frame), which made the first toggle a no-op.
-  sVsyncEnabled = enabled;
-  aurora_enable_vsync(enabled);
+  if (sVsyncEnabled != enabled) {
+    sVsyncEnabled = enabled;
+    MarkDirty();
+  }
+  // Turbo keeps vsync off until it ends, as the first-frame apply does.
+  aurora_enable_vsync(enabled && !sTurbo);
 }
 
 bool Fullscreen() { return Loaded(sFullscreen); }
@@ -1039,7 +1044,7 @@ void SetOriginalExperience(bool enabled) {
   VISetFrameBufferScale(EffectiveRenderScale());
   ApplyGraphicsQuality();
   if ((PortMods::CurrentStatus().active != ModsEnabled() ||
-       PortBallLooks::Requested() != GeneratedBallLooks()) &&
+       PortBallLooks::Requested() != GeneratedBallLooks() || PortSuitColours::Pending(!sOriginalExperience)) &&
       !PortMods::Suspended()) {
     PortSaveState::RequestModReload();
   }

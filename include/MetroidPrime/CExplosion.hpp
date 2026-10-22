@@ -8,7 +8,7 @@
 #include "rstl/single_ptr.hpp"
 
 #ifdef TARGET_PC
-#include <vector>
+#include "MetroidPrime/CPortNestedLights.hpp"
 #endif
 
 class CParticleGen;
@@ -16,6 +16,7 @@ class CGenDescription;
 class CElectricDescription;
 
 class CExplosion : public CEffect {
+  friend struct PortEntitySchema; // save-state field schema (platform/include/port_entity_schema.h)
 public:
   CExplosion(const TLockedToken< CGenDescription >& particle, TUniqueId uid, bool active,
              const CEntityInfo& info, const rstl::string& name, const CTransform4f& xf, uint flags,
@@ -45,13 +46,8 @@ public:
 
 #ifdef TARGET_PC
 private:
-  struct PortNestedLightProxy {
-    const CParticleGen* generator; // key only; may be stale after the generator tree updates
-    TUniqueId light;
-  };
-  std::vector< PortNestedLightProxy > xPortNestedLights;
+  CPortNestedLights xPortNestedLights;
   void PortUpdateNestedLights(CStateManager& mgr);
-  void PortDeleteNestedLights(CStateManager& mgr);
 #endif
 
 public:

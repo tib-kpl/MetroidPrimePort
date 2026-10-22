@@ -278,6 +278,12 @@ void DriveGrades(uint32_t mrea, Area& area, uint32_t sender, int state) {
   DriveLights(mrea, area, sender, state);
 }
 
+void DriveCameraWaterItems(uint32_t mrea, Area& area, uint64_t items) {
+  for (uint32_t k = 0; k < kCameraWaterItems; ++k) {
+    DriveGrades(mrea, area, kSenderCameraWaterItem + k, (items >> k & 1) != 0 ? 0 : 1);
+  }
+}
+
 // Every grade and backlight as it starts, then the fluids the player and camera are in already.
 void StartGrades(uint32_t mrea, Area& area, bool playerFluid, bool cameraWater) {
   area.grades.assign(area.file.grades.size(), {});
@@ -318,6 +324,23 @@ void StartGrades(uint32_t mrea, Area& area, bool playerFluid, bool cameraWater) 
   }
   if (cameraWater) {
     DriveGrades(mrea, area, kSenderCameraWater, 0);
+    DriveCameraWaterItems(mrea, area, sItems);
+  }
+}
+
+// A file that loads takes the world volume table from its file (a new one, from another world,
+// starts the camera outside every volume), then hears the volumes entered and left so far.
+void ReplayWorldVolumes(uint32_t mrea, Area& area) {
+  // A file before version 22 has none: an old room of another world still drops this one's.
+  if (!SameWorldVolumes(area.file.worldVolumes, sWorldVolumes)) {
+    sWorldVolumes = area.file.worldVolumes;
+    sWorldVolumeState.Clear();
+    return;
+  }
+  std::vector<WorldVolumeState::Event> events;
+  sWorldVolumeState.Replay(events);
+  for (const WorldVolumeState::Event& e : events) {
+    DriveGrades(mrea, area, kSenderWorldVolume + e.volume, e.state);
   }
 }
 

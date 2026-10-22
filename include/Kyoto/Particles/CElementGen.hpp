@@ -121,10 +121,29 @@ public:
   virtual void SetGlobalScale(const CVector3f& scale) override;
   virtual void SetLocalScale(const CVector3f& scale) override;
   virtual void SetParticleEmission(const bool emission) override;
+#ifdef TARGET_PC
+  // SHTM/SHTT (PSHM/PSHT). ShutdownEffect starts the countdown if the description has one, else
+  // acts at once; PortDoShutdownBehavior(0xff) uses the description's mode.
+  void ShutdownEffect() override;
+  void PortDoShutdownBehavior(u32 mode) override;
+  // SDTR: the countdown's remaining over its total, 1 when none is running.
+  float PortShutdownTimeRemaining() const;
+#endif
   virtual void SetModulationColor(const CColor& col) override;
   virtual void SetGeneratorRate(float rate) override;
+#ifdef TARGET_PC
+  // With INTR/INTT the owner reads back what it set, as Remastered's getters return the external
+  // vars (0x24d880/0x24d8ac); the system's own are PortSystemRotation/PortSystemTranslation.
+  virtual const CTransform4f& GetOrientation() const override {
+    return xPortIntFrame ? xPortExtOrientation : x1d8_orientation;
+  }
+  virtual const CVector3f& GetTranslation() const override {
+    return xPortIntFrame ? xPortExtTranslation : xdc_translation;
+  }
+#else
   virtual const CTransform4f& GetOrientation() const override { return x1d8_orientation; }
   virtual const CVector3f& GetTranslation() const override { return xdc_translation; }
+#endif
   virtual const CTransform4f& GetGlobalOrientation() const override;
   virtual const CVector3f& GetGlobalTranslation() const override;
   virtual const CVector3f& GetGlobalScale() const override { return x100_globalScale; }
@@ -232,26 +251,44 @@ public:
                      globalTranslation.GetZ() + transformed.GetZ());
   }
   static void PortSetNestedHdrCarrier(CLight& light, const float sourceRgba[4], float intensity,
-                                      float innerRadius, float outerRadius) {
+                                      float innerRadius, float outerRadius,
+                                      u8 falloff = CLight::kPHF_Smooth) {
     const float linearColor[3] = {sourceRgba[0] * intensity, sourceRgba[1] * intensity,
                                   sourceRgba[2] * intensity};
     const CVector3f noOffset = CVector3f::Zero();
     light.SetPosition(noOffset);
-    light.SetPortHdr(linearColor, noOffset, innerRadius, outerRadius, CLight::kPHF_Smooth);
+    // Draws without PBR (TEV) take the retail light: GetLight's custom light carries the raw LINT
+    // (up to 256) as its angle constant over 1/d^2, which whites out everything near it. Give it
+    // the same intensity, bounded at the source and at half strength halfway to the outer radius.
+    const float half = outerRadius > 0.f ? 0.5f * outerRadius : 1.f;
+    light.SetAttenuation(1.f, 0.f, 1.f / (half * half));
+    light.SetAngleAttenuation(intensity, 0.f, 0.f);
+    light.SetPortHdr(linearColor, noOffset, innerRadius, outerRadius,
+                      static_cast< CLight::EPortHdrFalloff >(falloff & 3));
     light.SetPortHdrBoundsRadius(outerRadius);
   }
   CVector3f PortSystemOrigin() const { return PortWorldFromLocal(xdc_translation); }
   // Remastered's external translation/rotation/scale (EXTT/EXTR/EXTS, system vars 0xb/0xc/0xa):
   // what the owner hands CParticleGen::SetExternalDataSet 0x27b3d8. Remastered has one translation,
-  // one rotation and no local scale; the port's retail split is folded into them.
-  CVector3f PortExternalTranslation() const { return xe8_globalTranslation + xdc_translation; }
+  // one rotation and no local scale; the port's retail split is folded into them. With INTT/INTR
+  // (PINT/PINR) they are what the owner set, not the system's own (PortApplyIntFrame).
+  CVector3f PortExternalTranslation() const {
+    return xe8_globalTranslation + (xPortIntFrame ? xPortExtTranslation : xdc_translation);
+  }
   CQuaternion PortExternalRotation() const {
+    return xPortIntFrame ? CQuaternion::FromMatrix(xPortExtGlobalOrientation * xPortExtOrientation)
+                         : PortSystemRotation();
+  }
+  // The system translation/rotation (Compile 0x289af0 +0x3c/+0x38): INTT/INTR's when authored,
+  // else the external ones.
+  CVector3f PortSystemTranslation() const { return xe8_globalTranslation + xdc_translation; }
+  CQuaternion PortSystemRotation() const {
     return CQuaternion::FromMatrix(x22c_globalOrientation * x1d8_orientation);
   }
   CVector3f PortExternalScale() const {
-    return CVector3f(x100_globalScale.GetX() * x16c_localScale.GetX(),
-                     x100_globalScale.GetY() * x16c_localScale.GetY(),
-                     x100_globalScale.GetZ() * x16c_localScale.GetZ());
+    return CVector3f(xPortExternalScale.GetX() * x16c_localScale.GetX(),
+                     xPortExternalScale.GetY() * x16c_localScale.GetY(),
+                     xPortExternalScale.GetZ() * x16c_localScale.GetZ());
   }
   // The global frame T_g/Q_g/S_g (desc +0xa8/+0xac/+0xb0, SetupTransformMode 0x2887d8) for the
   // XFMD mode: 2 = zero/identity/external scale, 3 = the external T/Q/S, 4 = the mover's
@@ -284,11 +321,18 @@ public:
   void PortBindVector(const PortGuid& g, const CVector3f& v) {
     xPortVars.BindVector(PortGetVectorHandle(g), v);
   }
+  void PortBindExternal(const SPortExternalVar& v) { xPortVars.BindExternal(v); }
   const CPortVarMemory& PortVars() const { return xPortVars; }
   // The global translation just set is already the presented one (placed from
   // the presented camera on every drawn frame): draw it as is, unblended.
   void PortGlobalIsPresented();
-  void PortCollectNestedLightSnapshots(std::vector< CPortNestedLightSnapshot >& out) const;
+  // The lights of the active nested child generators (PHDR); not this generator's own, which the
+  // host carries as the retail root light.
+  void PortCollectNestedLightSnapshots(std::vector< CPortNestedLightSnapshot >& out) const {
+    PortCollectNestedLightSnapshots(out, false);
+  }
+  void PortCollectNestedLightSnapshots(std::vector< CPortNestedLightSnapshot >& out,
+                                       bool includeSelf) const;
 #endif
 
 private:
@@ -357,6 +401,8 @@ private:
   CModVectorElement* x280_VELSources[4];
 #ifdef TARGET_PC
   bool xPortVelFinalizes = false;
+  int xPortShutdownCountdown = -1; // ticks to the delayed shutdown, -1 = not counting
+  int xPortShutdownTotal = 0;
 #endif
   rstl::vector< CParticleGen* > x290_activePartChildren;
   int x2a0_CSSD;
@@ -486,12 +532,31 @@ public:
   bool xPortPemvStarted = false;
   void PortStepPemv();
   const CVector3f& PortEmitterVelocity() const { return xPortPemvDelta; }
+  // PZTS (Remastered ZTES 0): the depth test passes everywhere (static render state compare 1 = ALWAYS)
+  bool PortNoZTest() const { return x28_loadedGenDesc->xPortNoZTest; }
 
 private:
   bool PortHasMover() const;
   void PortInitMover();
   void PortEvalSys(bool init);
   void PortStepMover();
+  // The system scale: INTS (PINS) evaluated when authored, else the external scale.
+  CVector3f PortSystemScale();
+  void PortSetSystemScale(const CVector3f& scale);
+  // The scale the owner (or parent) set, which EXTS reads; x100_globalScale is the system's.
+  CVector3f xPortExternalScale{1.f, 1.f, 1.f};
+  // The system orientation and translation: INTR (PINR) and INTT (PINT) evaluated, applied as
+  // x22c = identity, x1d8 = INTR and xdc = INTT - xe8 (xe8 stays the owner's), and handed to the
+  // children. force = the external values changed; otherwise only a changed value is applied.
+  void PortApplyIntFrame(bool force);
+  // A PINR or PINT outside XFMD 4 (whose mover overrides them): the setters keep the owner's
+  // orientations and local translation here, which EXTR/EXTT and the getters read.
+  bool xPortIntFrame = false;
+  CTransform4f xPortExtOrientation = CTransform4f::Identity();
+  CTransform4f xPortExtGlobalOrientation = CTransform4f::Identity();
+  CVector3f xPortExtTranslation{0.f, 0.f, 0.f};
+  CVector3f xPortIntEuler{0.f, 0.f, 0.f};
+  CVector3f xPortIntTranslation{0.f, 0.f, 0.f};
   void PortVfxUpdateSystem();
   // XFMD 3/4: the spawn-baked part of the emitter's transform, and moving the live particles from
   // one such frame to the next.

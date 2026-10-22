@@ -132,7 +132,9 @@
   The "Reset aim" action (`reset_aim`, unbound by default, same group) recentres
   the crosshair with pointer aim on, or levels the camera pitch (yaw is kept)
   with it off, so lock-on isn't needed as a reset; `reset_aim_both` (F1 Controls
-  > Options, default off) makes it do both every time. With pointer aim and gyro on, the twin-stick look
+  > Options, default off) makes it do both every time. Under direct aim, a
+  lock-on with no target holds the camera pitch it had instead of levelling
+  the view. With pointer aim and gyro on, the twin-stick look
   stick and keyboard look keys turn the camera as without pointer aim while the
   gyro moves the pointer.
   `gyro_source` is 0 auto, 1 controller, 2 phone. `gyro_sensitivity` (0.1-10,
@@ -140,6 +142,9 @@
   turned. It ignores the mouse sensitivity and invert. An older `gyro_rate` (aim
   pixels per rad/s, which also scaled with the mouse sensitivity) is read once as
   `gyro_rate × mouse_sensitivity` and no longer written.
+  With `gyro_split=1` (F1 "Separate vertical speed"), `gyro_sensitivity_y`
+  (same range, default 2) drives pitch and `gyro_sensitivity` only yaw; under
+  pointer aim it also scales the pointer's vertical travel.
   `gyro_space` picks which turn moves the camera left/right (GyroWiki's terms):
   1 player (default: turning the pad, flat or upright), 2 world (turning about
   the real vertical only), 0 local yaw (the pad's flat turn), 3 local roll (the
@@ -197,11 +202,37 @@
   (`TouchControlsView.onDraw` draws the gameplay controls inside a
   `canvas.saveLayerAlpha`, F1's value through `nativeTouchOpacity` /
   `PortDebug::TouchOpacity`), so it applies at once, and at 100% exactly as
-  before. Side margin, Stick inset and Button inset on the same page
+  before. Each control also has its own opacity in the layout editor (the
+  "Opacity" button cycles the selected control 100, 75, 50, 25, 0%; it nests
+  inside this one): 0% is invisible but still active, handy for a button placed
+  over a HUD icon. The "Hide"/"Show" button removes a control from play; its
+  touches fall through to whatever is under it (aim, stick), and the editor still
+  draws it faintly with an orange outline. "Delete" also takes it out of the
+  editor (saved as hidden = 2, which older versions read as hidden); Add's list
+  offers "Restore <control>" for the deleted controls the current layout has,
+  and Reset all brings them all back. MENU can't be hidden or deleted and stops
+  at 25%. Saved as `id:dx,dy,scale[,opacity[,hidden]]` in the layout string. Side
+  margin, Stick inset and Button inset on the same page
   (`touch_side_margin`, `touch_stick_inset`, `touch_button_inset`) move those
   controls instead, in dp.
+  **Added touch buttons** (Android, Edit layout; #92): with nothing selected the
+  editor's toolbar shows Add, Reset all and Done. Add lists the digital actions
+  (the controls.toml action list without sticks, aim, look, layers and menu
+  rows; `nativeTouchButtonActions`) and puts a round button for the pick at the
+  screen's centre, selected; up to 64. A selected added button has −, +,
+  Opacity, Hide, Action (pick another action) and Delete. It shows the game's
+  icon for a beam or visor action, else a short label, and works in every touch
+  layout (default, classic, twin stick); in play it takes a touch before the face
+  buttons, and it is gone with the controls off and on pointer screens. Reset all
+  removes every added button.
+  Saved in the layout string as `k<slot>:dx,dy,scale,opacity,hidden,<action>`
+  (all six fields, slot 0..63); the native side binds each to touch code
+  64 + slot (`PortInput::BindTouchButtons`, after controls.toml's bindings), so
+  controls.toml can also bind `touch:k<slot>`. A layout without added buttons
+  saves as before.
   **Touch aim** (Android, `touch_aim`, on by default; `touch_aim_speed`, default
-  2.25 aim px per dp): with twin stick on, the right stick is gone and a finger
+  2.25 aim px per dp; with `touch_aim_split=1`, `touch_aim_speed_y`, same range,
+  sets the vertical speed and `touch_aim_speed` only the horizontal): with twin stick on, the right stick is gone and a finger
   dragged on the free screen area turns the view by the distance dragged, like a
   mouse (`AddTouchAim`, drained in `BeginFrameMouse`). Off, the right stick sets
   a turn rate as before. In the GameCube layout (neither mouse aim nor twin
@@ -409,6 +440,22 @@
   the port's generator or the disc changes), and served with mods on or off, under every
   mod. A mod with its own look of a ball, such as the Remastered import (both balls), keeps
   its own; the other looks are still made.
+- Suit colours (Video > Display "Suit colours": pick a suit, then its colours; "Random" picks
+  random colours for every slot, "Apply suit colours" reloads the mods; persisted as `suit_colour_power`, `suit_colour_gravity`,
+  `suit_colour_varia`, `suit_colour_phazon`, `suit_colour_fusion`,
+  `suit_colour_fusion_gravity`, `suit_colour_fusion_varia`, `suit_colour_fusion_phazon`;
+  unset by default; ignored under Original experience). Each value is the suit's slots in
+  order, comma-separated, each `RRGGBB` or `-` for the original: Power and Varia have
+  primary and secondary (`suit_colour_power=2050FF,-`), Gravity and the Fusion suits
+  primary, secondary and accent, the Phazon Suit glow and accent (its body is nearly black
+  and stays as it is). The suit's own diffuse textures are recoloured from your disc (the
+  slot texels' hues move to the picked one, keeping their shading), so cutscenes, the pause
+  screen's doll, the first-person arm and the morph ball (the generated balls above too)
+  all change; Samus's face and the glow, visor and reflection maps stay. Made on Apply and
+  kept in `generated/suit-colours/<suit>/` in the user folder (remade when the picks, the
+  generator or the disc change). A texture a mod brings (the Remastered import) is left as
+  it is. With "Suit-coloured morph balls" off, a suit that borrows another's ball shows
+  that suit's colours on it.
 - `MP_HUD_WIDE=0|1` (Video > Display, persisted as `hud_wide`, default on): widescreen HUD. The
   aspect-matched in-game HUD frames keep each element's shape but move it away
   from the screen centre, so edge elements (scan panels, energy bar, map) reach
@@ -974,6 +1021,9 @@ other `X:\Users\<name>`: `X:\Users\<user>`); the
   while the overlay is visible or relative capture/focus is absent. Mouse mode
   uses immediate yaw/pitch with an approximately ±87° pitch range. Up moves aim
   up by default; `MP_MOUSE_INVERT_X=1` and `MP_MOUSE_INVERT_Y=1` invert either axis.
+  With `mouse_sensitivity_split=1` (F1 "Separate vertical speed"),
+  `mouse_sensitivity_y` (radians per count, default 0.0035) sets the vertical
+  speed and `mouse_sensitivity` only the horizontal; free camera ignores it.
   `MP_MOUSE_SENS` and `mouse_sensitivity` are radians per mouse count; the F1
   slider shows them on the Quake/Source/Apex scale (0.022 degrees a count per
   unit, so the default 0.0035 is about 9.12), with a cm/360 readout for
@@ -1147,6 +1197,9 @@ other `X:\Users\<name>`: `X:\Users\<user>`); the
 - `MP_ROOM_LIQUID=0`: ignore the mods' `.roomliquid` files and draw the
   retail fluid planes (console `roomliquid [on|off]`, which also counts what is
   loaded and drawn).
+- `MP_REMASTERED_EFFECT_ACTORS=0`: ignore the mods' `.roomfx` files (the
+  Remastered effect actors added to an area, and the retail effects they
+  replace), applied when an area loads (console `fx addons` lists them).
 - `MP_ROOM_ENV=0`: ignore the mods' `.roomenv` files (console `roomenv
   [on|off]`, which also counts what is loaded). For tuning:
   `MP_ROOM_ENV_GAIN` (exposure, default 1), `MP_ROOM_ENV_LOD` (a cap on

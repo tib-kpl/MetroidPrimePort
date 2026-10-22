@@ -103,12 +103,29 @@ inline constexpr int kModels = 8;      // the table's models, their looks and th
 // 76: a generator's SVCn/SVRn/SVIn/SVVn tag-1 ILPT is the system's PSLT, which PortEvalSys holds while it runs (PLPT offset 0).
 // 77: recipe 390fc33b (VFX_IceChargeCollision_Lit, the vfx IceChargeCollisionLit feature; the runtime's clustered
 //     light gather from the room lights and the probe from the room env).
-inline constexpr int kEffects = 77;    // port_remastered_effect_import and the particle converters
+// 78: a VFX material's BC5 texture keeps its red and green as (R, G, 0, 1), not grey plus alpha.
+// 79: INTS is the system scale (port-only PINS).
+// 80: INTR and INTT are the system orientation and translation (port-only PINR/PINT); XFMD 5's INTT is POFS.
+// 85: DFOG 1 is the port-only PDFG (the particles are not volumetric-fogged).
+// 88: ZTES/IVSE/ISVF/ITPE, DBIS, SHTM/SHTT/PMOV/PMPV/SDTR as port-only tags; a DVVN sprite without SIZE is 1.0.
+// 89: a PART without ITPE under XFMD 2/5 gets Remastered's default 1 (PITP flagged 0x100).
+// 90: a swoosh generator's SHTM 1 (shutdown destroys the live particles) is the port-only PSHM.
+// 91: ISDT 0 (a shutdown reaches the children as their own ShutdownEffect) is the port-only PISD 0.
+// 92: the GENPs of the rooms' own effect actors, under RoomEffectId (for the .roomfx files).
+// 93: LIT_ 1 on a VFX_*_Lit sprite shader is the vfx ParticleLit feature (AlreadyExposed under IEXP).
+// 94: a ParticleLit material is never AlreadyExposed (the lit perm reads no inverse exposure).
+// 95: BLIT 1 (a lit sprite takes the room's baked probe) is the port-only PBLT 1.
+inline constexpr int kEffects = 95;    // port_remastered_effect_import and the particle converters
 // 20: two rooms matching one area write only the closer match's files, not the later room's.
-inline constexpr int kRooms = 20;      // port_remastered_room: roomenv/, .roomgeo, .roomliquid, water maps
+// 21: roomenv version 22, the world master's hints driven by its camera volumes (the table in every roomenv).
+// 22: a master's InventoryActivator fired by the camera going under water drives its hints (kSenderCameraWaterItem).
+// 23: a hint (grade, backlight, fog) marks whether it is the master's, so the room's own wins (HintOutranks).
+// 24: a room's effect actors of Remastered's own, as <MREA>.roomfx (port_room_effects.h).
+// 25: .roomfx v2 carries each actor's particle variable values (property 3def0de6).
+inline constexpr int kRooms = 25;      // port_remastered_room: roomenv/, .roomgeo, .roomliquid, .roomfx, water maps
 inline constexpr int kRoomModels = 1;  // the rooms' own models and their levels of detail
 inline constexpr int kText = 1;        // port_remastered_text, and the font (port_remastered_font)
-inline constexpr int kHud = 7;         // port_remastered_hud, port_remastered_map
+inline constexpr int kHud = 8;         // port_remastered_hud, port_remastered_map
 inline constexpr int kMovies = 0;      // port_remastered_movie
 inline constexpr int kGallery = 0;     // the gallery pictures (port_gallery)
 }  // namespace ImportStage

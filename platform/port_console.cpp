@@ -7,6 +7,8 @@
 #include "port_ap_world.h"
 #include "port_apclient.h"
 #include "port_beam_doors.h"
+#include "port_disc_replace.h"
+#include "port_disc_verify.h"
 #include "port_log.h"
 #include "port_env.h"
 #include "port_strings.h"
@@ -26,11 +28,13 @@
 #include "port_remastered_text.h"
 #include "port_room_env.h"
 #include "port_room_geo.h"
+#include "port_room_effects.h"
 #include "port_room_liquid.h"
 #include "port_console.h"
 #include "port_controls.h"
 #include "port_mods.h"
 #include "port_savestate.h"
+#include "port_statedump.h"
 #include "port_tracker.h"
 #include "port_viewmodel.h"
 #include "touch_pad.h"
@@ -44,6 +48,8 @@
 #include "Kyoto/Text/CStringTable.hpp"
 #include "Kyoto/Animation/CSkinnedModel.hpp"
 #include "MetroidPrime/CActor.hpp"
+#include "MetroidPrime/CGameCollision.hpp"
+#include <Collision/CRayCastResult.hpp>
 #include "MetroidPrime/CExplosion.hpp"
 #include "Kyoto/Particles/CGenDescription.hpp"
 #include "MetroidPrime/CAnimData.hpp"
@@ -860,6 +866,24 @@ void CmdObj(CStateManager& mgr) {
   Finish();
 }
 
+// Frame command (runs while `hold 1` too): the dump is of the world as the last tick left it.
+void CmdStateDump() {
+  if (sCmd.args.size() < 2) {
+    return Finish("usage: statedump <file>");
+  }
+  CStateManager* mgr = PortDebug::StateManager();
+  if (mgr == nullptr || mgr->GetWorld() == nullptr || mgr->Player() == nullptr) {
+    return Finish("no world");
+  }
+  std::string error;
+  const int count = PortStateDump::Write(*mgr, sCmd.args[1], error);
+  if (count < 0) {
+    return Finish(error.c_str());
+  }
+  Out("%d objects -> %s", count, sCmd.args[1].c_str());
+  Finish();
+}
+
 void CmdSend(CStateManager& mgr) {
   if (sCmd.args.size() < 3) {
     return Finish("usage: send <id> <msg>");
@@ -905,6 +929,18 @@ void CmdGive(CStateManager& mgr, bool take) {
   Finish();
 }
 
+void CmdFusion(CStateManager& mgr) {
+  if (sCmd.args.size() > 1) {
+    unsigned on = 0;
+    if (!ParseUnsigned(sCmd.args[1], on) || on > 1) {
+      return Finish("usage: fusion [0|1]");
+    }
+    PortDebug::WearFusionSuit(mgr, on != 0);
+  }
+  Out("fusion %d", mgr.PlayerState()->GetIsFusionEnabled() ? 1 : 0);
+  Finish();
+}
+
 void CmdItems(CStateManager& mgr) {
   CPlayerState& ps = *mgr.PlayerState();
   for (int i = 0; i < kItemCount; ++i) {
@@ -935,6 +971,73 @@ void CmdTp(CStateManager& mgr) {
     return Finish("usage: tp <x> <y> <z>");
   }
   TeleportPlayer(mgr, CVector3f(x, y, z), mgr.GetPlayer()->GetTransform().GetForward());
+  Finish();
+}
+
+// goto <id> [dist]: stands on the floor dist units (default 6) from an actor, facing it. Saves
+// walking there. Tries the side toward the player first, then around the actor and closer in;
+// a spot needs floor near the actor's height (origins over pits or under the floor don't count)
+// and is preferred with a clear line of sight to it.
+void CmdGoto(CStateManager& mgr) {
+  float dist = 6.f;
+  if (sCmd.args.size() < 2 || (sCmd.args.size() > 2 && !ParseFloat(sCmd.args[2], dist))) {
+    return Finish("usage: goto <id> [dist]");
+  }
+  const CActor* actor = TCastToConstPtr< CActor >(FindObject(mgr, sCmd.args[1]));
+  if (actor == nullptr) {
+    return Finish("no such actor");
+  }
+  const CVector3f target = actor->GetTranslation();
+  CVector3f away = mgr.GetPlayer()->GetTranslation() - target;
+  away.SetZ(0.f);
+  if (!away.CanBeNormalized()) {
+    away = actor->GetTransform().GetForward();
+    away.SetZ(0.f);
+  }
+  if (!away.CanBeNormalized()) {
+    away = CVector3f(0.f, -1.f, 0.f);
+  }
+  away = away.AsNormalized();
+  const CMaterialFilter solid = CMaterialFilter::MakeIncludeExclude(CMaterialList(kMT_Solid), CMaterialList());
+  const CVector3f down(0.f, 0.f, -1.f);
+  const CVector3f eye(0.f, 0.f, 1.6f);
+  // The actor's own centre is usually above its origin; aim the sight line there.
+  const CVector3f aim = target + CVector3f(0.f, 0.f, 1.f);
+  bool found = false;
+  bool clear = false;
+  CVector3f pos;
+  for (const float scale : {1.f, 0.5f}) {
+    for (int i = 0; i < 8 && !clear; ++i) {
+      const float a = static_cast<float>((i + 1) / 2) * (i % 2 != 0 ? 0.785398f : -0.785398f);
+      const CVector3f dir(away.GetX() * std::cos(a) - away.GetY() * std::sin(a),
+                          away.GetX() * std::sin(a) + away.GetY() * std::cos(a), 0.f);
+      const CVector3f top = target + dir * (dist * scale) + CVector3f(0.f, 0.f, 3.f);
+      const CRayCastResult floor = CGameCollision::RayStaticIntersection(mgr, top, down, 15.f, solid);
+      if (!floor.IsValid()) {
+        continue;
+      }
+      // A metre up: the ray can stop on a solid face a little under the surface the player stands
+      // on (Main Plaza's catwalk, 0.43 lower), and a player placed inside it is pushed off the edge.
+      const CVector3f stand = top + down * floor.GetTime() + CVector3f(0.f, 0.f, 1.f);
+      const CVector3f sight = aim - (stand + eye);
+      const bool see = !sight.CanBeNormalized() ||
+                       CGameCollision::RayStaticIntersectionBool(mgr, stand + eye, sight.AsNormalized(),
+                                                                 sight.Magnitude(), solid);
+      if (!found || (see && !clear)) {
+        pos = stand;
+        found = true;
+        clear = see;
+      }
+    }
+    if (clear) {
+      break;
+    }
+  }
+  if (!found) {
+    return Finish("no floor near that actor (tp to it by hand)");
+  }
+  TeleportPlayer(mgr, pos, target - pos);
+  Out("at %.2f %.2f %.2f%s", pos.GetX(), pos.GetY(), pos.GetZ(), clear ? "" : " (no clear sight of it)");
   Finish();
 }
 
@@ -1055,6 +1158,25 @@ void CmdFxQuery() {
     }
   } else if (sub == "stats") {
     PortFx::Stats(emit);
+  } else if (sub == "addons") {
+    // The current area's Remastered effect actors (port_room_effects.h) and whether each lives.
+    const CStateManager* const mgr = PortDebug::StateManager();
+    const CWorld* const world = mgr != nullptr ? mgr->GetWorld() : nullptr;
+    if (world == nullptr || world->GetCurrentAreaId() == kInvalidAreaId) {
+      return Finish("no area");
+    }
+    const uint32_t mrea = static_cast< uint32_t >(world->GetAreaAlways(world->GetCurrentAreaId()).GetAreaAssetId());
+    const std::vector< PortRoomEffects::Spawned > list = PortRoomEffects::List(mrea);
+    Out("fx addons %s: area %08X, %zu added, %zu retail effect(s) left out", PortRoomEffects::Enabled() ? "on" : "off",
+        mrea, list.size(), PortRoomEffects::SkippedCount(mrea));
+    for (const PortRoomEffects::Spawned& s : list) {
+      TUniqueId uid;
+      uid.value = s.uid;
+      const CEntity* const ent = mgr->GetObjectById(uid);
+      const bool alive = ent != nullptr && ent->GetEditorId().Value() == (s.eid & 0x3FFFFFF);
+      Out("  %08X u%u PART %08X %s %s, %zu variable(s) set", s.eid, unsigned(s.uid), s.part,
+          !alive ? "gone" : ent->GetActive() ? "active" : "inactive", s.name.c_str(), s.vars);
+    }
   } else if (sub == "mute" || sub == "solo") {
     const std::string arg = sCmd.args.size() > 2 ? Lower(sCmd.args[2]) : "";
     if (arg == "clear" || (sub == "mute" && arg.empty())) {
@@ -1084,7 +1206,7 @@ void CmdFxQuery() {
     PortFx::gTimeScale = v;
     Out("particle time scale %g (the world keeps its own time)", v);
   } else {
-    return Finish("usage: fx <PART id>|off|list|tree|stats|mute|solo|timescale");
+    return Finish("usage: fx <PART id>|off|list|tree|stats|addons|mute|solo|timescale");
   }
   Finish();
 }
@@ -3104,6 +3226,54 @@ void CmdLiveSplit() {
   Finish();
 }
 
+void CmdDisc() {
+  const std::string action = sCmd.args.size() > 1 ? Lower(sCmd.args[1]) : "";
+  const std::string what = sCmd.args.size() > 2 ? Lower(sCmd.args[2]) : "";
+  if (action == "verify" && what.empty()) {
+    if (!PortDiscVerify::Start()) {
+      return Finish("a disc check is already running, or no disc is mounted");
+    }
+    Out("disc verify: started");
+    return Finish();
+  }
+  if (action == "verify" && what == "cancel") {
+    PortDiscVerify::Cancel();
+    return Finish();
+  }
+  if (action == "replace" && sCmd.args.size() > 2) {
+    std::string path = sCmd.args[2];
+    for (size_t i = 3; i < sCmd.args.size(); ++i) {
+      path += " " + sCmd.args[i];
+    }
+    std::error_code ec;
+    if (const auto absolute = std::filesystem::absolute(path, ec); !ec) {
+      path = absolute.string();
+    }
+    std::string revision;
+    if (const std::string bad = PortDiscReplace::CheckImage(path, &revision); !bad.empty()) {
+      return Finish(("not replaced: " + bad).c_str());
+    }
+    PortDiscReplace::Adopt(path, revision);
+    Out("disc replace: %s (%s); restart the game to use it", path.c_str(), revision.c_str());
+    return Finish();
+  }
+  if (action != "verify" || what != "status") {
+    return Finish("usage: disc verify | disc verify status | disc verify cancel | disc replace <path>");
+  }
+  const PortDiscVerify::Result r = PortDiscVerify::Snapshot();
+  static const char* const kStates[] = {"idle", "running", "done", "cancelled", "error"};
+  Out("disc verify: %s", kStates[static_cast<int>(r.state)]);
+  if (r.state == PortDiscVerify::State::Running) {
+    Out("progress: %.1f%% (%llu of %llu MiB)", r.Progress() * 100.0, static_cast<unsigned long long>(r.bytesDone >> 20),
+        static_cast<unsigned long long>(r.bytesTotal >> 20));
+  } else if (r.state != PortDiscVerify::State::Idle) {
+    Out("%s", PortDiscVerify::Summary(r).c_str());
+    Out("result: %s", r.Ok() ? "ok" : (r.state == PortDiscVerify::State::Done ? "damaged" : "none"));
+    Out("seconds: %.1f", r.seconds);
+  }
+  Finish();
+}
+
 void CmdDiscord() {
   const std::string action = sCmd.args.size() > 1 ? Lower(sCmd.args[1]) : "status";
   if (action == "0" || action == "1") {
@@ -3491,7 +3661,7 @@ struct CommandSpec {
 // fx's queries, which read the particle debug state rather than the world.
 bool FxIsQuery() {
   if (sCmd.args.size() > 1) {
-    static const char* const queries[] = {"list", "tree", "stats", "mute", "solo", "timescale"};
+    static const char* const queries[] = {"list", "tree", "stats", "addons", "mute", "solo", "timescale"};
     for (const char* q : queries) {
       if (Lower(sCmd.args[1]) == q) {
         return true;
@@ -3513,12 +3683,14 @@ const CommandSpec kCommands[] = {
     {"room", nullptr, [](CStateManager&) { CmdRoom(); },
      "room <area>                teleport to a loaded area's spawn point (the F1 room list)"},
     {"tp", nullptr, CmdTp, "tp <x> <y> <z>             move the player"},
+    {"goto", nullptr, CmdGoto, "goto <id> [dist]           stand dist (6) short of an actor, facing it"},
     {"lift", nullptr, CmdLift, "lift <id> <dz>             move an actor up (dz > 0) or down"},
     {"fx", CmdFxQuery, CmdFx,
      "fx <PART id>|off [dist] [scale] [loop]  play one particle effect in front of the camera; prints its #id\n"
      "fx list [filter]           live root generators: kind, asset, position, particles, flags, native VFX props\n"
      "fx tree <#id>              one generator and its children, recursively\n"
      "fx stats                   live generators, vfx quads/triangles and CPU ms (update, render) last frame\n"
+     "fx addons                  this area's Remastered effect actors a mod added, and the retail ones they replace\n"
      "fx mute <asset>|clear|list  hide a PART/SWHC/ELSC asset (it still updates); fx solo <asset|#id> hides the rest\n"
      "fx timescale <s>           particle time scale (0 freezes particles only; 1 = off)",
      FxIsQuery},
@@ -3526,12 +3698,15 @@ const CommandSpec kCommands[] = {
     {"look", nullptr, CmdLook, ""},
     {"objs", nullptr, CmdObjs, "objs [filter]              objects whose class or name contains filter"},
     {"obj", nullptr, CmdObj, "obj <id>                   one object: state, health, animation, connections"},
+    {"statedump", CmdStateDump, nullptr,
+     "statedump <file>           every live object's state as JSON lines (tools/statecheck.py)"},
     {"send", nullptr, CmdSend,
      "send <id> <msg>            deliver a script message (name or number; relays fire on SetToZero)"},
     {"give", nullptr, [](CStateManager& mgr) { CmdGive(mgr, false); },
      "give <item> [n]            add an item (name or number, see `items`)"},
     {"take", nullptr, [](CStateManager& mgr) { CmdGive(mgr, true); },
      "take <item> [n]            remove item capacity (drops a suit)"},
+    {"fusion", nullptr, CmdFusion, "fusion [0|1]               wear the Fusion Suit (no unlock needed)"},
     {"items", nullptr, CmdItems, "items                      the player's inventory"},
     {"visor", nullptr, CmdVisor,
      "visor <combat|xray|scan|thermal|0-3>, beam <power|ice|wave|plasma|0-3>  switch like the touch wheels"},
@@ -3722,6 +3897,8 @@ const CommandSpec kCommands[] = {
     {"igt", CmdIgt, nullptr, ""},
     {"livesplit", CmdLiveSplit, nullptr,
      "livesplit <0|1> | addr <host:port> | send <command> | status   LiveSplit Server client"},
+    {"disc", CmdDisc, nullptr,
+     "disc verify [status|cancel]   check the whole disc image against Redump, in the background; status prints progress or the result"},
     {"discord", CmdDiscord, nullptr, "discord <0|1> | status   Discord Rich Presence"},
     {"gci", CmdGci, nullptr,
      "gci list | share on|off | emulator <folder|auto> | import <path> | export <dir or .raw> | dolphin import|export   memory card transfer"},

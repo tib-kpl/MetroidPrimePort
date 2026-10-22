@@ -1451,6 +1451,12 @@ void CMain::EnsureWorldPakReady(CAssetId id) {
         ++cur;
       }
       if (notInNameList) {
+#ifdef TARGET_PC
+        // Port: the stash frees the PAK's table, which the loader's one-entry
+        // cache may point into (RemovePakFile clears it for the same reason);
+        // a later lookup of that id would read the freed table.
+        resLoader.ClearCache();
+#endif
         pakFile->sub_8036742c();
       } else {
         pakFile->EnsureWorldPakReady();
@@ -1477,6 +1483,11 @@ void CMain::RefreshGameState() {
   u64 cardSerial = gpGameState->CardSerial();
   rstl::vector< uchar > backupBuf = gpGameState->BackupBuf();
   CGameOptions gameOptions = gpGameState->GameOptions();
+#ifdef TARGET_PC
+  uint backupBeamDoors[PortBeamDoors::kWords];
+  for (int i = 0; i < PortBeamDoors::kWords; ++i)
+    backupBeamDoors[i] = gpGameState->PortBackupBeamDoorBits()[i];
+#endif
   x128_gameGlobalObjects->GameState() = nullptr;
   gpGameState = nullptr;
   {
@@ -1484,6 +1495,13 @@ void CMain::RefreshGameState() {
     x128_gameGlobalObjects->GameState() = rs_new CGameState(stream, saveIdx);
   }
   gpGameState = x128_gameGlobalObjects->GameState().get();
+#ifdef TARGET_PC
+  // The open beam doorways aren't in the buffer (#174: a continue after death
+  // lost them all): back to the ones of the save it holds.
+  for (int i = 0; i < PortBeamDoors::kWords; ++i)
+    gpGameState->PortBeamDoorBits()[i] = backupBeamDoors[i];
+  gpGameState->PortBackUpBeamDoors();
+#endif
   gpGameState->SystemState() = systemState;
   gpGameState->GameOptions() = gameOptions;
   gpGameState->GameOptions().EnsureOptions();

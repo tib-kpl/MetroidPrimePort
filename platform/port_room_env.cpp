@@ -82,6 +82,10 @@ int sVolFog = -1;
 bool sFogRegions = true;
 bool sPlayerFluid = false;
 bool sCameraWater = false;
+uint64_t sItems = 0;
+std::vector<WorldVolume> sWorldVolumes;
+WorldVolumeState sWorldVolumeState;
+float sCameraPoint[3] = {};
 // LUTs handed to Aurora already; they are kept there for the run.
 std::unordered_set<uint32_t> sGradeLuts;
 // Model draws come in runs at one position; the last answer is kept until the frame or a
@@ -855,6 +859,18 @@ float GlowGain(bool frameExposed) {
   return std::isfinite(gain) && gain > 0.f ? gain : kFallback;
 }
 
+float ParticleLightGain(bool inverseExposed) {
+  // MP_PARTICLE_LIGHT_SCALE multiplies it (debug).
+  static const float sScale = std::max(port::EnvFloat("MP_PARTICLE_LIGHT_SCALE", 1.f), 0.f);
+  const float invPi = sScale / 3.14159265f;
+  const float exposure = Enabled() && RoomExposed() ? sFrame.exposure : 0.f;
+  if (!(exposure > 0.f) || !std::isfinite(exposure)) {
+    return invPi;
+  }
+  // GlowScale is E / E_static, or 1 where the static exposure is off (the frame's stands in).
+  return (inverseExposed ? GlowScale() : exposure) * LightGain() * invPi;
+}
+
 float UnlitGain(bool frameExposed) {
   // Outside an exposed room Remastered's static default (exposure 1) applies: nothing to add.
   if (!sFrame.hasTone || !Enabled() || !RoomExposed()) {
@@ -933,8 +949,9 @@ bool ColorGrade(LayerActive layerActive, void* context, uint32_t& a, uint32_t& b
     sGradeFade.started = false;
     return false;
   }
-  // The room's grade, as CAreaPrioritizedGameHintManager picks it: of the requested ones
-  // whose layer is active, the highest priority, then the one turned on last. A room
+  // The room's grade, as CAreaPrioritizedGameHintManager picks it (HintOutranks): of the
+  // requested ones whose layer is active, the room's own before the master's, then the
+  // highest priority, then the one turned on last. A room
   // without a file keeps whatever the frame had, as the doors between two rooms do.
   const auto view = sAreas.find(sViewArea);
   if (view != sAreas.end() && view->second.hasFile) {
@@ -950,8 +967,7 @@ bool ColorGrade(LayerActive layerActive, void* context, uint32_t& a, uint32_t& b
       if (!on || (grade.layer >= 0 && layerActive != nullptr && !layerActive(grade.layer, context))) {
         continue;
       }
-      if (pick == nullptr || grade.priority > pick->priority ||
-          (grade.priority == pick->priority && order >= pickOrder)) {
+      if (HintOutranks(grade, order, pick, pickOrder)) {
         pick = &grade;
         pickIndex = int(i);
         pickOrder = order;
@@ -1039,8 +1055,7 @@ void UpdateBacklight(LayerActive layerActive, void* context) {
   }
   const Area& area = view->second;
   const File& file = area.file;
-  // As CAreaPrioritizedGameHintManager picks (see ColorGrade): of the requested hints whose
-  // layer is active, the highest priority, then the one turned on last.
+  // As CAreaPrioritizedGameHintManager picks (HintOutranks, see ColorGrade).
   const BacklightHint* pick = nullptr;
   int pickIndex = -1;
   uint64_t pickOrder = 0;
@@ -1051,7 +1066,7 @@ void UpdateBacklight(LayerActive layerActive, void* context) {
     if (!on || (hint.layer >= 0 && layerActive != nullptr && !layerActive(hint.layer, context))) {
       continue;
     }
-    if (pick == nullptr || hint.priority > pick->priority || (hint.priority == pick->priority && order >= pickOrder)) {
+    if (HintOutranks(hint, order, pick, pickOrder)) {
       pick = &hint;
       pickIndex = int(i);
       pickOrder = order;
@@ -1485,8 +1500,7 @@ void UpdateFog(LayerActive layerActive, void* context, float dt) {
     StepTransitions(area, dt);
     StepLights(mrea, area, dt);
   }
-  // As the backlight picks: of the requested hints whose layer is active, the highest
-  // priority, then the one turned on last. A room without a file has no hints.
+  // As the backlight picks (HintOutranks). A room without a file has no hints.
   const FogHint* pick = nullptr;
   int pickIndex = -1;
   const auto view = sAreas.find(sViewArea);
@@ -1501,7 +1515,7 @@ void UpdateFog(LayerActive layerActive, void* context, float dt) {
       if (!on || (hint.layer >= 0 && layerActive != nullptr && !layerActive(hint.layer, context))) {
         continue;
       }
-      if (pick == nullptr || hint.priority > pick->priority || (hint.priority == pick->priority && order >= pickOrder)) {
+      if (HintOutranks(hint, order, pick, pickOrder)) {
         pick = &hint;
         pickIndex = int(i);
         pickOrder = order;
@@ -1656,9 +1670,9 @@ std::string FogInfo() {
     const bool on = i < area.fogs.size() ? area.fogs[i].on : hint.on;
     const bool shown = sFog.hinted && sViewArea == sFog.area && int(i) == sFog.index;
     std::snprintf(line, sizeof(line),
-                  "%08X fog %zu: %s priority %d layer %d fade %g/%g range %g decay %g links %zu%s\n", sViewArea, i,
-                  on ? "on " : "off", int(hint.priority), int(hint.layer), hint.fadeIn, hint.fadeOut, hint.range,
-                  hint.decay, hint.links.size(), shown ? " (shown)" : "");
+                  "%08X fog %zu: %s priority %d%s layer %d fade %g/%g range %g decay %g links %zu%s\n", sViewArea, i,
+                  on ? "on " : "off", int(hint.priority), hint.master ? " master" : "", int(hint.layer), hint.fadeIn,
+                  hint.fadeOut, hint.range, hint.decay, hint.links.size(), shown ? " (shown)" : "");
     out += line;
   }
   std::vector<const FogRegion*> on;
@@ -1688,6 +1702,20 @@ std::string FogInfo() {
   }
   std::snprintf(line, sizeof(line), "regions on in loaded areas: %zu\n", on.size());
   out += line;
+  if (!sWorldVolumes.empty()) {
+    std::snprintf(line, sizeof(line), "world volumes: %zu, camera %.1f %.1f %.1f\n", sWorldVolumes.size(),
+                  sCameraPoint[0], sCameraPoint[1], sCameraPoint[2]);
+    out += line;
+  }
+  for (size_t i = 0; i < sWorldVolumes.size(); ++i) {
+    const WorldVolume& v = sWorldVolumes[i];
+    const bool inside = i < sWorldVolumeState.inside.size() && sWorldVolumeState.inside[i] != 0;
+    const uint64_t entered = i < sWorldVolumeState.entered.size() ? sWorldVolumeState.entered[i] : 0;
+    std::snprintf(line, sizeof(line), "world volume %zu: %s centre %.1f %.1f %.1f half %.1f %.1f %.1f entered #%llu\n",
+                  i, inside ? "inside " : "outside", v.centre[0], v.centre[1], v.centre[2], v.half[0], v.half[1],
+                  v.half[2], (unsigned long long)entered);
+    out += line;
+  }
   return out;
 }
 
@@ -1716,7 +1744,8 @@ void SendScriptState(uint32_t sender, int state) {
   }
 }
 
-void SetFluid(bool player, bool camera) {
+void SetFluid(bool player, bool camera, uint64_t items) {
+  sItems = items;
   // State 0 as the fluid is entered, 1 as it is left (the writer's convention).
   if (player != sPlayerFluid) {
     sPlayerFluid = player;
@@ -1728,6 +1757,9 @@ void SetFluid(bool player, bool camera) {
     sCameraWater = camera;
     for (auto& [mrea, area] : sAreas) {
       DriveGrades(mrea, area, kSenderCameraWater, camera ? 0 : 1);
+      if (camera) {
+        DriveCameraWaterItems(mrea, area, items);
+      }
       // The hints hear the camera's fluid state in every loaded area (once their file is in).
       if (area.hasFile && area.hints.Set(area.file.fluidHints, camera)) {
         area.hintSnap = true;
@@ -1736,9 +1768,30 @@ void SetFluid(bool player, bool camera) {
   }
 }
 
+void SetCameraPoint(const float pos[3]) {
+  if (!std::isfinite(pos[0]) || !std::isfinite(pos[1]) || !std::isfinite(pos[2])) {
+    return;
+  }
+  std::memcpy(sCameraPoint, pos, sizeof(sCameraPoint));
+  static std::vector<WorldVolumeState::Event> events;
+  events.clear();
+  sWorldVolumeState.Update(sWorldVolumes, pos, events);
+  for (const WorldVolumeState::Event& e : events) {
+    PortLog::Write("room env: camera %s world volume %u at %.1f %.1f %.1f\n", e.state == 0 ? "entered" : "left",
+                   e.volume, pos[0], pos[1], pos[2]);
+    for (auto& [mrea, area] : sAreas) {
+      // One still loading hears the state so far when it finishes (ReplayWorldVolumes).
+      if (!area.pending.valid()) {
+        DriveGrades(mrea, area, kSenderWorldVolume + e.volume, e.state);
+      }
+    }
+  }
+}
+
 void ResetGrades() {
   sPlayerFluid = false;
   sCameraWater = false;
+  sWorldVolumeState.Clear();
   sGradeIndex = -1;
   sBacklight = {};
   sFog = {};
@@ -1797,9 +1850,10 @@ std::string GradeInfo() {
       const BacklightHint& hint = file.backlights[i];
       const bool on = i < area.backlights.size() ? area.backlights[i].on : hint.on;
       const bool shown = sBacklight.hinted && mrea == sBacklight.area && int(i) == sBacklight.index;
-      std::snprintf(line, sizeof(line), "%08X backlight %zu: %s priority %d layer %d fade %g/%g top %g back %g links %zu%s\n",
-                    mrea, i, on ? "on " : "off", int(hint.priority), int(hint.layer), hint.fadeIn, hint.fadeOut,
-                    hint.top, hint.back, hint.links.size(), shown ? " (shown)" : "");
+      std::snprintf(line, sizeof(line),
+                    "%08X backlight %zu: %s priority %d%s layer %d fade %g/%g top %g back %g links %zu%s\n", mrea, i,
+                    on ? "on " : "off", int(hint.priority), hint.master ? " master" : "", int(hint.layer), hint.fadeIn,
+                    hint.fadeOut, hint.top, hint.back, hint.links.size(), shown ? " (shown)" : "");
       out += line;
     }
     if (file.grades.empty()) {
@@ -1812,9 +1866,9 @@ std::string GradeInfo() {
       const Grade& grade = file.grades[i];
       const bool on = i < area.grades.size() ? area.grades[i].on : grade.on;
       const bool shown = mrea == sGradeArea && int(i) == sGradeIndex;
-      std::snprintf(line, sizeof(line), "  %zu: %s priority %d layer %d fade %g/%g links %zu lut %08X%s\n", i,
-                    on ? "on " : "off", int(grade.priority), int(grade.layer), grade.fadeIn, grade.fadeOut,
-                    grade.links.size(), grade.id, shown ? " (shown)" : "");
+      std::snprintf(line, sizeof(line), "  %zu: %s priority %d%s layer %d fade %g/%g links %zu lut %08X%s\n", i,
+                    on ? "on " : "off", int(grade.priority), grade.master ? " master" : "", int(grade.layer),
+                    grade.fadeIn, grade.fadeOut, grade.links.size(), grade.id, shown ? " (shown)" : "");
       out += line;
       for (const GradeLink& link : grade.links) {
         std::snprintf(line, sizeof(line), "     by %08X state %d action %d\n", link.sender, int(link.state),
@@ -2060,6 +2114,8 @@ void Reset() {
   sGradeIndex = -1;
   sBacklight = {};
   sFog = {};
+  sWorldVolumes.clear();
+  sWorldVolumeState.Clear();
 }
 
 void SetLoadedAreas(const uint32_t* mreas, size_t count) {

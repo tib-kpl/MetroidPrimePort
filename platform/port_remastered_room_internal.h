@@ -575,6 +575,7 @@ constexpr uint32_t kActionDeactivate = 0xdd169ff3;
 constexpr uint32_t kActionIncrement = 0xd5883f10;
 constexpr uint32_t kActionDecrement = 0x767a0969;
 constexpr uint32_t kActionToggleActive = 0xcdeb03ba;
+constexpr uint32_t kActionAction = 0xd5be6778;  // Action (19): every Timer/Trigger -> SpecialFunction link
 // What an Entity is told to do with itself and every component it holds.
 constexpr uint32_t kActionEntityActivate = 0x41435456;    // 'ACTV'
 constexpr uint32_t kActionEntityDeactivate = 0x49435456;  // 'ICTV'
@@ -622,6 +623,12 @@ constexpr uint32_t kActionHintOff = 0x332214ff;  // OffRequest
 // AcceptScriptMsg ignores every action but these, QueryHintState and (de)activation.
 constexpr uint32_t kActionHintRemove = 0x3580a822;
 constexpr uint32_t kActionHintDelete = 0x5844454c;  // 'DLEX'
+// What a VolumetricFogHint takes instead (CVolumetricFogHintGOC::AcceptScriptMsg 0x6b8c04):
+// AddHintRequest, RemoveHintRequest, and ReallyRemoveHint (as DLEX); also QueryHintState
+// (0x20c4c0f9) and (de)activation.
+constexpr uint32_t kActionFogHintOn = 0xb1766945;
+constexpr uint32_t kActionFogHintOff = 0xd8d934c6;
+constexpr uint32_t kActionFogHintRemove = 0x1c67758f;
 // What a VolumetricFogRegionTransition takes (its AcceptScriptMsg): Start, ResetAndStart,
 // Stop, DLEX and (de)activation, the entity's and the component's own.
 constexpr uint32_t kActionTransitionStart = 0x6c4d551c;
@@ -637,6 +644,14 @@ constexpr uint32_t kEventCameraWaterIn = 0x99655851;
 constexpr uint32_t kEventCameraWaterOut = 0x5b16cc17;
 constexpr uint32_t kEventCounterUp = 0x40e54906;
 constexpr uint32_t kEventCounterDown = 0xc163beb5;
+// SpecialFunctionMP1: the function (5, InventoryActivator) and its item (an EItemType); on
+// Action it sends Zero if the player has the item, MaxReached if not.
+constexpr uint32_t kSpecialFunction = 0x71337f4f;
+constexpr uint32_t kPropSpecialFunctionType = 0x0d86d1bf;
+constexpr uint32_t kPropSpecialFunctionItem = 0x04fc7524;
+constexpr uint32_t kSpecialFunctionInventoryActivator = 5;
+constexpr uint32_t kEventSpecialFunctionZero = 0x58951d90;
+constexpr uint32_t kEventSpecialFunctionMaxReached = 0x52583665;
 constexpr double kMatchTolerance = 0.02;
 constexpr double kMatchNear = 2.0;
 // A model carried over from retail, in a room's byte order (EffectRetailId); the last
@@ -680,6 +695,7 @@ struct SceneryScripts {
   std::map<int, std::string> unresolvedHow;              // a grade hint's: sender type/event/action
   std::map<std::string, std::pair<size_t, std::set<int>>> missStats;  // MP_REMASTERED_MISS: class -> connections, entities
   std::map<int, const ScriptObject*> platform;           // by entity: the platform carrying it
+  std::map<int, size_t> retail;                           // by entity: the retail object it matched
   size_t entities = 0, matched = 0;
   // Remastered's own objects in between (camera volumes, counters, relays) and the
   // entities they show and hide, by group number.
@@ -701,10 +717,23 @@ struct SceneryScripts {
   std::map<int, std::vector<Driver>> drivers;
 };
 
+// Remastered's own particle effect actors (port_remastered_room_effects.cpp).
+constexpr uint32_t kEffectMP1 = 0xb421cdcb;
+// The room's EffectMP1 actors the disc has no object for, as "<MREA id>.roomfx"
+// (port_room_effects.h); a line for the log, empty when there is nothing to say.
+std::string WriteRoomEffects(const std::string& name, const Room& room, uint32_t mrea, const Area& area,
+                             const SceneryScripts& scripts, const RoomIO& io);
+// The entities (their Entity components) that some connection in the room reaches.
+std::set<int> ConnectedEntities(const Room& room);
+
 bool SingleDriverStart(const std::vector<PortRoomGeo::Link>& starts, PortRoomGeo::Link& first);
 int DriverSlot(const std::vector<PortRemastered::ModelMaterial>& materials, const SceneryScripts::Driver& d);
 std::map<int, std::vector<SceneryScripts::Driver>> FindMaterialDrivers(const Room& room, std::set<int>& driverStarts);
 SceneryScripts MatchScripts(const Room& room, const Area& area);
+uint32_t FluidSender(const Room& room, const std::map<int, std::vector<const Connection*>>& incoming,
+                     const Connection& c, int& state);
+void CameraBox(const Vec3& pos, const Vec3& rot, const Vec3& scale, float centre[3], float half[3], float axes[9]);
+SceneryScripts MasterScripts(const Room& room, const Vec3& shift, std::vector<PortRoomEnv::WorldVolume>& volumes);
 
 }  // namespace RoomDetail
 }  // namespace PortRemastered

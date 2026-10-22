@@ -282,6 +282,9 @@ void StoreSetting(T& setting, const V& value) {
 void LoadSettings();
 void SaveSettings();
 std::string SettingsText();
+// Records which settings the MP_* overrides changed from fileText (SettingsText
+// before they were applied), so SaveSettings keeps the file's values for them.
+void NoteEnvOverrides(const std::string& fileText);
 std::string LoggedSettingValue(const std::string& key, const std::string& value);
 void LogSettingChanges(const std::string& text);
 extern std::map< std::string, std::string > sLoggedSettings;
@@ -438,6 +441,7 @@ void DrawCheats();
 void DrawFreeCam();
 void DrawRendering();
 void DrawLogSection();
+void DrawDiscCheckSection();
 void DrawDebugTab();
 void DrawPerformanceTab();
 void DrawLanguageSection();

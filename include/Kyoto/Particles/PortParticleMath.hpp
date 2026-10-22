@@ -5,6 +5,7 @@
 // CCEGradient::GetValue 0x2c8d48 and CVERandomVector::GetValue 0x29e954.
 #ifdef TARGET_PC
 
+#include <bit>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -13,6 +14,32 @@
 #include "Kyoto/Math/CVector3f.hpp"
 
 namespace PortParticleMath {
+
+// Remastered's particle depth bias (DBIS): CParticleSceneNode::ConstructDepthBias 0x2b1004 ->
+// CScopedGraphicsDepthBias::CalculateProjMatrixDepthBias 0x22a604 + ctor 0x22a0ac. `bias` world
+// units (negative = toward the camera) along the view depth `depth` of the bounds centre become a
+// constant NDC depth shift, applied by replacing the projection's m22 with m22 - shift.
+// m22, m23, m32, m33 are the GX/retro projection elements (clip z = m22 * -d + m23, w = m33 - m32 * d);
+// ComputeNdcDepthFromRetroDepth 0x12e234 is (m23 - m22 * d) / (m33 - m32 * d).
+inline float DepthBiasedProjM22(float m22, float m23, float m32, float m33, float depth, float bias) {
+  constexpr float kEps = 1.1920929e-07f;
+  const auto ndc = [&](float d) {
+    float w = m33 - m32 * d;
+    if (w - kEps < 0.f) {
+      w = kEps;
+    }
+    return (m23 - m22 * d) / w;
+  };
+  if (depth - kEps < 0.f) {
+    depth = kEps;
+  }
+  const float shift = ndc(depth + bias) - ndc(depth);
+  const float biased = m22 - shift;
+  if (std::fabs(biased) >= 1e-5f) {
+    return biased;
+  }
+  return m22 - shift >= 0.f ? kEps : -kEps;
+}
 
 // XFMD3 particles already carry the emitter's global orientation in their positions.
 // Their center/sort transform therefore removes only the camera rotation; the legacy
@@ -735,7 +762,7 @@ struct IndexShuffler {
     }
     for (int k = w; k < 8; ++k) {
       const uint32_t free = ~bits[k];
-      const int c = free == 0 ? 32 : __builtin_ctz(free);
+      const int c = std::countr_zero(free);
       if (k < lastW) {
         if (c < 32) {
           bits[k] |= 1u << c;
@@ -751,7 +778,7 @@ struct IndexShuffler {
     }
     for (int k = 0; k < w && k <= 6; ++k) {
       const uint32_t free = ~bits[k];
-      const int c = free == 0 ? 32 : __builtin_ctz(free);
+      const int c = std::countr_zero(free);
       if (c < 32) {
         bits[k] |= 1u << c;
         return k * 32 + c;
@@ -974,6 +1001,51 @@ inline SpherePoint SphereWithVariance(const CVector3f& p, float radius, float sp
   const float dz = s * ParabolicSin(WrapAngle(a + BitsFloat(0x3fc90fdb)));
   return SpherePoint{CVector3f(p.GetX() + dx * radius, c * radius + p.GetY(), p.GetZ() + radius * dz),
                      CVector3f(dx * speed, c * speed, dz * speed)};
+}
+
+// ASPV GetValue 0x2cb6b0 (CVEAngleSphereWithVariance): `a` and `b` are the two polar angles in degrees;
+// the polar band of cell `index / nA` is the stratum of cos a .. cos b (FastCosR) split into nP
+// (step (cos a - cos b) / nP, starting at cos b), the azimuth the range `azRange` degrees centred on 0
+// split into nA, each jittered by its draw (d1 polar, d2 azimuth) times its variance. The direction
+// (sin az * s, c, cos az * s), s = sqrt(1 - c * c), is turned by q; the point is origin + radius * that
+// and the velocity speed * that. The origin is in the port's space, the direction is drawn in
+// Remastered's and turned by the basis (-x, z, y) (as ASPR's, CEEPortAngleSphere).
+inline SpherePoint AngleSphereWithVariance(const CVector3f& origin, const Quat& q, float a, float b, int nP,
+                                           float variance1, float azRange, int nA, float variance2, float radius,
+                                           float speed, int index, float d1, float d2) {
+  const float degrees = BitsFloat(0x3c8efa35);
+  const float cosA = FastCosR(a * degrees);
+  const float cosB = FastCosR(b * degrees);
+  const float st1 = (cosA - cosB) / float(nP);
+  const int i1 = index / nA;
+  const int i2 = index - i1 * nA;
+  const float h1 = variance1 * (st1 * .5f);
+  const float st2 = azRange / float(nA);
+  const float h2 = variance2 * (st2 * .5f);
+  const float az = WrapAngle(((st2 * float(i2) + st2 * .5f) + ((h2 + h2) * d2 - h2) - azRange * .5f) * degrees);
+  const float c = ((st1 * .5f + cosB) + st1 * float(i1)) + ((h1 + h1) * d1 - h1);
+  const float s = SqrtF(1.f - c * c);
+  const float sx = s * ParabolicSin(az);
+  const float sz = s * ParabolicSin(WrapAngle(az + BitsFloat(0x3fc90fdb)));
+  const CVector3f d = QuatTransform(q, CVector3f(sx, c, sz));
+  const float dx = -d.GetX();
+  const float dy = d.GetZ();
+  const float dz = d.GetY();
+  return SpherePoint{CVector3f(origin.GetX() + dx * radius, origin.GetY() + dy * radius, origin.GetZ() + dz * radius),
+                     CVector3f(dx * speed, dy * speed, dz * speed)};
+}
+
+// LINV GetValue 0x2a119c (CVELineWithVariance): the point of the segment start..end (length `len`) in
+// the cell `index % n` of n, jittered by the draw d times the variance: the fraction
+// (len / n * .5 + len / n * index + jitter) / len along the way.
+inline CVector3f LinePoint(const CVector3f& start, const CVector3f& end, int n, float variance, int index, float d,
+                           float len) {
+  const float step = len / float(n);
+  const float half = step * .5f;
+  const float g = variance * half;
+  const float t = ((half + step * float(index)) + ((g + g) * d - g)) / len;
+  return CVector3f(start.GetX() + (end.GetX() - start.GetX()) * t, start.GetY() + (end.GetY() - start.GetY()) * t,
+                   start.GetZ() + (end.GetZ() - start.GetZ()) * t);
 }
 
 // CVector3f::IsNormalizable 0x6b030: false when any lane is inf/NaN (exponent all ones), else

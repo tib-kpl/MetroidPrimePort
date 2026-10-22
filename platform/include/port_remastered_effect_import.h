@@ -39,6 +39,9 @@ struct EffectImportIO {
   // Optional: pairings the image itself gives (a projectile's particles, from its WPSM and the
   // disc's WPSC), used after the importer's own table.
   std::vector<EffectPairing> pairings;
+  // Optional: GENPs a room's effect actors use (RoomEffectGenps) that stand for no disc PART:
+  // each is written under RoomEffectId(), for the rooms' .roomfx files to name.
+  std::vector<EffectGuid> roomOnly;
   // A Remastered asset's bytes by type ('GENP', 'MATI', 'TXTR') and id; false
   // when the image has none.
   std::function<bool(uint32_t type, const EffectGuid& id, std::vector<uint8_t>& out, std::string& error)> read;
@@ -58,6 +61,10 @@ struct EffectImportIO {
   // Whether the texture's bytes are sRGB, which Remastered's VFX shaders see decoded to
   // linear. Optional: without it every texture is taken as data.
   std::function<bool(const EffectGuid& id)> textureSrgb;
+  // Whether the texture has red and green only (BC5), which `texture` and `layers` give as grey
+  // plus alpha while Remastered's VFX shaders read them as .x and .y. Optional: without it every
+  // texture is taken as having all four channels.
+  std::function<bool(const EffectGuid& id)> textureRg;
   // Every layer of a Remastered array texture as RGBA8, layer slowest (a TXFB's
   // frames). Optional: without it a flipbook does not convert.
   std::function<bool(const EffectGuid& id, int& width, int& height, int& layers, std::vector<uint8_t>& rgba,
@@ -93,6 +100,10 @@ struct EffectImportResult {
 bool WantsRemasteredEffects();
 
 EffectImportResult ImportEffects(const EffectImportIO& io);
+
+// The synthetic id (port_synthetic_effect.h) of a GENP only room effect actors use: of its id
+// (in a pak's byte order) as it prints, 8-4-4-4-12 in lower case.
+uint32_t RoomEffectId(const EffectGuid& id);
 
 }  // namespace PortRemastered
 

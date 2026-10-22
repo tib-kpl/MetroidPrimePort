@@ -109,12 +109,18 @@ void CScriptEffect::Think(float dt, CStateManager& mgr) {
   }
   if (!x110_25_noTimerUnlessAreaOccluded) {
     if (x12c_remTime <= 0.f) {
+#ifdef TARGET_PC
+      xPortNestedLights.Delete(mgr, GetUniqueId());
+#endif
       return;
     }
   } else {
     if (mgr.GetWorld()->GetAreaAlways(GetCurrentAreaId()).GetOcclusionState() ==
             CGameArea::kOS_Occluded &&
         x12c_remTime <= 0.f) {
+#ifdef TARGET_PC
+      xPortNestedLights.Delete(mgr, GetUniqueId());
+#endif
       return;
     }
   }
@@ -135,6 +141,11 @@ void CScriptEffect::Think(float dt, CStateManager& mgr) {
         }
       }
     }
+#ifdef TARGET_PC
+    xPortNestedLights.Update(mgr, x104_particleSystem.get(), GetActive(), GetUniqueId(),
+                             GetCurrentAreaId(), rstl::string_l("EffectPHDR_") + GetDebugName(),
+                             x10c_partId, 1);
+#endif
     if (x111_25_dieWhenSystemsDone) {
       x140_destroyDelayTimer += dt;
       if (x140_destroyDelayTimer > 15.f) {
@@ -158,6 +169,9 @@ void CScriptEffect::Think(float dt, CStateManager& mgr) {
 
 void CScriptEffect::AcceptScriptMsg(EScriptObjectMessage msg, TUniqueId uid, CStateManager& mgr) {
   bool oldActive = GetActive();
+#ifdef TARGET_PC
+  xPortNestedLights.Forward(msg, uid, GetUniqueId(), mgr);
+#endif
   switch (msg) {
   case kSM_InitializedInArea:
     for (AUTO(conn, GetConnectionList().begin()); conn != GetConnectionList().end(); ++conn) {
@@ -199,6 +213,11 @@ void CScriptEffect::AcceptScriptMsg(EScriptObjectMessage msg, TUniqueId uid, CSt
         x104_particleSystem->SetGlobalScale(scale);
         x104_particleSystem->SetLeaveLightsEnabledForModelRender(x138_actorLights.get() != nullptr);
         x104_particleSystem->SetModulationColor(color);
+#ifdef TARGET_PC
+        for (size_t i = 0; i < xPortExternalVars.size(); ++i) {
+          x104_particleSystem->PortBindExternal(xPortExternalVars[i]);
+        }
+#endif
       }
       if (xf4_electric.get()) {
         const CVector3f scale = xf4_electric->GetGlobalScale();
@@ -241,7 +260,12 @@ void CScriptEffect::AcceptScriptMsg(EScriptObjectMessage msg, TUniqueId uid, CSt
     }
     x110_24_enable = true;
     if (x104_particleSystem.get()) {
-      x104_particleSystem->SetParticleEmission(GetActive());
+      if (GetActive()) {
+        x104_particleSystem->SetParticleEmission(true);
+      } else {
+        // Remastered's CScriptEffectMP1::DoUpdate shuts the effect down (SHTM/SHTT).
+        x104_particleSystem->ShutdownEffect();
+      }
     }
     if (xf4_electric.get()) {
       xf4_electric->SetParticleEmission(GetActive());
@@ -333,6 +357,17 @@ void CScriptEffect::PreRender(CStateManager& mgr, const CFrustumPlanes& frustum)
 }
 
 ENTITY_ACCEPT_IMPL(CScriptEffect)
+
+#ifdef TARGET_PC
+void CScriptEffect::PortSetExternalVars(const std::vector< SPortExternalVar >& vars) {
+  xPortExternalVars = vars;
+  if (x104_particleSystem.get()) {
+    for (size_t i = 0; i < vars.size(); ++i) {
+      x104_particleSystem->PortBindExternal(vars[i]);
+    }
+  }
+}
+#endif
 
 void CScriptEffect::ResetParticleCounts() {
   mNumParticlesDrawing = 0;

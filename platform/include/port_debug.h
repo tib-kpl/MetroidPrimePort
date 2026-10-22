@@ -452,6 +452,9 @@ bool UnlockHardMode();
 void SetUnlockHardMode(bool enabled);
 bool UnlockFusionSuit();
 void SetUnlockFusionSuit(bool enabled);
+// Puts the Fusion Suit on or off in game, as the Fusion Bonus menu's choice
+// would: the suit, arm and ball load again as after a suit pickup.
+void WearFusionSuit(CStateManager& mgr, bool wearing);
 bool UnlockGalleries();
 void SetUnlockGalleries(bool enabled);
 
@@ -612,6 +615,8 @@ void SetStickAimRate(float pixelsPerSecond);
 void SetGyroMode(int mode);
 void SetGyroSource(int source);
 void SetGyroSensitivity(float scale);
+// Vertical (pitch) sensitivity, used instead of the above for pitch while the split is on.
+void SetGyroSensitivityY(float scale);
 // Gyro space: 0 local (the pad's own yaw axis), 1 player, 2 world (the turn
 // about gravity). Auto calibration learns the gyro's drift while the pad is
 // still; the confidence is 0..1, or negative when the source has no
@@ -696,6 +701,8 @@ void TurnMouseAim(float dyaw);
 void ResetMouseAim();
 float MouseSensitivity();
 void SetMouseSensitivity(float radiansPerPixel);
+// Vertical mouse sensitivity, used for up and down while the split is on.
+void SetMouseSensitivityY(float radiansPerPixel);
 // Called from the input event loop as relative motion arrives.
 void AddMouseDelta(float dx, float dy);
 // Called once per simulated frame to latch the deltas for that frame.
@@ -705,6 +712,7 @@ void BeginFrameMouse();
 bool TouchAim();
 void SetTouchAim(bool on);
 void SetTouchAimSpeed(float pixelsPerDp);
+void SetTouchAimSpeedY(float pixelsPerDp);
 void AddTouchAim(float dxDp, float dyDp);
 // A quick swipe up on the touch aim area (the overlay detects it): requests the
 // Spring Ball when "Spring Ball on swipe up" is on. Thread-safe.

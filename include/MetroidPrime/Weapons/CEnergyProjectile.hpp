@@ -5,11 +5,15 @@
 
 #include "MetroidPrime/Cameras/CCameraShakeData.hpp"
 #include "MetroidPrime/Weapons/CGameProjectile.hpp"
+#ifdef TARGET_PC
+#include "MetroidPrime/CPortNestedLights.hpp"
+#endif
 
 #include "Kyoto/Audio/CSfxHandle.hpp"
 #include "Kyoto/Math/CVector3f.hpp"
 
 class CEnergyProjectile : public CGameProjectile {
+  friend struct PortEntitySchema; // save-state field schema (platform/include/port_entity_schema.h)
 public:
   CEnergyProjectile(const bool active, const TToken< CWeaponDescription >& desc,
                     const EWeaponType type, const CTransform4f& xf, const EMaterialTypes excludeMat,
@@ -60,6 +64,9 @@ private:
   bool x3d0_26_ : 1;
   bool x3d0_27_camShakeDirty : 1;
   float x3d4_curTime;
+#ifdef TARGET_PC
+  CPortNestedLights xPortNestedLights; // lights of the nested PHDR children of the APSM effect
+#endif
 
   static const CMaterialList kCheckMaterial;
 };

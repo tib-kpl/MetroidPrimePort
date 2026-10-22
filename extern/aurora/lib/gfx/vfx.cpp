@@ -181,6 +181,7 @@ static_assert(sizeof(Payload) <= InlineDrawPayloadSize);
 constexpr uint8_t NoScene = 0xff;
 constexpr uint8_t NoMask = 0xff;
 
+// In pieces: MSVC rejects one string literal over 16 KB (adjacent ones join).
 const char* ShaderSource = R"(
 struct U {
   proj: mat4x4f,
@@ -493,7 +494,8 @@ fn fs_main(in: VOut) -> @location(0) vec4f {
     let uv = in.uv0.xy;
     let d = c1.y * 0.1 * ((sample_raw(S_COLOR, uv, 0).w - 0.5) * sin(tm));
     let uv2 = vec2f(fma(tm, c1.z, fma(d, 2.0, uv.x)), fma(d, 2.0, uv.y));
-    let nm = sample_raw(S_NORMAL, uv2, 0).xy;
+)"
+R"(    let nm = sample_raw(S_NORMAL, uv2, 0).xy;
     let tc = sample_raw(S_COLOR, uv2, 0);
     // vec and tan are camera-local in (x, z, y) order; Remastered's view space is (x, y, -z) of that.
     let N = normalize(vec3f(in.nrm.x, in.nrm.y, -in.nrm.z));
@@ -704,6 +706,14 @@ fn fs_main(in: VOut) -> @location(0) vec4f {
     if (u.tone1.x > 0.0 && u.tone0.w > 0.0) { ie = 1.0 / u.tone0.w; }
     rgb = scene_light(textureSampleLevel(sceneColor, sceneSampler, fbuv, 0.0).rgb) * rgb * ie;
   }
+  if ((FEAT & 67108864u) != 0u) {
+    // ParticleLit: a VFX_*_Lit shader's lit perm (20e149b2 080_0..091_0) is its unlit colour x (AMBS +
+    // the probe + the clustered lights) x BLCM x PCMD / pi; PCMD (M) is already in rgb. vec is camera-
+    // local (x, z, y); Remastered's view normal is (x, y, -z) of it.
+    let N = normalize(vec3f(in.nrm.x, in.nrm.y, -in.nrm.z) + vec3f(0.0, 0.0, 1e-6));
+    let lighting = u.lit0.xyz + probe_ambient(N) + cluster_lights(in, N);
+    rgb = rgb * lighting * u.lit6.rgb * 0.3183098862;
+  }
   var a = x * vc.w;
   if ((FEAT & 32u) != 0u && u.soft.z > 0.5 && u.misc2.w > 0.0) {
     // DepthSoften, as VFX_DualModColorRamp_Indirect_Unlit (71dc2465, perm 000) does it: the opaque
@@ -725,7 +735,8 @@ fn fs_main(in: VOut) -> @location(0) vec4f {
   }
   var col = tone(rgb);
   // Remastered blends in HDR: a sparse web at intensity 35 and alpha 0.2 still adds 7 and blooms white.
-  // The tone map runs before this blend, so an alpha blend brighter than 1 trades alpha for brightness.
+)"
+R"(  // The tone map runs before this blend, so an alpha blend brighter than 1 trades alpha for brightness.
   let hdr = max(rgb.r, max(rgb.g, rgb.b));
   if (BLEND == 0u && hdr > 1.0) {
     alpha = clamp(a * hdr, 0.0, 1.0);
@@ -1544,7 +1555,7 @@ static void draw_prims(const DrawDesc& desc, const Vertex* verts, uint32_t verte
   }
   // IceChargeCollisionLit: AMBS, the probe record's mean/lobe/three lobes and BLCM into the padding before
   // the cluster block (u.lit0..u.lit6).
-  if ((features & IceChargeCollisionLit) != 0) {
+  if ((features & (IceChargeCollisionLit | ParticleLit)) != 0) {
     const LitAmbient& lit = desc.lit;
     std::memcpy(u.lit[0], lit.ambient, sizeof(lit.ambient));
     std::memcpy(u.lit[1], lit.mean, sizeof(lit.mean));
@@ -1558,7 +1569,7 @@ static void draw_prims(const DrawDesc& desc, const Vertex* verts, uint32_t verte
   // into this frame slot's texture. Validated once here; an unusable view leaves the block zeroed and the
   // draw on the dummy mask.
   uint8_t maskSlot = NoMask;
-  if ((features & IceChargeCollisionLit) != 0 && valid_cluster_view(desc.cluster)) {
+  if ((features & (IceChargeCollisionLit | ParticleLit)) != 0 && valid_cluster_view(desc.cluster)) {
     write_cluster_block(desc.cluster, reinterpret_cast<float*>(&u));
     if (upload_cluster_mask(desc.cluster)) {
       maskSlot = uint8_t(frameSlot);

@@ -2,6 +2,10 @@
 #define _CSCRIPTEFFECT
 
 #include "MetroidPrime/CActor.hpp"
+#ifdef TARGET_PC
+#include "MetroidPrime/CPortNestedLights.hpp"
+#include "Kyoto/Particles/CPortParticleVars.hpp"
+#endif
 
 class CLightParameters;
 class CElectricDescription;
@@ -9,6 +13,7 @@ class CParticleElectric;
 class CGenDescription;
 class CElementGen;
 class CScriptEffect : public CActor {
+  friend struct PortEntitySchema; // save-state field schema (platform/include/port_entity_schema.h)
 public:
   ~CScriptEffect() override;
   DECLARE_TYPES_MATCH_OR_ACCEPT;
@@ -32,6 +37,11 @@ public:
                 bool xrayVisorVisible, const CLightParameters& lParms, bool dieWhenSystemsDone);
 
   static void ResetParticleCounts();
+#ifdef TARGET_PC
+  // A Remastered effect actor's values for its system's particle variables (its
+  // InitializeExternalVariables); kept, as a rebuilt system starts from the defaults again.
+  void PortSetExternalVars(const std::vector< SPortExternalVar >& vars);
+#endif
 
 private:
   bool AreBothSystemsDeleteable() const;
@@ -67,6 +77,10 @@ private:
   rstl::single_ptr< CActorLights > x138_actorLights;
   TUniqueId x13c_triggerId;
   float x140_destroyDelayTimer;
+#ifdef TARGET_PC
+  CPortNestedLights xPortNestedLights; // lights of the nested PHDR children of x104_particleSystem
+  std::vector< SPortExternalVar > xPortExternalVars;
+#endif
 };
 
 CHECK_SIZEOF(CScriptEffect, (VERSION >= VERSION_GM8P_00 ? 0x158 : 0x148))

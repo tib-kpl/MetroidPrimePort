@@ -3,6 +3,7 @@
 #include <algorithm>
 
 #ifdef TARGET_PC
+#include <cstdlib>
 #include "aurora/vfx.hpp"
 #include "port_log.h"
 #include "port_vfx_read.h"
@@ -52,6 +53,16 @@ CElementAllocationChunk* IElement::CElementAllocator::sFreeChunk = nullptr;
 static bool sPortCodeEmitter = false;
 // Set by a PEMV vector (CGenDescription::xPortPemv), collected per description in GetGPSM.
 static u8 sPortPemv = 0;
+// A PITP mode word with this bit is an ITPE the effect left out (Remastered's default 1);
+// MP_ITPE_DEFAULT=0 drops those, to compare.
+static const u32 kPortSpreadDefault = 0x100;
+static bool PortSpreadDefault() {
+  static const bool on = [] {
+    const char* env = getenv("MP_ITPE_DEFAULT");
+    return env == nullptr || env[0] != '0';
+  }();
+  return on;
+}
 
 namespace {
 // Port-only SLCT (the converter's Writer::Element): an int index, a count word, then count
@@ -626,6 +637,21 @@ bool CParticleDataFactory::CreateGPSM(CGenDescription* desc, CInputStream& in,
                             ? static_cast< u8 >(mode)
                             : static_cast< u8 >(kPortXfmdRetail);
     } break;
+    // Port-only Remastered INTS system scale (CGenDescription::xPortIntScale).
+    case SBIG('PINS'):
+      delete desc->xPortIntScale;
+      desc->xPortIntScale = GetVectorElement(in);
+      break;
+    // Port-only Remastered INTR/INTT system orientation and translation
+    // (CGenDescription::xPortIntRotation/xPortIntTranslation).
+    case SBIG('PINR'):
+      delete desc->xPortIntRotation;
+      desc->xPortIntRotation = GetVectorElement(in);
+      break;
+    case SBIG('PINT'):
+      delete desc->xPortIntTranslation;
+      desc->xPortIntTranslation = GetVectorElement(in);
+      break;
     // Port-only Remastered PMRB/PMCF model rotation frame (CGenDescription::xPortPmrqFrame).
     case SBIG('PMRF'): {
       GetClassID(in);
@@ -697,7 +723,7 @@ bool CParticleDataFactory::CreateGPSM(CGenDescription* desc, CInputStream& in,
       GetClassID(in);
       desc->xPortGuidWord = in.ReadLong();
       break;
-    // Port-only metadata for the one source-proven nested smooth point light.
+    // Port-only metadata for the one nested Remastered point light (any child generator).
     case SBIG('PHDR'):
       GetClassID(in);
       desc->xPortNestedHdrLight = in.ReadLong() != 0;
@@ -705,6 +731,14 @@ bool CParticleDataFactory::CreateGPSM(CGenDescription* desc, CInputStream& in,
     case SBIG('PIR0'):
       delete desc->xPortNestedLightInnerRadius;
       desc->xPortNestedLightInnerRadius = GetRealElement(in);
+      break;
+    case SBIG('PHFO'):
+      GetClassID(in);
+      desc->xPortNestedLightFalloff = static_cast< u8 >(in.ReadLong() & 3);
+      break;
+    case SBIG('PLIX'):
+      GetClassID(in);
+      desc->xPortNestedLightInverseExposure = in.ReadLong() != 0;
       break;
     case SBIG('POR0'):
       delete desc->xPortNestedLightOuterRadius;
@@ -830,6 +864,70 @@ bool CParticleDataFactory::CreateGPSM(CGenDescription* desc, CInputStream& in,
     case SBIG('PBDM'):
       GetClassID(in);
       desc->xPortBlend = u8(in.ReadLong());
+      break;
+    // Port-only: Remastered's ZTES 0 (xPortNoZTest).
+    case SBIG('PZTS'):
+      GetClassID(in);
+      desc->xPortNoZTest = in.ReadLong() == 0;
+      break;
+    // Port-only: Remastered's IVSE 0 (xPortNoIvse).
+    case SBIG('PIVS'):
+      GetClassID(in);
+      desc->xPortNoIvse = in.ReadLong() == 0;
+      break;
+    // Port-only: Remastered's ISVF (xPortInheritVel), after PEMV's mode word.
+    case SBIG('PISV'): {
+      GetClassID(in);
+      sPortPemv = u8(in.ReadLong() + 1);
+      delete desc->xPortInheritVel;
+      desc->xPortInheritVel = GetRealElement(in);
+      break;
+    }
+    // Port-only: Remastered's ITPE 1 (xPortSpread), with PEMV's mode word.
+    case SBIG('PITP'): {
+      GetClassID(in);
+      const u32 word = in.ReadLong();
+      if ((word & kPortSpreadDefault) == 0 || PortSpreadDefault()) {
+        sPortPemv = u8((word & 0xff) + 1);
+        desc->xPortSpread = true;
+      }
+      break;
+    }
+    // Port-only: Remastered's SHTM, SHTT, PMOV and PMPV (CGenDescription::xPortShutdownMode and
+    // the elements after it).
+    case SBIG('PSHM'):
+      GetClassID(in);
+      desc->xPortShutdownMode = u8(in.ReadLong());
+      break;
+    case SBIG('PISD'):
+      GetClassID(in);
+      desc->xPortChildShutdownByMode = in.ReadLong() != 0;
+      break;
+    case SBIG('PBLT'):
+      GetClassID(in);
+      desc->xPortBakedLighting = in.ReadLong() != 0;
+      break;
+    case SBIG('PSHT'):
+      delete desc->xPortShutdownTime;
+      desc->xPortShutdownTime = GetIntElement(in);
+      break;
+    case SBIG('PMOV'):
+      delete desc->xPortPmov;
+      desc->xPortPmov = GetVectorElement(in);
+      break;
+    case SBIG('PMPV'):
+      delete desc->xPortPmpv;
+      desc->xPortPmpv = GetVectorElement(in);
+      break;
+    // Port-only: Remastered's DFOG 1 (xPortUnfogged).
+    case SBIG('PDFG'):
+      GetClassID(in);
+      desc->xPortUnfogged = in.ReadLong() != 0;
+      break;
+    // Port-only: Remastered's DBIS (xPortDepthBias), a constant real.
+    case SBIG('PDBS'):
+      GetClassID(in);
+      desc->xPortDepthBias = in.ReadFloat();
       break;
     // Port-only Remastered particle material (build/mpr/vfx/DESIGN.md section 1).
     case SBIG('VMAT'):
@@ -1186,6 +1284,9 @@ CRealElement* CParticleDataFactory::GetRealElement(CInputStream& in) {
   // Port-only VARF: a Remastered particle variable of the system being evaluated (PVRT index).
   case SBIG('VARF'):
     return rs_new CREPortVar(in.ReadLong());
+  // Port-only PSDT: the system's shutdown countdown fraction left (SDTR).
+  case SBIG('PSDT'):
+    return rs_new CREPortShutdownRemaining();
   // Port-only PSYR: a PSYS real slot of the system being evaluated.
   case SBIG('PSYR'):
     return rs_new CREPortSysVar(in.ReadLong());
@@ -1623,6 +1724,22 @@ CVectorElement* CParticleDataFactory::GetVectorElement(CInputStream& in) {
     ret = rs_new CVEPortCircle(centre, axis, start, count, variance, radius, shuffle);
     break;
   }
+  case SBIG('PLWV'): {
+    CVectorElement* start = GetVectorElement(in);
+    CVectorElement* end = GetVectorElement(in);
+    CIntElement* count = GetIntElement(in);
+    CRealElement* variance = GetRealElement(in);
+    const u8 shuffle = u8(in.ReadChar());
+    if (start == nullptr || end == nullptr || count == nullptr || variance == nullptr) {
+      delete start;
+      delete end;
+      delete count;
+      delete variance;
+      return nullptr;
+    }
+    ret = rs_new CVEPortLine(start, end, count, variance, shuffle);
+    break;
+  }
   case SBIG('PMCN'): {
     CVectorElement* direction = GetVectorElement(in);
     CRealElement* radius = GetRealElement(in);
@@ -1661,6 +1778,7 @@ CVectorElement* CParticleDataFactory::GetVectorElement(CInputStream& in) {
   case SBIG('EXTT'):
   case SBIG('EXTS'):
   case SBIG('EXTR'):
+  case SBIG('CMRT'):
     ret = rs_new CVEPortSystemVector(clsId);
     break;
 #endif
@@ -1886,6 +2004,26 @@ CEmitterElement* CParticleDataFactory::GetEmitterElement(CInputStream& in) {
     CRealElement* speed = GetRealElement(in);
     ret = rs_new CEEPortAngleSphere(origin, rotateX, rotateY, rotateZ, range1, range2, radius,
                                     speed);
+    break;
+  }
+  case SBIG('PASV'): {
+    CVectorElement* origin = GetVectorElement(in);
+    CRealElement* rotateX = GetRealElement(in);
+    CRealElement* rotateY = GetRealElement(in);
+    CRealElement* rotateZ = GetRealElement(in);
+    CRealElement* range1 = GetRealElement(in);
+    CRealElement* range2 = GetRealElement(in);
+    CIntElement* polarCount = GetIntElement(in);
+    CRealElement* polarVariance = GetRealElement(in);
+    CRealElement* azimuthRange = GetRealElement(in);
+    CIntElement* azimuthCount = GetIntElement(in);
+    CRealElement* azimuthVariance = GetRealElement(in);
+    CRealElement* radius = GetRealElement(in);
+    CRealElement* speed = GetRealElement(in);
+    const u8 shuffle = u8(in.ReadChar());
+    ret = rs_new CEEPortAngleSphereVariance(origin, rotateX, rotateY, rotateZ, range1, range2, polarCount,
+                                            polarVariance, azimuthRange, azimuthCount, azimuthVariance, radius, speed,
+                                            shuffle);
     break;
   }
   case SBIG('PLNE'): {

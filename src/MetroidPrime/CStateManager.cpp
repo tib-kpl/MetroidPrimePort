@@ -20,6 +20,7 @@
 #include "port_skip_cutscenes.h"
 #include "port_viewmodel.h"
 #include "port_console.h"
+#include "port_room_effects.h"
 #ifdef MP_ENABLE_SMOKE_DRIVER
 #include "port_smoke.h"
 #endif
@@ -983,7 +984,11 @@ void CStateManager::BuildNearList(TEntityList& nearList, const CVector3f& pos, c
 }
 
 void CStateManager::AreaLoaded(TAreaId aid) {
-  x8bc_mailbox->SendMsgs(aid, *this);
+#ifdef TARGET_PC
+  // PORT: a save state's room state carries what the mailbox's messages did (see RoomRestoreOwnsArea).
+  if (!PortSaveState::RoomRestoreOwnsArea(*this, aid.Value()))
+#endif
+    x8bc_mailbox->SendMsgs(aid, *this);
   x880_envFxManager->AreaLoaded();
 }
 
@@ -2331,6 +2336,14 @@ CStateManager::LoadScriptObject(TAreaId aid, EScriptObjectType type, unsigned in
   uint bytesLeft = length;
   bool failed = false;
   const TEditorId eid = in.ReadLong();
+#ifdef TARGET_PC
+  // PORT: an effect a mod's Remastered effect actor replaces (port_room_effects.h).
+  if (PortRoomEffects::Skips(eid.value)) {
+    for (uint b = 4; b < length; ++b)
+      in.ReadChar();
+    return rstl::pair< TEditorId, TUniqueId >(kInvalidEditorId, kInvalidUniqueId);
+  }
+#endif
 
   rstl::vector< SConnection > conns;
   const int connCount = in.Get< int >();
@@ -3107,8 +3120,23 @@ void CStateManager::PortCaptureProbeFace() const {
     PortRoomEnv::SetViewArea(x850_world->GetArea(x8cc_nextAreaId)->GetAreaAssetId());
   }
   // Remastered's grade hints that follow the player in a fluid and the camera under water.
-  PortRoomEnv::SetFluid(x84c_player != nullptr && x84c_player->IsInFluid(),
-                        x870_cameraManager->GetFluidCounter() > 0);
+  {
+    uint64_t items = 0;
+    for (int i = 0; i < CPlayerState::kIT_Max && i < int(PortRoomEnv::kCameraWaterItems); ++i) {
+      if (GetPlayerState()->HasPowerUp(static_cast< CPlayerState::EItemType >(i))) {
+        items |= uint64_t(1) << i;
+      }
+    }
+    PortRoomEnv::SetFluid(x84c_player != nullptr && x84c_player->IsInFluid(),
+                          x870_cameraManager->GetFluidCounter() > 0, items);
+  }
+  {
+    // And the world's hints that follow the camera through the master's trigger volumes (the
+    // game camera, as the room geometry's camera volumes see it).
+    const CVector3f eye = x870_cameraManager->GetCurrentCameraTransform(*this).GetTranslation();
+    const float at[3] = {eye.GetX(), eye.GetY(), eye.GetZ()};
+    PortRoomEnv::SetCameraPoint(at);
+  }
   PortRoomGeo::SetLoadedAreas(mreas, mreaCount);
   PortRoomLiquid::SetLoadedAreas(mreas, mreaCount);
   {
@@ -4392,7 +4420,9 @@ void CStateManager::SetBossParams(TUniqueId bossId, float maxEnergy, uint string
   xf20_bossStringIdx = stringIdx;
 }
 
+#ifndef _MSC_VER
 const CPlayer* CStateManager::GetPlayer() const { return x84c_player; }
+#endif
 
 void CStateManager::QueueMessage(int frameCount, CAssetId msg, float f1) {
   xf84_ = frameCount;

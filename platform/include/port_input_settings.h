@@ -47,7 +47,7 @@ constexpr float kTouchButtonInsetDefault = 0.f;
 constexpr float kTouchOpacityDefault = 100.f;
 constexpr float kTouchOpacityMin = 10.f;
 constexpr float kTouchOpacityMax = 100.f;
-constexpr std::size_t kTouchLayoutMaxLen = 4096;
+constexpr std::size_t kTouchLayoutMaxLen = 16384; // 64 added buttons fit (issue #92)
 // SDL_SCANCODE_LSHIFT (SDL3), the default beam-shift key; debug_ui.cpp checks it.
 constexpr int kScancodeLShift = 225;
 
@@ -74,6 +74,9 @@ struct Settings {
   int gyroMode = 0;
   int gyroSource = 0;
   float gyroSensitivity = 2.f;
+  // With gyroSplit on, gyroSensitivityY drives the pad's pitch and gyroSensitivity only the yaw.
+  bool gyroSplit = false;
+  float gyroSensitivityY = 2.f;
   // Which turn of the pad steers yaw (PortGyro::Space: 0 local yaw, 1 player,
   // 2 world, 3 local roll, 4 local yaw and roll); and whether the gyro's drift
   // is measured while the pad is still.
@@ -102,6 +105,9 @@ struct Settings {
   bool touchFloatingStick = true;  // the left stick appears where the left half is touched
   bool touchAim = true;
   float touchAimSpeed = 2.25f;
+  // With touchAimSplit on, touchAimSpeedY drives vertical touch aim and touchAimSpeed only the horizontal.
+  bool touchAimSplit = false;
+  float touchAimSpeedY = 2.25f;
   bool touchMapTap = true;
   bool touchWheels = true;
   bool touchClassic = false;       // classic GameCube layout
@@ -125,6 +131,10 @@ struct Settings {
   int pointerAimBox = kPointerAimBoxDefault;
   int pointerAimTurn = kPointerAimTurnDefault;
   float mouseSensitivity = 0.0035f; // radians per count; shown on the Source scale
+  // With mouseSensitivitySplit on, mouseSensitivityY (radians per count) drives vertical mouse
+  // aim and mouseSensitivity only the horizontal.
+  bool mouseSensitivitySplit = false;
+  float mouseSensitivityY = 0.0035f;
   int mouseDpi = 800;               // only for the cm/360 readout
   // What each mouse button does under mouse aim (PortInputMap::EMouseAction).
   int mouseActions[PortInputMap::kMouseButtonCount] = {

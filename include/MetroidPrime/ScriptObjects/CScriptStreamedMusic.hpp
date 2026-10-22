@@ -6,6 +6,7 @@
 #include "Kyoto/Audio/CStreamAudioManager.hpp"
 
 class CScriptStreamedMusic : public CEntity {
+  friend struct PortEntitySchema; // save-state field schema (platform/include/port_entity_schema.h)
 public:
   ~CScriptStreamedMusic() {}
   DECLARE_TYPES_MATCH_OR_ACCEPT;
@@ -41,6 +42,9 @@ private:
   void StartStream(CStateManager& mgr);
   void TweakOverride(CStateManager& mgr);
 
+#ifdef TARGET_PC
+  void PortApplyPickupJingle(CStateManager& mgr);
+#endif
   void sub_8020c3f0(CStateManager& mgr);
   void sub_8020c414(CStateManager& mgr);
   void sub_8020be90();

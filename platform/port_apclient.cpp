@@ -492,6 +492,7 @@ void Restart(Runtime& runtime) {
   runtime.queuedChecks.clear();
   runtime.notifications.clear();
   runtime.pendingSay.clear();
+  runtime.pendingHintScouts.clear();
   runtime.pendingBounce.clear();
   runtime.syncWanted = false;
   runtime.stateDirty = false;
@@ -1082,6 +1083,39 @@ bool OwnsMemo(uint32_t world, uint32_t area, uint32_t entity) {
   }
 }
 
+bool PickupJingle(uint32_t world, uint32_t area, uint32_t entity, std::string& out) {
+  try {
+    const MetroidPrime::Location* location = MetroidPrime::FindAudio(world, area, entity);
+    if (location == nullptr)
+      return false;
+    if (BuiltinRules()) {
+      int64_t item = 0;
+      bool sameGame = false;
+      {
+        Runtime& runtime = GetRuntime();
+        std::lock_guard<std::mutex> lock(runtime.mutex);
+        if (runtime.enabled && runtime.session != nullptr &&
+            runtime.session->ScoutedAt(location->id, item, sameGame, nullptr)) {
+          out = MetroidPrime::JingleFile(item, sameGame);
+          return true;
+        }
+      }
+    }
+    // No AP item known here: an offline seed may have put another item at
+    // this pickup (CScriptPickup is rewritten at load).
+    int itemType = -1, capacity = 0;
+    if (PortRandomizer::Placed(world, area, location->pickup, itemType, capacity)) {
+      if (const char* file = MetroidPrime::JingleForItemType(itemType)) {
+        out = file;
+        return true;
+      }
+    }
+    return false;
+  } catch (...) {
+    return false;
+  }
+}
+
 void RecordPickup(uint32_t world, uint32_t area, uint32_t entity) {
   try {
     const int bit = CheckedBit(MetroidPrime::FindPickup(world, area, entity));
@@ -1202,6 +1236,23 @@ bool ArtifactHint(int itemType, std::string& out) {
     return !out.empty();
   } catch (...) {
     return false;
+  }
+}
+
+void ArtifactScanned(int itemType) {
+  try {
+    if (itemType < MetroidPrime::kArtifactTruth || itemType > MetroidPrime::kArtifactNewborn ||
+        !BuiltinRules())
+      return;
+    Runtime& runtime = GetRuntime();
+    std::lock_guard<std::mutex> lock(runtime.mutex);
+    if (!runtime.enabled || runtime.session == nullptr || !runtime.session->HandshakeComplete())
+      return;
+    // The session gives each location once, so a totem scanned again sends nothing.
+    int64_t location = 0;
+    if (runtime.session->TakeArtifactScanHint(MetroidPrime::kItemBase + itemType, location))
+      runtime.pendingHintScouts.push_back(location);
+  } catch (...) {
   }
 }
 
@@ -1568,6 +1619,41 @@ bool RandomizedGame() {
     return BuiltinRules();
   } catch (...) {
     return false;
+  }
+}
+
+bool ChargeBeamRule(int beam) {
+  namespace Prime = MetroidPrime;
+  try {
+    Runtime& runtime = GetRuntime();
+    std::lock_guard<std::mutex> lock(runtime.mutex);
+    // Not an AP seed with progressive beams (or its slot_data has not arrived):
+    // owning the Charge Beam is enough, as in retail.
+    if (!runtime.enabled || !runtime.config.builtin || runtime.session == nullptr ||
+        !runtime.session->GetSlotData().received ||
+        !runtime.session->GetSlotData().progressiveBeamUpgrades)
+      return true;
+    // Each beam's second upgrade is its Charge Beam.
+    int64_t item = 0;
+    switch (beam) {
+    case CPlayerState::kBI_Power:
+      item = Prime::kProgressivePowerBeam;
+      break;
+    case CPlayerState::kBI_Ice:
+      item = Prime::kProgressiveIceBeam;
+      break;
+    case CPlayerState::kBI_Wave:
+      item = Prime::kProgressiveWaveBeam;
+      break;
+    case CPlayerState::kBI_Plasma:
+      item = Prime::kProgressivePlasmaBeam;
+      break;
+    default:
+      return true; // the Phazon Beam
+    }
+    return runtime.session->ReceivedCount(Prime::kItemBase + item) >= 2;
+  } catch (...) {
+    return true;
   }
 }
 

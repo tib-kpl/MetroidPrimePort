@@ -12,6 +12,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <functional>
 #include <memory>
 #include <string>
 #include <utility>
@@ -288,7 +289,8 @@ void PutRealKey(std::vector<uint8_t>& out, float first, float second) {
 }
 
 std::vector<uint8_t> NestedLightEffect(const EffectGuid& childId, uint8_t lightType = 2,
-                                       uint8_t falloff = 3, bool includeRadii = true) {
+                                       uint8_t falloff = 3, bool includeRadii = true,
+                                       int inverseExposed = 1) {
   std::vector<uint8_t> out(0x3c, 0);
   std::memcpy(out.data(), "RFRM", 4);
   std::memcpy(out.data() + 0x14, "GENP", 4);
@@ -330,6 +332,10 @@ std::vector<uint8_t> NestedLightEffect(const EffectGuid& childId, uint8_t lightT
     PutConstant(out, Bits(0.25f));
     PutProperty(out, "LORD", 0);
     PutConstant(out, Bits(3.f));
+  }
+  if (inverseExposed >= 0) {  // the Plasma child authors LIXP 1
+    PutProperty(out, "LIXP", 0);
+    out.push_back(uint8_t(inverseExposed));
   }
   PutProperty(out, "_END", 4);
   out.insert(out.end(), {'F', 'O', 'O', 'T'});
@@ -381,21 +387,72 @@ void TestPlasmaNestedHdrLight() {
           "the unmarked root does not get a duplicate nested-light proxy");
   }
 
-  const auto wrongGuid = ConvertOne(NestedLightEffect(Fresh(7)), {});
-  CHECK_MSG(wrongGuid.size() == 2 &&
-            std::search(wrongGuid[1].part.begin(), wrongGuid[1].part.end(), "PHDR", "PHDR" + 4) ==
-                wrongGuid[1].part.end(),
-        "the same light properties on another child do not enable the feature");
+  auto findIn = [](const ConvertedPart& part, const char* name, std::vector<RetailPartProperty>& props) -> const RetailPartProperty* {
+    std::string err;
+    if (!SplitRetailPart(part.part.data(), part.part.size(), props, err)) {
+      return nullptr;
+    }
+    const uint32_t fourcc = uint32_t(uint8_t(name[0])) << 24 | uint32_t(uint8_t(name[1])) << 16 |
+                            uint32_t(uint8_t(name[2])) << 8 | uint32_t(uint8_t(name[3]));
+    for (const RetailPartProperty& property : props) {
+      if (property.fourcc == fourcc) {
+        return &property;
+      }
+    }
+    return nullptr;
+  };
+  auto droppedHas = [](const ConvertedPart& part, const char* text) {
+    return std::any_of(part.dropped.begin(), part.dropped.end(),
+                       [text](const std::string& d) { return d.find(text) != std::string::npos; });
+  };
+  {
+    // The Plasma child (smooth) writes no PHFO: an absent PHFO is smooth.
+    std::vector<RetailPartProperty> props;
+    CHECK_MSG(parts.size() == 2 && findIn(parts[1], "PHFO", props) == nullptr,
+              "a smooth (LFOT 3) light writes no PHFO");
+    CHECK_MSG(parts.size() == 2 && !droppedHas(parts[1], "LIRD") && !droppedHas(parts[1], "LORD"),
+              "LIRD and LORD are consumed, not dropped as Remastered only");
+  }
+  // Any child with a constant point light is converted, with its authored falloff.
+  const auto anyChild = ConvertOne(NestedLightEffect(Fresh(7), 2, 2), {});
+  CHECK_MSG(anyChild.size() == 2, "a generic child converts");
+  if (anyChild.size() == 2) {
+    std::vector<RetailPartProperty> props;
+    const RetailPartProperty* marker = findIn(anyChild[1], "PHDR", props);
+    CHECK_MSG(marker != nullptr && marker->value.size() == 8 && marker->value[7] == 1,
+              "a generic point-light child gets PHDR");
+    const RetailPartProperty* falloff = findIn(anyChild[1], "PHFO", props);
+    CHECK_MSG(falloff != nullptr && falloff->value.size() == 8 &&
+                  std::memcmp(falloff->value.data(), "CNST", 4) == 0 && falloff->value[7] == 2,
+              "LFOT 2 is written as PHFO 2");
+    CHECK_MSG(findIn(anyChild[1], "PIR0", props) != nullptr && findIn(anyChild[1], "POR0", props) != nullptr,
+              "a generic child keeps PIR0/POR0");
+    CHECK_MSG(!droppedHas(anyChild[1], "LIRD") && !droppedHas(anyChild[1], "LORD"),
+              "LIRD/LORD of a generic child are not in dropped");
+    const RetailPartProperty* inverse = findIn(anyChild[1], "PLIX", props);
+    CHECK_MSG(inverse != nullptr && inverse->value.size() == 8 &&
+                  std::memcmp(inverse->value.data(), "CNST", 4) == 0 && inverse->value[7] == 1,
+              "LIXP 1 is written as PLIX 1");
+    CHECK_MSG(!droppedHas(anyChild[1], "LIXP"), "LIXP of a lit child is consumed, not dropped");
+  }
+  // LIXP 0 and no LIXP both write no PLIX (CParticleLightDescription's default is off).
+  for (int lixp : {0, -1}) {
+    const auto plain = ConvertOne(NestedLightEffect(Fresh(7), 2, 2, true, lixp), {});
+    std::vector<RetailPartProperty> props;
+    CHECK_MSG(plain.size() == 2 && findIn(plain[1], "PHDR", props) != nullptr &&
+                  findIn(plain[1], "PLIX", props) == nullptr,
+              "a light without LIXP writes no PLIX");
+  }
+  // A spot light (LTYP 3) stays on the retail path.
+  const auto spot = ConvertOne(NestedLightEffect(Fresh(7), 3, 2), {});
+  CHECK_MSG(spot.size() == 2 &&
+            std::search(spot[1].part.begin(), spot[1].part.end(), "PHDR", "PHDR" + 4) == spot[1].part.end(),
+        "a spot light is not converted to an HDR light");
   const auto wrongType = ConvertOne(NestedLightEffect(kPlasmaNestedLight, 1, 3), {});
   CHECK_MSG(wrongType.size() == 2 &&
             std::search(wrongType[1].part.begin(), wrongType[1].part.end(), "PHDR", "PHDR" + 4) ==
                 wrongType[1].part.end(),
         "a non-point LTYP does not enable the feature");
-  const auto wrongFalloff = ConvertOne(NestedLightEffect(kPlasmaNestedLight, 2, 2), {});
-  CHECK_MSG(wrongFalloff.size() == 2 &&
-            std::search(wrongFalloff[1].part.begin(), wrongFalloff[1].part.end(), "PHDR", "PHDR" + 4) ==
-                wrongFalloff[1].part.end(),
-        "a non-smooth LFOT does not enable the feature");
   const auto missingRadius = ConvertOne(NestedLightEffect(kPlasmaNestedLight, 2, 3, false), {});
   CHECK_MSG(missingRadius.size() == 2 &&
             std::search(missingRadius[1].part.begin(), missingRadius[1].part.end(), "PHDR", "PHDR" + 4) ==
@@ -2192,6 +2249,181 @@ void TestBlendMode() {
             "PBDM 4 is listed as approximated");
 }
 
+// DFOG 1 (Remastered's no-fog bit, CreateGPSM 0x25a560) becomes the port-only PDFG; DFOG 0 is
+// the default and writes nothing. The effects store it as an element, CNST and a byte.
+void TestUnfogged() {
+  for (uint8_t on : {uint8_t(1), uint8_t(0)}) {
+    const auto parts = ConvertOne(OneGenerator([on](auto& o) {
+                                    PutProperty(o, "DFOG", 0);
+                                    PutFourCC(o, "CNST");
+                                    o.push_back(on);
+                                    PutTexr(o, 0x1234ABCD);
+                                  }),
+                                  {});
+    Retail want;
+    want.f("GPSM").f("TEXR").f("CNST").f("CNST").w(0x1234ABCD);
+    if (on != 0) {
+      want.f("PDFG").f("CNST").w(1);
+    }
+    want.end();
+    CHECK_MSG(parts.size() == 1 && parts[0].part == want.bytes, "DFOG 1 becomes PDFG, DFOG 0 nothing");
+    CHECK_MSG(!parts.empty() && parts[0].dropped.empty() && parts[0].approximated.empty(), "DFOG is exact");
+  }
+}
+
+// ZTES 0 becomes the port-only PZTS 0 (depth compare ALWAYS instead of LEQUAL, ctor 0x28c2fc/0x28c384),
+// in a generator and a swoosh; IVSE 0 the port-only PIVS 0 (retail always turns the emitter's velocity);
+// ISVF the port-only PISV (EMRV's mode word, then the factor) and an authored ITPE 1 the port-only PITP
+// (the mode word). The defaults, an authored ITPE 0 and XFMD 3 (EMRV is zero there) write nothing;
+// an XFMD that EMRV is not decoded for drops ISVF, naming it.
+void TestInheritedMotion() {
+  const auto one = [](uint8_t ztes, uint8_t ivse, bool isvf, int itpe, uint32_t xfmd) {
+    return ConvertOne(OneGenerator([=](auto& o) {
+                        PutProperty(o, "XFMD", 0);
+                        PutConstant(o, xfmd);
+                        PutProperty(o, "ZTES", 0);
+                        PutFourCC(o, "CNST");
+                        o.push_back(ztes);
+                        PutProperty(o, "IVSE", 0);
+                        PutFourCC(o, "CNST");
+                        o.push_back(ivse);
+                        if (isvf) {
+                          PutProperty(o, "ISVF", 1);
+                          PutConstant(o, Bits(0.5f));
+                        }
+                        if (itpe >= 0) {
+                          PutProperty(o, "ITPE", 0);
+                          PutFourCC(o, "CNST");
+                          o.push_back(uint8_t(itpe));
+                        }
+                        PutTexr(o, 0x1234ABCD);
+                      }),
+                      {});
+  };
+  // XFMD 2 (the default) writes PZTS, PIVS and PITP at the end, PISV where ISVF stood
+  auto parts = one(0, 0, true, 1, 2);
+  Retail want;
+  want.f("GPSM").f("PISV").f("CNST").w(0).f("CNST").w(Bits(0.5f)).f("TEXR").f("CNST").f("CNST").w(0x1234ABCD);
+  want.f("PZTS").f("CNST").w(0).f("PIVS").f("CNST").w(0).f("PITP").f("CNST").w(0);
+  want.end();
+  CHECK_MSG(parts.size() == 1 && parts[0].part == want.bytes, "ZTES 0, IVSE 0, ISVF and ITPE 1 become PZTS, PIVS, PISV, PITP");
+  CHECK_MSG(!parts.empty() && parts[0].dropped.empty() && parts[0].approximated.empty(), "they are exact");
+  parts = one(1, 1, false, 0, 2);
+  Retail plain;
+  plain.f("GPSM").f("TEXR").f("CNST").f("CNST").w(0x1234ABCD).end();
+  CHECK_MSG(parts.size() == 1 && parts[0].part == plain.bytes && parts[0].dropped.empty(),
+            "ZTES 1, IVSE 1 and ITPE 0 write nothing");
+  const auto has = [](const ConvertedPart& part, const char* fourcc) {
+    return std::search(part.part.begin(), part.part.end(), fourcc, fourcc + 4) != part.part.end();
+  };
+  // With the import's spreadDefault, an absent ITPE is Remastered's default 1, flagged 0x100, and noted.
+  {
+    EffectConvertIO io;
+    io.spreadDefault = true;
+    const auto spread = [&](uint32_t xfmd) {
+      return ConvertOne(OneGenerator([=](auto& o) {
+                          PutProperty(o, "XFMD", 0);
+                          PutConstant(o, xfmd);
+                          PutTexr(o, 0x1234ABCD);
+                        }),
+                        io);
+    };
+    parts = spread(2);
+    Retail flagged;
+    flagged.f("GPSM").f("TEXR").f("CNST").f("CNST").w(0x1234ABCD).f("PITP").f("CNST").w(0x100).end();
+    CHECK_MSG(parts.size() == 1 && parts[0].part == flagged.bytes, "no ITPE under XFMD 2 is PITP 0x100");
+    CHECK_MSG(parts.size() == 1 &&
+                  std::count(parts[0].approximated.begin(), parts[0].approximated.end(),
+                             std::string("ITPE: absent, Remastered's default 1")) == 1,
+              "the default is noted");
+    parts = spread(3);
+    CHECK_MSG(parts.size() == 1 && !has(parts[0], "PITP"), "no ITPE under XFMD 3 writes nothing");
+  }
+  parts = one(1, 1, true, 1, 3);
+  CHECK_MSG(parts.size() == 1 && !has(parts[0], "PISV") && !has(parts[0], "PITP") && parts[0].dropped.empty(),
+            "ISVF and ITPE under XFMD 3 write nothing (EMRV is zero there)");
+  parts = one(1, 1, true, 1, 4);
+  CHECK_MSG(parts.size() == 1 && !has(parts[0], "PISV") && !has(parts[0], "PITP") && parts[0].dropped.size() == 2 &&
+                parts[0].dropped[0].find("ISVF under XFMD 4") != std::string::npos &&
+                parts[0].dropped[1].find("ITPE under XFMD 4") != std::string::npos,
+            "ISVF and ITPE under XFMD 4 are dropped, naming it");
+  const auto swoosh = [](uint8_t ztes) {
+    return ConvertSwoosh([=](auto& o) {
+      PutProperty(o, "ZTES", 0);
+      PutFourCC(o, "CNST");
+      o.push_back(ztes);
+    });
+  };
+  ConvertedPart part = swoosh(0);
+  CHECK_MSG(has(part, "PZTS") && part.dropped.empty(), "a swoosh's ZTES 0 becomes PZTS");
+  part = swoosh(1);
+  CHECK_MSG(!has(part, "PZTS") && part.dropped.empty(), "a swoosh's ZTES 1 writes nothing");
+}
+
+// DBIS (Remastered's particle depth bias, desc+0xd4) becomes the port-only PDBS on a generator and
+// a swoosh; 0 is the default and writes nothing.
+// A drawing sprite with DVVN 1..4 and no SIZE gets Remastered's default SIZE 1.0 (retail's is 0.1);
+// DVVN 0 or an authored SIZE writes none.
+void TestDvvnDefaultSize() {
+  const auto one = [](uint8_t dvvn, bool size) {
+    return ConvertOne(OneGenerator([=](auto& o) {
+                        PutProperty(o, "DVVN", 0);
+                        PutFourCC(o, "CNST");
+                        o.push_back(dvvn);
+                        if (size) {
+                          PutProperty(o, "SIZE", 1);
+                          PutConstant(o, Bits(0.5f));
+                        }
+                        PutTexr(o, 0x1234ABCD);
+                      }),
+                      {});
+  };
+  const auto sizes = [](const ConvertedPart& part) {
+    const char tag[4] = {'S', 'I', 'Z', 'E'};
+    int n = 0;
+    for (auto it = part.part.begin(); (it = std::search(it, part.part.end(), tag, tag + 4)) != part.part.end(); ++it) {
+      ++n;
+    }
+    return n;
+  };
+  auto parts = one(4, false);
+  Retail want;
+  want.f("GPSM").f("TEXR").f("CNST").f("CNST").w(0x1234ABCD).f("SIZE").f("CNST").w(Bits(1.0f)).end();
+  CHECK_MSG(parts.size() == 1 && parts[0].part == want.bytes, "DVVN 4 without SIZE writes SIZE 1.0");
+  parts = one(0, false);
+  CHECK_MSG(parts.size() == 1 && sizes(parts[0]) == 0, "DVVN 0 writes no SIZE");
+  parts = one(1, true);
+  CHECK_MSG(parts.size() == 1 && sizes(parts[0]) == 1, "an authored SIZE is kept alone");
+}
+
+void TestDepthBias() {
+  for (float bias : {-0.5f, 0.0f}) {
+    const auto parts = ConvertOne(OneGenerator([bias](auto& o) {
+                                    PutProperty(o, "DBIS", 3);
+                                    PutConstant(o, Bits(bias));
+                                    PutTexr(o, 0x1234ABCD);
+                                  }),
+                                  {});
+    Retail want;
+    want.f("GPSM").f("TEXR").f("CNST").f("CNST").w(0x1234ABCD);
+    if (bias != 0.0f) {
+      want.f("PDBS").f("CNST").w(Bits(bias));
+    }
+    want.end();
+    CHECK_MSG(parts.size() == 1 && parts[0].part == want.bytes, "DBIS becomes PDBS, 0 nothing");
+    CHECK_MSG(!parts.empty() && parts[0].dropped.empty() && parts[0].approximated.empty(), "DBIS is exact");
+  }
+  const ConvertedPart swoosh = ConvertSwoosh([](auto& o) {
+    PutProperty(o, "DBIS", 3);
+    PutConstant(o, Bits(-2.0f));
+  });
+  Retail pdbs;
+  pdbs.f("PDBS").f("CNST").w(Bits(-2.0f));
+  CHECK_MSG(std::search(swoosh.part.begin(), swoosh.part.end(), pdbs.bytes.begin(), pdbs.bytes.end()) != swoosh.part.end() &&
+                swoosh.dropped.empty(),
+            "a swoosh's DBIS becomes PDBS");
+}
+
 // GPUA (how much GPU time is free) is 1.0 exactly at a GPU frame time of 14 ms or less.
 void TestGpuAvailability() {
   auto parts = ConvertOne(OneGenerator([](auto& o) {
@@ -2574,8 +2806,341 @@ void TestComposedModelRotation() {
               }),
               {});
   CHECK_MSG(!parts.empty() && parts[0].dropped.size() == 1 &&
-                parts[0].dropped[0] == "PMRQ: a rotation that is not REUL/RADD/RAZY/MPCB/EXTR",
+                parts[0].dropped[0] == "PMRQ: a rotation that is not REUL/RADD/RAZY/MPCB/EXTR/CMRT",
             "ordered PMRQ refuses a non-REUL operand rather than adding Euler components");
+}
+
+// SHTM 1 (shutdown kills the live particles) is the port-only PSHM, 0 the default; SHTT is the
+// shutdown countdown, PSHT; PMOV and PMPV are the model direction and pivot, vectors in the port's
+// space (BSIS, folded for a constant). PMOV is deleted by Remastered under a PMRQ base rotation
+// (PMRB/PMCF) and is not converted with EMTU.
+void TestShutdownAndPivot() {
+  const auto convert = [](auto&& body) {
+    return ConvertOne(OneGenerator([&](auto& o) {
+                        body(o);
+                        PutTexr(o, 0x1234ABCD);
+                      }),
+                      {});
+  };
+  const auto shtm = [&](uint8_t mode) {
+    return convert([&](auto& o) {
+      PutProperty(o, "SHTM", 0);
+      o.push_back(mode);
+    });
+  };
+  auto parts = shtm(1);
+  Retail want;
+  want.f("GPSM").f("PSHM").f("CNST").w(1).f("TEXR").f("CNST").f("CNST").w(0x1234ABCD).end();
+  CHECK_MSG(parts.size() == 1 && parts[0].part == want.bytes && parts[0].dropped.empty(), "SHTM 1 is PSHM 1");
+  parts = shtm(0);
+  Retail none;
+  none.f("GPSM").f("TEXR").f("CNST").f("CNST").w(0x1234ABCD).end();
+  CHECK_MSG(parts.size() == 1 && parts[0].part == none.bytes && parts[0].dropped.empty(), "SHTM 0 writes nothing");
+  parts = shtm(2);
+  CHECK_MSG(parts.size() == 1 && parts[0].part == none.bytes && parts[0].dropped.size() == 1 &&
+                parts[0].dropped[0] == "SHTM: mode 2",
+            "SHTM 2 is dropped with its reason");
+
+  const auto isdt = [&](uint8_t value) {
+    return convert([&](auto& o) {
+      PutProperty(o, "ISDT", 0);
+      o.push_back(value);
+    });
+  };
+  parts = isdt(0);
+  Retail pisd;
+  pisd.f("GPSM").f("PISD").f("CNST").w(0).f("TEXR").f("CNST").f("CNST").w(0x1234ABCD).end();
+  CHECK_MSG(parts.size() == 1 && parts[0].part == pisd.bytes && parts[0].dropped.empty(), "ISDT 0 is PISD 0");
+  if (!parts.empty()) {
+    std::vector<RetailPartProperty> properties;
+    std::string error;
+    CHECK_MSG(SplitRetailPart(parts[0].part.data(), parts[0].part.size(), properties, error),
+              "a PART with PISD passes the retail element reader");
+  }
+  parts = isdt(1);
+  CHECK_MSG(parts.size() == 1 && parts[0].part == none.bytes && parts[0].dropped.empty(),
+            "ISDT 1, the default, writes nothing");
+
+  const auto blit = [&](uint8_t value) {
+    return convert([&](auto& o) {
+      PutProperty(o, "BLIT", 0);
+      o.push_back(value);
+    });
+  };
+  parts = blit(1);
+  Retail pblt;
+  pblt.f("GPSM").f("PBLT").f("CNST").w(1).f("TEXR").f("CNST").f("CNST").w(0x1234ABCD).end();
+  CHECK_MSG(parts.size() == 1 && parts[0].part == pblt.bytes && parts[0].dropped.empty(), "BLIT 1 is PBLT 1");
+  if (!parts.empty()) {
+    std::vector<RetailPartProperty> properties;
+    std::string error;
+    CHECK_MSG(SplitRetailPart(parts[0].part.data(), parts[0].part.size(), properties, error),
+              "a PART with PBLT passes the retail element reader");
+  }
+  parts = blit(0);
+  CHECK_MSG(parts.size() == 1 && parts[0].part == none.bytes && parts[0].dropped.empty(),
+            "BLIT 0, the default, writes nothing");
+
+  parts = convert([](auto& o) {
+    PutProperty(o, "SHTT", 1);
+    PutConstant(o, 30);
+  });
+  Retail shtt;
+  shtt.f("GPSM").f("PSHT").f("CNST").w(30).f("TEXR").f("CNST").f("CNST").w(0x1234ABCD).end();
+  CHECK_MSG(parts.size() == 1 && parts[0].part == shtt.bytes && parts[0].dropped.empty(), "SHTT CNST(30) is PSHT");
+  if (!parts.empty()) {
+    std::vector<RetailPartProperty> properties;
+    std::string error;
+    CHECK_MSG(SplitRetailPart(parts[0].part.data(), parts[0].part.size(), properties, error),
+              "a PART with PSHT passes the retail element reader");
+  }
+
+  parts = convert([](auto& o) {
+    PutProperty(o, "PMOV", 3);
+    PutFourCC(o, "PVEL");
+    PutProperty(o, "PMPV", 3);
+    PutFourCC(o, "CNST");
+    PutConstant(o, Bits(0.f));
+    PutConstant(o, Bits(0.4f));
+    PutConstant(o, Bits(0.f));
+  });
+  Retail pivot;
+  pivot.f("GPSM").f("PMOV").f("PVEL");
+  pivot.f("PMPV").f("CNST").f("CNST").w(Bits(-0.f)).f("CNST").w(Bits(0.f)).f("CNST").w(Bits(0.4f));
+  pivot.f("TEXR").f("CNST").f("CNST").w(0x1234ABCD).end();
+  CHECK_MSG(parts.size() == 1 && parts[0].part == pivot.bytes && parts[0].dropped.empty(),
+            "PMOV PVEL and PMPV CNST(0, 0.4, 0) are written in the port's space");
+  if (!parts.empty()) {
+    std::vector<RetailPartProperty> properties;
+    std::string error;
+    CHECK_MSG(SplitRetailPart(parts[0].part.data(), parts[0].part.size(), properties, error),
+              "a PART with PMOV and PMPV passes the retail element reader");
+  }
+
+  const auto pmov = [&](const char* flag, uint8_t value) {
+    return convert([&](auto& o) {
+      PutProperty(o, flag, 0);
+      PutFourCC(o, "CNST");
+      o.push_back(value);
+      PutProperty(o, "PMOV", 3);
+      PutFourCC(o, "PVEL");
+    });
+  };
+  parts = pmov("PMRB", 1);
+  CHECK_MSG(parts.size() == 1 && parts[0].dropped.empty(), "PMOV under PMRB drops nothing");
+  parts = pmov("EMTU", 1);
+  CHECK_MSG(parts.size() == 1 &&
+                std::count(parts[0].dropped.begin(), parts[0].dropped.end(), "PMOV: EMTU makes its up the system's") == 1,
+            "PMOV with EMTU is dropped with its reason");
+}
+
+// INTS is the system scale in place of the external one (Compile 0x289af0): the port-only PINS,
+// turned into the port's numbers by BSSC; EXTS inside it stays the external scale. XFMD 5 frees it.
+void TestIntScale() {
+  const auto withInts = [](int mode, bool exts) {
+    return ConvertOne(OneGenerator([&](auto& o) {
+                        PutProperty(o, "INTS", 3);
+                        if (exts) {
+                          PutFourCC(o, "MULT");
+                          PutFourCC(o, "EXTS");
+                        }
+                        PutFourCC(o, "RTOV");
+                        PutConstant(o, Bits(0.6f));
+                        if (mode != 0) {
+                          PutProperty(o, "XFMD", 0);
+                          PutConstant(o, mode);
+                        }
+                        PutTexr(o, 0x1234ABCD);
+                      }),
+                      {});
+  };
+  auto parts = withInts(0, false);
+  Retail want;
+  want.f("GPSM").f("PINS").f("BSSC").f("RTOV").f("CNST").w(Bits(0.6f));
+  want.f("TEXR").f("CNST").f("CNST").w(0x1234ABCD).end();
+  CHECK_MSG(parts.size() == 1 && parts[0].part == want.bytes && parts[0].dropped.empty(), "INTS RTOV(0.6) is PINS");
+  if (!parts.empty()) {
+    std::vector<RetailPartProperty> properties;
+    std::string error;
+    CHECK_MSG(SplitRetailPart(parts[0].part.data(), parts[0].part.size(), properties, error),
+              "a PART with PINS passes the retail element reader");
+  }
+  parts = withInts(0, true);
+  Retail scaled;
+  scaled.f("GPSM").f("PINS").f("BSSC").f("MULT").f("BSSC").f("EXTS").f("RTOV").f("CNST").w(Bits(0.6f));
+  scaled.f("TEXR").f("CNST").f("CNST").w(0x1234ABCD).end();
+  CHECK_MSG(parts.size() == 1 && parts[0].part == scaled.bytes && parts[0].dropped.empty(),
+            "INTS MULT(EXTS, RTOV(0.6)) reads the external scale");
+  parts = withInts(5, false);
+  CHECK_MSG(parts.size() == 1 && parts[0].dropped.empty() &&
+                std::search(parts[0].part.begin(), parts[0].part.end(), want.bytes.begin() + 4,
+                            want.bytes.begin() + 8) == parts[0].part.end(),
+            "INTS under XFMD 5 writes no PINS");
+}
+
+bool Contains(const std::vector<uint8_t>& bytes, const std::vector<uint8_t>& what);
+
+// INTR and INTT are the system orientation and translation in place of the external ones (Compile
+// 0x289af0): the port-only PINR (an Euler vector, as PMRQ's) and PINT, read through EXTR/EXTT.
+// XFMD 5 frees INTR and makes INTT each particle's spawn offset, retail's POFS.
+void TestIntFrame() {
+  const auto convert = [](int mode, const std::function<void(std::vector<uint8_t>&)>& body) {
+    auto parts = ConvertOne(OneGenerator([&](auto& o) {
+                              body(o);
+                              if (mode != 0) {
+                                PutProperty(o, "XFMD", 0);
+                                PutConstant(o, mode);
+                              }
+                              PutTexr(o, 0x1234ABCD);
+                            }),
+                            {});
+    return parts.size() == 1 ? parts[0] : ConvertedPart{};
+  };
+  const auto basis = [](Retail& r) { RetailVector(r, 90.f, 0.f, 180.f); };
+  ConvertedPart part = convert(0, [](auto& o) {
+    PutProperty(o, "INTR", 3);
+    PutStaticEuler(o, -90.f, 0.f, 0.f);
+  });
+  Retail reul;
+  reul.f("GPSM").f("PINR").f("PQAD");
+  basis(reul);
+  reul.f("PQAD");
+  RetailVector(reul, -90.f, 0.f, 0.f);
+  basis(reul);
+  reul.f("TEXR").f("CNST").f("CNST").w(0x1234ABCD).end();
+  CHECK_MSG(part.part == reul.bytes && part.dropped.empty(), "INTR REUL(-90, 0, 0) is PINR B * R * B");
+  std::vector<RetailPartProperty> properties;
+  std::string error;
+  CHECK_MSG(SplitRetailPart(part.part.data(), part.part.size(), properties, error),
+            "a PART with PINR passes the retail element reader");
+
+  part = convert(3, [](auto& o) {
+    PutProperty(o, "INTR", 3);
+    PutFourCC(o, "RADD");
+    PutFourCC(o, "EXTR");
+    PutStaticEuler(o, -15.f, 0.f, 0.f);
+  });
+  Retail radd;
+  radd.f("PINR").f("PQAD");
+  basis(radd);
+  radd.f("PQAD").f("PQAD").f("EXTR");
+  RetailVector(radd, -15.f, 0.f, 0.f);
+  basis(radd);
+  CHECK_MSG(Contains(part.part, radd.bytes) && part.dropped.empty(), "INTR RADD(EXTR, REUL) under XFMD 3 is PINR");
+
+  part = convert(2, [](auto& o) {
+    PutProperty(o, "INTR", 3);
+    PutFourCC(o, "REUL");
+    PutFourCC(o, "IRND");
+    PutConstant(o, Bits(230.f));
+    PutConstant(o, Bits(300.f));
+    PutConstant(o, 0);
+    PutConstant(o, 0);
+    o.push_back(0);
+  });
+  // REUL(IRND(230, 300), 0, 0): the draw becomes a hidden init-only PSYR slot (one per system).
+  CHECK_MSG(part.dropped.empty(), "INTR with IRND is no longer dropped");
+  Retail head, slot;
+  head.f("CNST").f("PSYR").w(10).f("CNST").w(Bits(0.f)).f("CNST").w(Bits(0.f));
+  slot.f("PSYS").f("CNST").w(1).w(0).w(10).w(1).f("RAND").f("CNST").w(Bits(230.f)).f("CNST").w(Bits(300.f));
+  CHECK_MSG(Contains(part.part, head.bytes), "INTR REUL(IRND, 0, 0) reads the hidden PSYR slot 10");
+  CHECK_MSG(Contains(part.part, slot.bytes), "the hidden slot is an init-only RAND(230, 300) in PSYS");
+
+  // KPIN(REUL(0, 0, 0)) is a constant identity: the KPIN is stripped, no slot.
+  part = convert(2, [](auto& o) {
+    PutProperty(o, "INTR", 3);
+    PutFourCC(o, "KPIN");
+    PutStaticEuler(o, 0.f, 0.f, 0.f);
+  });
+  Retail kconst;
+  kconst.f("PINR").f("PQAD");
+  basis(kconst);
+  kconst.f("PQAD");
+  RetailVector(kconst, 0.f, 0.f, 0.f);
+  basis(kconst);
+  CHECK_MSG(Contains(part.part, kconst.bytes) && part.dropped.empty() && !Contains(part.part, {'P', 'S', 'Y', 'S'}),
+            "INTR KPIN(REUL(0, 0, 0)) is PINR CNST");
+
+  // KPIN(REUL(SINE, 0, 0)): the non-constant angle goes through a hidden init-only slot; the
+  // constant angles stay constants.
+  part = convert(2, [](auto& o) {
+    PutProperty(o, "INTR", 3);
+    PutFourCC(o, "KPIN");
+    PutFourCC(o, "REUL");
+    PutFourCC(o, "SINE");
+    PutConstant(o, Bits(1.f));
+    PutConstant(o, Bits(2.f));
+    PutConstant(o, Bits(3.f));
+    PutConstant(o, 0);
+    PutConstant(o, 0);
+    o.push_back(0);
+  });
+  CHECK_MSG(part.dropped.empty() && Contains(part.part, {'P', 'S', 'Y', 'R'}) && Contains(part.part, {'P', 'S', 'Y', 'S'}),
+            "INTR KPIN(REUL(non-constant, ...)) keeps the angle through a hidden init-only slot");
+
+  // CMRT: the camera's rotation, converted as PINR PQAD(B, PQAD(CMRT, B)); never constant.
+  part = convert(3, [](auto& o) {
+    PutProperty(o, "INTR", 3);
+    PutFourCC(o, "CMRT");
+  });
+  Retail cmrt;
+  cmrt.f("PINR").f("PQAD");
+  basis(cmrt);
+  cmrt.f("PQAD").f("CMRT");
+  basis(cmrt);
+  CHECK_MSG(Contains(part.part, cmrt.bytes) && part.dropped.empty(), "INTR CMRT is PINR B * CMRT * B");
+
+  part = convert(5, [](auto& o) {
+    PutProperty(o, "INTR", 3);
+    PutStaticEuler(o, -90.f, 0.f, 0.f);
+  });
+  CHECK_MSG(part.dropped.empty() && !Contains(part.part, {'P', 'I', 'N', 'R'}), "INTR under XFMD 5 is freed");
+
+  part = convert(3, [](auto& o) {
+    PutProperty(o, "INTT", 3);
+    PutFourCC(o, "ADD_");
+    PutFourCC(o, "EXTT");
+    PutFourCC(o, "CNST");
+    PutConstant(o, 0);
+    PutConstant(o, Bits(0.75f));
+    PutConstant(o, 0);
+  });
+  Retail add;
+  add.f("PINT").f("BSIS").f("ADD_").f("BSIS").f("EXTT");
+  RetailVector(add, 0.f, 0.75f, 0.f);
+  CHECK_MSG(Contains(part.part, add.bytes) && part.dropped.empty(), "INTT ADD_(EXTT, c) under XFMD 3 is PINT");
+  CHECK_MSG(SplitRetailPart(part.part.data(), part.part.size(), properties, error),
+            "a PART with PINT passes the retail element reader");
+
+  const auto constant = [](auto& o) {
+    PutProperty(o, "INTT", 3);
+    PutFourCC(o, "CNST");
+    PutConstant(o, 0);
+    PutConstant(o, Bits(0.4f));
+    PutConstant(o, Bits(0.1f));
+  };
+  Retail pofs;
+  pofs.f("POFS").f("CNST").f("CNST").w(0x80000000u).f("CNST").w(Bits(0.1f)).f("CNST").w(Bits(0.4f));
+  for (int mode : {2, 3}) {
+    part = convert(mode, constant);
+    CHECK_MSG(Contains(part.part, pofs.bytes) && part.dropped.empty() && !Contains(part.part, {'P', 'I', 'N', 'T'}),
+              "a constant INTT under XFMD 2/3 is the retail POFS");
+  }
+  part = convert(2, [&](auto& o) {
+    constant(o);
+    PutProperty(o, "POFS", 3);
+    PutFourCC(o, "CNST");
+    PutConstant(o, 0);
+    PutConstant(o, Bits(1.f));
+    PutConstant(o, 0);
+  });
+  Retail both;
+  both.f("POFS").f("BSIS").f("ADD_");
+  CHECK_MSG(Contains(part.part, both.bytes) && part.dropped.empty() && !Contains(part.part, {'P', 'I', 'N', 'T'}),
+            "a constant INTT and a POFS under XFMD 2 are added");
+  part = convert(5, constant);
+  CHECK_MSG(Contains(part.part, pofs.bytes) && part.dropped.empty() && !Contains(part.part, {'P', 'I', 'N', 'T'}),
+            "INTT under XFMD 5 is the spawn offset POFS");
 }
 
 bool HasPmrf(const ConvertedPart& part, uint32_t frame) {
@@ -2756,7 +3321,8 @@ std::vector<uint8_t> Mati(uint32_t shader, const std::vector<std::pair<const cha
 }
 
 // A root generator whose material is `Fresh(7)`, with a blend mode and sprite centre.
-std::vector<uint8_t> VmatEffect(bool model = false, const EffectGuid& material = Fresh(7), uint32_t pbdm = 2) {
+std::vector<uint8_t> VmatEffect(bool model = false, const EffectGuid& material = Fresh(7), uint32_t pbdm = 2,
+                                float sftd = 0) {
   std::vector<uint8_t> out(0x3c, 0);
   std::memcpy(out.data(), "RFRM", 4);
   std::memcpy(out.data() + 0x14, "GENP", 4);
@@ -2772,10 +3338,42 @@ std::vector<uint8_t> VmatEffect(bool model = false, const EffectGuid& material =
     PutProperty(out, "PMDL", 0);
     PutGuid(out, Legacy(0x1234ABCD));
   }
+  if (sftd > 0) {
+    PutProperty(out, "SFTD", 3);
+    PutConstant(out, Bits(sftd));
+  }
   PutProperty(out, "_END", 4);
   Put32(out, 0);
   out.insert(out.end(), {'F', 'O', 'O', 'T'});
   return out;
+}
+
+// SFTD goes into the VMAT (its depthSoften), so it is reported only when no VMAT comes out.
+void TestSftdReport() {
+  const std::vector<uint8_t> data = VmatEffect(false, Fresh(7), 2, 3.0f);
+  EffectNode effect;
+  std::string error;
+  CHECK_MSG(ParseEffect(data.data(), data.size(), effect, error), "sftd effect parses");
+  EffectConvertIO io;
+  io.materialTexture = [](const EffectGuid& material) { return material == Fresh(7) ? 0x5EED0007u : 0u; };
+  io.materialData = [](const EffectGuid&) { return Mati(0x461071b8, {{"TCH0", Fresh(8)}}); };
+  io.vfxTexture = [](const EffectGuid&) {
+    FlipbookAtlas atlas;
+    atlas.id = 0x5EED0008;
+    return atlas;
+  };
+  auto dropped = [](const ConvertedPart& part, const std::string& line) {
+    return std::find(part.dropped.begin(), part.dropped.end(), line) != part.dropped.end();
+  };
+  std::vector<ConvertedPart> parts = ConvertEffect(effect, data.data(), io);
+  CHECK_MSG(parts.size() == 1, "one sftd part");
+  if (parts.size() == 1) {
+    CHECK_MSG(!dropped(parts[0], "SFTD: Remastered only") && !dropped(parts[0], "SFTD: no VMAT"),
+              "an SFTD the VMAT takes is not reported dropped");
+  }
+  io.materialData = [](const EffectGuid&) { return Mati(0x12345678, {}); };
+  parts = ConvertEffect(effect, data.data(), io);
+  CHECK_MSG(parts.size() == 1 && dropped(parts[0], "SFTD: no VMAT"), "without a VMAT, SFTD is dropped as no VMAT");
 }
 
 // A model particle with a VMAT carries its converted model as VMSH, when the import has the mesh.
@@ -3978,6 +4576,65 @@ void TestVmatIceChargeCollisionLitRecipe() {
             "390fc33b under DFOG 1 is Unfogged");
 }
 
+// VFX_Color_Opacity_Lit (20e149b2, the Landing Site mist): LIT_ 1 selects the lit perm, the ParticleLit bit,
+// and its inverse exposure (IEXP, or DVVN 3/4's default) makes the draw AlreadyExposed. LIT_ 0 is the unlit
+// recipe alone, and so is a shader without a lit tail.
+void TestVmatParticleLit() {
+  constexpr uint32_t kColorTex = 1, kOpacityTex = 2, kDepthSoften = 32, kParticleLit = 1u << 26;
+  const auto features = [](uint32_t shader, int lit, int iexp, int dvvn) {
+    std::vector<uint8_t> data = VmatEffect(false, Fresh(7), 0);
+    std::vector<uint8_t> extra;
+    if (lit >= 0) {
+      PutProperty(extra, "LIT_", 0);
+      extra.push_back(uint8_t(lit));
+    }
+    if (iexp >= 0) {
+      PutProperty(extra, "IEXP", 1);
+      extra.push_back(uint8_t(iexp));
+    }
+    if (dvvn >= 0) {
+      PutProperty(extra, "DVVN", 1);
+      extra.push_back(uint8_t(dvvn));
+    }
+    data.insert(data.end() - 13, extra.begin(), extra.end());
+    EffectNode node;
+    std::string error;
+    CHECK_MSG(ParseEffect(data.data(), data.size(), node, error), "the lit sprite effect parses");
+    EffectConvertIO io;
+    io.materialTexture = [](const EffectGuid&) { return 0x5EED0007u; };
+    io.materialData = [shader](const EffectGuid& material) {
+      return material == Fresh(7) ? Mati(shader, {{"BCLR", Fresh(8)}, {"TCH0", Fresh(9)}}) : std::vector<uint8_t>();
+    };
+    io.vfxTexture = [](const EffectGuid& texture) {
+      FlipbookAtlas atlas;
+      atlas.id = texture == Fresh(8) ? 0x5EED0008 : texture == Fresh(9) ? 0x5EED0009 : 0;
+      return atlas;
+    };
+    std::vector<ConvertedPart> parts = ConvertEffect(node, data.data(), io);
+    std::vector<RetailPartProperty> properties;
+    if (parts.size() != 1 || !SplitRetailPart(parts[0].part.data(), parts[0].part.size(), properties, error)) {
+      return ~0u;
+    }
+    for (const RetailPartProperty& property : properties) {
+      if (property.fourcc == EffectFourCC("VMAT")) {
+        return VmatWord(property.value, 12);
+      }
+    }
+    return ~0u;
+  };
+  const uint32_t unlit = kColorTex | kOpacityTex | kDepthSoften;
+  CHECK_MSG(features(0x20e149b2, -1, -1, -1) == unlit, "20e149b2 without LIT_ is the unlit recipe");
+  CHECK_MSG(features(0x20e149b2, 0, 1, 4) == unlit, "LIT_ 0 is the unlit recipe, IEXP or not");
+  CHECK_MSG(features(0x20e149b2, 1, 0, 1) == (unlit | kParticleLit), "LIT_ 1: ParticleLit, at the room's exposure");
+  // The lit vertex perm reads no inverse exposure (080_1: o6 = v3, v2.z unread), so IEXP never makes a lit
+  // draw AlreadyExposed.
+  CHECK_MSG(features(0x20e149b2, 1, 1, 1) == (unlit | kParticleLit), "LIT_ 1 + IEXP 1 is lit at the room exposure");
+  CHECK_MSG(features(0x20e149b2, 1, -1, 4) == (unlit | kParticleLit), "LIT_ 1 under DVVN 4 is lit at the room exposure");
+  CHECK_MSG(features(0x20e149b2, 1, 0, 4) == (unlit | kParticleLit), "LIT_ 1 + IEXP 0 is lit at the room exposure");
+  const uint32_t other = features(0x461071b8, 1, 1, 4);
+  CHECK_MSG(other != ~0u && (other & (kParticleLit | kAlreadyExposedBit)) == 0, "a shader off the lit-tail list stays unlit");
+}
+
 // VFX_VisorRunOff (b5e12668 / d85d4169): one TCH0 flow map as the colour slot, CCH0..4 whole in VPRM
 // v1 and SMTR overrides of any of them to their VPRM targets, Unfogged without a DFOG 1 (the visor
 // composite pass has no fog), and the second shader on its own feature bit.
@@ -4408,13 +5065,14 @@ void TestFacingRotation() {
   plain.f("GPSM").f("TEXR").f("CNST").f("CNST").w(0x1234ABCD).end();
   CHECK_MSG(parts.size() == 1 && parts[0].part == plain.bytes, "a RAZY with a vector fallback writes nothing");
   CHECK_MSG(!parts.empty() && parts[0].dropped.size() == 1 &&
-                parts[0].dropped[0] == "PMRQ: a rotation that is not REUL/RADD/RAZY/MPCB/EXTR",
+                parts[0].dropped[0] == "PMRQ: a rotation that is not REUL/RADD/RAZY/MPCB/EXTR/CMRT",
             "a RAZY with a vector fallback is dropped");
 }
 
 int main() {
   TestVmat();
   TestVmsh();
+  TestSftdReport();
   TestAtlasTexture();
   TestModelChoice();
   TestColourChoice();
@@ -4444,6 +5102,11 @@ int main() {
   TestPortMover();
   TestDrawsNothing();
   TestBlendMode();
+  TestUnfogged();
+  TestInheritedMotion();
+  TestDepthBias();
+  TestDvvnDefaultSize();
+  TestShutdownAndPivot();
   TestGpuAvailability();
   TestCurlNoise();
   TestParentRead();
@@ -4462,6 +5125,7 @@ int main() {
   TestVmatIceChargeBeamRecipe();
   TestVmatIceChargeCollisionRecipe();
   TestVmatIceChargeCollisionLitRecipe();
+  TestVmatParticleLit();
   TestElc2BlendAndLifetime();
   TestWaveOrbHeaderBlend();
   TestWaveOrbExposurePolicy();
@@ -4472,6 +5136,8 @@ int main() {
   TestModelsOnly();
   TestFacingRotation();
   TestModelRotationFrames();
+  TestIntScale();
+  TestIntFrame();
   if (port_test::Failures() == 0) {
     std::printf("port_remastered_effect_convert: ok\n");
   }

@@ -1,4 +1,5 @@
 #include "port_remastered_import_internal.h"
+#include "port_remastered_effect_convert.h"
 
 namespace PortRemastered {
 namespace ImportDetail {
@@ -751,7 +752,8 @@ int ImportGallery(const Remastered& remastered, const fs::path& target, int thre
   std::error_code ec;
   // Written beside the live folder and swapped in only if a picture came out, so a failed or
   // cancelled re-run keeps the old gallery.
-  const fs::path folder = target.string() + ".new";
+  fs::path folder = target;
+  folder += ".new";
   fs::remove_all(folder, ec);
   fs::create_directories(folder, ec);
   std::atomic<int> written{0};
@@ -761,28 +763,36 @@ int ImportGallery(const Remastered& remastered, const fs::path& target, int thre
     std::string error;
     TxtrImage image;
     std::vector<uint8_t> jpeg;
-    bool ok = DecodeTxtr(raw.data(), raw.size(), image, error);
-    ok = ok && PortGallery::EncodeGalleryJpeg(image.rgba.data(), int(image.width), int(image.height), jpeg);
-    if (ok) {
-      std::error_code fileError;
-      const fs::path tmp = folder / (std::string(name) + ".tmp");
-      {
-        std::ofstream file(tmp, std::ios::binary | std::ios::trunc);
-        file.write(reinterpret_cast<const char*>(jpeg.data()), std::streamsize(jpeg.size()));
-        file.close();
-        ok = bool(file);
-      }
-      // Renamed, so a picture cut short never has the name.
+    bool ok = false;
+    // On a worker thread: an exception out of here (bad_alloc on a huge
+    // picture) would end the program, as the other stages' workers guard.
+    try {
+      ok = DecodeTxtr(raw.data(), raw.size(), image, error);
+      ok = ok && PortGallery::EncodeGalleryJpeg(image.rgba.data(), int(image.width), int(image.height), jpeg);
       if (ok) {
-        fs::rename(tmp, folder / name, fileError);
-        ok = !fileError;
+        std::error_code fileError;
+        const fs::path tmp = folder / (std::string(name) + ".tmp");
+        {
+          std::ofstream file(tmp, std::ios::binary | std::ios::trunc);
+          file.write(reinterpret_cast<const char*>(jpeg.data()), std::streamsize(jpeg.size()));
+          file.close();
+          ok = bool(file);
+        }
+        // Renamed, so a picture cut short never has the name.
+        if (ok) {
+          fs::rename(tmp, folder / name, fileError);
+          ok = !fileError;
+        }
+        if (!ok) {
+          fs::remove(tmp, fileError);
+          error = "cannot write to the mod folder";
+        }
+      } else if (error.empty()) {
+        error = "cannot encode";
       }
-      if (!ok) {
-        fs::remove(tmp, fileError);
-        error = "cannot write to the mod folder";
-      }
-    } else if (error.empty()) {
-      error = "cannot encode";
+    } catch (const std::exception& e) {
+      ok = false;
+      error = e.what();
     }
     if (ok) {
       ++written;
@@ -1518,9 +1528,11 @@ void Run(std::string nspPath, std::string keysPath, int threads, fs::path stagin
     if (reuse && !requiredFile.empty()) {
       reuse = std::find(old->second.files.begin(), old->second.files.end(), requiredFile) != old->second.files.end();
     }
+    // Said only once its files are in: a stage whose files are gone is made again.
     if (reuse) {
-      SetMessage("Reusing the previous import's " + name);
       reuse = LinkFiles(source, staging, old->second.files);
+      SetMessage(reuse ? "Reusing the previous import's " + name
+                       : "Making the " + name + " again: the previous import's files are gone");
     }
     if (reuse) {
       StageRecord& kept = made[name] = old->second;
@@ -2095,6 +2107,13 @@ void Run(std::string nspPath, std::string keysPath, int threads, fs::path stagin
       return remastered.ReadTexture(id, raw, ignored) && ReadTxtrInfo(raw.data(), raw.size(), info, ignored) &&
              info.srgb;
     };
+    effectIO.textureRg = [&](const EffectGuid& id) {
+      std::vector<uint8_t> raw;
+      std::string ignored;
+      TxtrImage info;
+      return remastered.ReadTexture(id, raw, ignored) && ReadTxtrInfo(raw.data(), raw.size(), info, ignored) &&
+             (info.format == kTxtrFormatBc5Unorm || info.format == kTxtrFormatBc5Snorm);
+    };
     effectIO.layers = [&](const EffectGuid& id, int& width, int& height, int& layers, std::vector<uint8_t>& rgba,
                           std::string& effectError) {
       std::vector<uint8_t> raw;
@@ -2177,6 +2196,44 @@ void Run(std::string nspPath, std::string keysPath, int threads, fs::path stagin
         PortLog::Write("remastered import: projectile %s\n", line.c_str());
       }
       AddLine("effects: " + std::to_string(effectIO.pairings.size()) + " projectile effects paired");
+
+      // The GENPs of the rooms' own effect actors, under ids no disc resource, other synthetic
+      // effect or other such GENP has (the rooms' .roomfx files name them).
+      std::unordered_set<uint32_t> synthetic;
+      for (const char* name : kSyntheticEffectNames) {
+        synthetic.insert(SyntheticEffectId(name));
+      }
+      for (const EffectIdRemap& remap : remaps) {
+        synthetic.insert(remap.synthetic);
+      }
+      for (const WpscSwoosh& addition : wpscSwooshes) {
+        synthetic.insert(addition.synthetic);
+      }
+      size_t roomGenps = 0, collisions = 0;
+      for (const RoomWorld& world : RoomWorlds()) {
+        RoomPak master;
+        std::vector<RoomPak> rooms;
+        remastered.World(world.dir, master, rooms);
+        rooms.push_back(master);
+        for (const EffectGuid& genp : RoomEffectGenps(rooms)) {
+          if (std::find(effectIO.roomOnly.begin(), effectIO.roomOnly.end(), genp) != effectIO.roomOnly.end()) {
+            continue;
+          }
+          ++roomGenps;
+          const uint32_t id = RoomEffectId(genp);
+          if (retail.HasId(id) || !synthetic.insert(id).second) {
+            ++collisions;
+            PortLog::Write("remastered import: room effect %s: its id %s is taken, left out\n",
+                           EffectGuidString(genp).c_str(), Hex8(id).c_str());
+            continue;
+          }
+          effectIO.roomOnly.push_back(genp);
+          std::lock_guard<std::mutex> lock(takenMutex);
+          taken.insert(id);
+        }
+      }
+      AddLine("effects: " + std::to_string(roomGenps) + " effects of the rooms' own effect actors, " +
+              std::to_string(collisions) + " left out (id taken)");
     }
     std::set<std::string> effectWritten;  // the files the effects wrote (the converters write on every thread)
     {
@@ -2505,6 +2562,22 @@ void Run(std::string nspPath, std::string keysPath, int threads, fs::path stagin
       io.piece = pieceId;
       io.liquid = liquidId;
       io.water = waterSurface;
+      // A room effect actor's PART: the one the effects step wrote for its GENP, else the disc's
+      // it carries the id of.
+      io.effect = [&](const std::array<uint8_t, 16>& genp) -> uint32_t {
+        std::error_code ec;
+        const uint32_t own = RoomEffectId(genp);
+        if (fs::exists(staging / PathFromString(Hex8(own) + ".PART"), ec)) {
+          return own;
+        }
+        std::array<uint8_t, 16> property = genp;
+        std::swap(property[0], property[3]);
+        std::swap(property[1], property[2]);
+        std::swap(property[4], property[5]);
+        std::swap(property[6], property[7]);
+        const std::optional<uint32_t> carried = EffectRetailId(property);
+        return carried && retail.HasId(*carried) ? *carried : 0;
+      };
       io.wantsGeometry = WantsGeometry;
       io.cancelled = [] { return sCancel.load(); };
       // One line a room (what was left out and why): too many for the panel, so the log.

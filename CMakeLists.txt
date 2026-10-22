@@ -82,6 +82,9 @@ endfunction()
 # /vmg uses the general representation everywhere, as Itanium's fixed one does.
 if(MSVC)
     add_compile_options($<$<COMPILE_LANGUAGE:CXX>:/vmg>)
+    # cl.exe reports __cplusplus as 199711L without this whatever the standard,
+    # so the SDK's AUTO fell back to __typeof__, which it lacks (issue #170).
+    add_compile_options($<$<COMPILE_LANGUAGE:CXX>:/Zc:__cplusplus>)
 endif()
 
 if(MP_ANDROID_NOD_STUB)
@@ -105,6 +108,13 @@ endif()
 add_subdirectory(extern/aurora EXCLUDE_FROM_ALL)
 if(TARGET aurora_mtx)
     target_compile_definitions(aurora_mtx PRIVATE MTX_USE_PS=1)
+endif()
+# EXCLUDE_FROM_ALL also keeps Aurora's tests out of the default build, but ctest still runs them,
+# so a stale binary from an older build passed or failed in place of the current code.
+if(AURORA_ENABLE_TESTS)
+    get_property(aurora_test_targets DIRECTORY extern/aurora/tests PROPERTY BUILDSYSTEM_TARGETS)
+    add_custom_target(aurora_tests ALL)
+    add_dependencies(aurora_tests ${aurora_test_targets})
 endif()
 
 # MusyX is the game's audio engine; the vendored fork is portable.
@@ -135,11 +145,18 @@ list(APPEND MP_GAME_SOURCES
     platform/port_morph_ball.cpp
     platform/port_automapper.cpp
     platform/port_particle_vfx_read.cpp
-    platform/port_element_gen.cpp)
+    platform/port_element_gen.cpp
+    platform/port_entity_schema.cpp
+    src/MetroidPrime/CPortNestedLights.cpp)
 # The port has an explicit source manifest, including registration-only and
 # shim-dependent translation units. Link those objects directly on both ELF and
 # COFF rather than relying on archive extraction or suppressing duplicate symbols.
 add_library(mp_game OBJECT ${MP_GAME_SOURCES})
+# The entity schema table holds a few thousand accessor lambdas, each its own COMDAT
+# section on COFF: past the 65k sections an object holds without /bigobj.
+if(MSVC)
+    set_source_files_properties(platform/port_entity_schema.cpp PROPERTIES COMPILE_OPTIONS /bigobj)
+endif()
 mp_signed_char(mp_game)
 target_include_directories(mp_game PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/platform/include
@@ -155,6 +172,12 @@ target_link_libraries(mp_game PUBLIC
 if(MSVC)
     target_compile_options(mp_game PRIVATE /W3
         /FI${CMAKE_CURRENT_SOURCE_DIR}/platform/compat.h)
+    # C++20 makes cl.exe /permissive-, which rejects a string literal bound to
+    # char* (C2440, CZipSupport.cpp); the decomp does that, as -Wno-write-strings
+    # allows elsewhere (issue #170). clang-cl only warns.
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+        target_compile_options(mp_game PRIVATE $<$<COMPILE_LANGUAGE:CXX>:/Zc:strictStrings->)
+    endif()
 else()
     target_compile_options(mp_game PRIVATE
         -Wformat -Werror=return-type -Wno-narrowing -Wno-multichar -Wno-write-strings
@@ -241,6 +264,13 @@ set(MP_PORT_SOURCES
     platform/port_savestate_format.cpp
     platform/port_dynamic_res.cpp
     platform/port_savestate_room.cpp
+    platform/port_savestate_boss.cpp
+    platform/port_savestate_fields.cpp
+    platform/port_statedump.cpp
+    platform/port_boss_flaahgra.cpp
+    platform/port_boss_prime.cpp
+    platform/port_boss_ridley.cpp
+    platform/port_boss_thardus.cpp
     platform/port_skip_cutscenes.cpp
     platform/port_revision_scripts.cpp
     platform/port_skip_streams.cpp
@@ -283,6 +313,8 @@ set(MP_PORT_SOURCES
     platform/port_room_geo.cpp
     platform/port_room_geo_file.cpp
     platform/port_room_liquid.cpp
+    platform/port_room_effects.cpp
+    platform/port_room_effects_file.cpp
     platform/port_collision_view.cpp
     platform/port_pointer.cpp
     platform/port_pointer_menu.cpp
@@ -312,13 +344,20 @@ set(MP_PORT_SOURCES
     platform/port_remastered_room_file.cpp
     platform/port_remastered_room_retail.cpp
     platform/port_remastered_room_scripts.cpp
+    platform/port_remastered_room_effects.cpp
     platform/port_remastered_anim.cpp
     platform/port_remastered_text.cpp
     platform/port_custom_res.cpp
     platform/port_ball_looks.cpp
     platform/port_ball_looks_disc.cpp
+    platform/port_disc_reader.cpp
+    platform/port_suit_colours.cpp
+    platform/port_suit_colours_disc.cpp
     platform/port_hints.cpp
     platform/port_ws.cpp
+    platform/port_disc_verify.cpp
+    platform/port_disc_replace.cpp
+    platform/port_disc_verify_core.cpp
     platform/touch_pad.cpp
     platform/glibc_compat.c
     platform/ai_dma.cpp)
@@ -336,11 +375,15 @@ endif()
 # FourCC constants. -Wno-unused-parameter and -Wno-ignored-qualifiers: every hit
 # is inside decompiled headers (include/) that platform sources include and that
 # must not be edited (named-but-unused params and const-qualified return types
-# are the decomp style); platform sources themselves have none. MSVC gets nothing
-# here (its own flags live elsewhere).
-if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+# are the decomp style); platform sources themselves have none. clang-cl reads
+# -Wall as -Weverything (540k warnings per Windows CI run), so it gets /W4, its
+# spelling of -Wall -Wextra. cl.exe gets nothing here (its own flags live elsewhere).
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" AND NOT MSVC)
     set_source_files_properties(${MP_PORT_SOURCES} platform/smoke.cpp PROPERTIES
         COMPILE_OPTIONS "-Wall;-Wextra;-Wno-multichar;-Wno-unused-parameter;-Wno-ignored-qualifiers")
+elseif(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+    set_source_files_properties(${MP_PORT_SOURCES} platform/smoke.cpp PROPERTIES
+        COMPILE_OPTIONS "/W4;-Wno-multichar;-Wno-unused-parameter;-Wno-ignored-qualifiers")
 endif()
 if(ANDROID)
     add_library(metroid_prime_port SHARED ${MP_PORT_SOURCES})
@@ -725,6 +768,10 @@ if(MP_BUILD_TESTS)
         INCLUDES platform/include extern/aurora/include
         DEFINITIONS TARGET_PC
         LIBRARIES ZLIB::ZLIB)
+    mp_port_test(port_disc_verify_tests
+        SOURCES tests/port_disc_verify.cpp platform/port_disc_verify_core.cpp
+        INCLUDES platform/include platform
+        LIBRARIES ZLIB::ZLIB)
     mp_port_test(port_mouse_tests SOURCES tests/port_mouse.cpp INCLUDES platform/include)
     # Drives a real SDL virtual gamepad through the touch overlay's own code.
     # That code was Android-only and untested, so a wrong button mapping could
@@ -740,6 +787,19 @@ if(MP_BUILD_TESTS)
         DEFINITIONS TARGET_PC)
     # The `status --json` physics components: a non-finite value must be JSON null,
     # checked by parsing the production helper's output with the strict reader above.
+    # The generated entity field schema (tools/gen_entity_schema.py): it compiles the
+    # accessors against every entity header as mp_game does, forced include and all.
+    mp_port_test(port_entity_schema_tests
+        SOURCES tests/port_entity_schema.cpp platform/port_entity_schema.cpp
+        INCLUDES platform/include include extern/aurora/include extern/musyx/include
+        DEFINITIONS TARGET_PC AURORA AURORA_ENABLE_GX MUSY_TARGET=MUSY_TARGET_PC)
+    mp_signed_char(port_entity_schema_tests)
+    if(MSVC)
+        target_compile_options(port_entity_schema_tests PRIVATE /FI${CMAKE_CURRENT_SOURCE_DIR}/platform/compat.h)
+    else()
+        target_compile_options(port_entity_schema_tests PRIVATE -Wno-narrowing -Wno-multichar
+            -Wno-write-strings -include ${CMAKE_CURRENT_SOURCE_DIR}/platform/compat.h)
+    endif()
     mp_port_test(port_console_physics_tests
         SOURCES tests/port_console_physics.cpp platform/port_json.cpp
         INCLUDES platform/include
@@ -788,6 +848,9 @@ if(MP_BUILD_TESTS)
         INCLUDES platform/include)
     mp_port_test(port_room_geo_tests
         SOURCES tests/port_room_geo.cpp platform/port_room_geo_file.cpp
+        INCLUDES platform/include)
+    mp_port_test(port_room_effects_tests
+        SOURCES tests/port_room_effects.cpp platform/port_room_effects_file.cpp
         INCLUDES platform/include)
     mp_port_test(port_hd_font_tests
         SOURCES tests/port_hd_font.cpp platform/port_hd_font_file.cpp
@@ -963,6 +1026,20 @@ if(MP_BUILD_TESTS)
         INCLUDES include extern/aurora/include
         DEFINITIONS TARGET_PC VERSION=0
         GC_SECTIONS)
+    # ASPV and LINV (Remastered's angle sphere and line with variance, the port-only PASV and PLWV).
+    mp_port_test(port_variance_emitters_tests
+        SOURCES tests/port_variance_emitters.cpp src/Kyoto/Particles/CParticleGlobals.cpp src/Kyoto/CRandom16.cpp
+            src/Kyoto/Particles/CEmitterElement.cpp src/Kyoto/Particles/CVectorElement.cpp
+            src/Kyoto/Math/CQuaternion.cpp src/Kyoto/Math/CVector3f.cpp src/Kyoto/Math/CMatrix3f.cpp
+        INCLUDES include extern/aurora/include
+        DEFINITIONS TARGET_PC VERSION=0
+        GC_SECTIONS)
+    # DBIS (Remastered's particle depth bias, the port-only PDBS): the projection m22 offset.
+    mp_port_test(port_particle_depth_bias_tests
+        SOURCES tests/port_particle_depth_bias.cpp
+        INCLUDES include extern/aurora/include
+        DEFINITIONS TARGET_PC VERSION=0
+        GC_SECTIONS)
     # CRCV (Remastered's circle with variance, the port-only PCRC).
     mp_port_test(port_circle_variance_tests
         SOURCES tests/port_circle_variance.cpp src/Kyoto/Particles/CParticleGlobals.cpp src/Kyoto/CRandom16.cpp
@@ -1061,12 +1138,27 @@ if(MP_BUILD_TESTS)
         SOURCES tests/port_remastered_driver_tests.cpp
             platform/port_remastered_room_file.cpp platform/port_remastered_room_retail.cpp
             platform/port_remastered_room_scripts.cpp
+            platform/port_remastered_room_effects.cpp platform/port_room_effects_file.cpp
             platform/port_remastered_anim.cpp platform/port_remastered_cmdl.cpp
             platform/port_remastered_txtr.cpp platform/port_room_env_file.cpp
             platform/port_remastered_tegra_swizzle.cpp platform/port_remastered_bcdec.cpp
             platform/port_remastered_astc_decode.cpp
             platform/port_room_env_tiles.cpp platform/port_room_geo_file.cpp
         INCLUDES platform/include include extern/aurora/include
+        DEFINITIONS TARGET_PC VERSION=0
+        LIBRARIES mp_test_remastered_convert)
+    # The world master's script resolver and the rooms' effect actors, over synthetic ROOM files.
+    mp_port_test(port_remastered_room_scripts_tests
+        SOURCES tests/port_remastered_room_scripts.cpp
+            platform/port_remastered_room_file.cpp platform/port_remastered_room_retail.cpp
+            platform/port_remastered_room_scripts.cpp
+            platform/port_remastered_room_effects.cpp platform/port_room_effects_file.cpp
+            platform/port_remastered_anim.cpp platform/port_remastered_cmdl.cpp
+            platform/port_remastered_txtr.cpp platform/port_room_env_file.cpp
+            platform/port_remastered_tegra_swizzle.cpp platform/port_remastered_bcdec.cpp
+            platform/port_remastered_astc_decode.cpp
+            platform/port_room_env_tiles.cpp platform/port_room_geo_file.cpp
+        INCLUDES platform/include platform include extern/aurora/include
         DEFINITIONS TARGET_PC VERSION=0
         LIBRARIES mp_test_remastered_convert)
     mp_port_test(port_remastered_blend_tests
@@ -1091,6 +1183,10 @@ if(MP_BUILD_TESTS)
     mp_port_test(port_ball_looks_tests
         SOURCES tests/port_ball_looks.cpp platform/port_ball_looks.cpp
             platform/port_remastered_image.cpp
+        INCLUDES platform/include
+        LIBRARIES astcenc)
+    mp_port_test(port_suit_colours_tests
+        SOURCES tests/port_suit_colours.cpp platform/port_suit_colours.cpp
         INCLUDES platform/include
         LIBRARIES astcenc)
     mp_port_test(port_custom_res_tests
@@ -1316,6 +1412,11 @@ if(MP_BUILD_TESTS)
             COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/tools/check_settings_index.py
                     ${CMAKE_CURRENT_SOURCE_DIR})
         set_tests_properties(port_settings_index PROPERTIES TIMEOUT 15 LABELS port)
+        # The committed entity schema against the headers; skips (77) without clang-19.
+        add_test(NAME port_entity_schema_current
+            COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/tools/gen_entity_schema.py --check)
+        set_tests_properties(port_entity_schema_current PROPERTIES TIMEOUT 300 LABELS port
+            SKIP_RETURN_CODE 77)
         add_test(NAME port_air_mover_wiring
             COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/tests/port_air_mover_wiring.py
                     ${CMAKE_CURRENT_SOURCE_DIR}/platform/port_remastered_movers.cpp)
@@ -1332,6 +1433,17 @@ if(MP_BUILD_TESTS)
             COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/tests/port_boss_save_wiring.py
                     ${CMAKE_CURRENT_SOURCE_DIR})
         set_tests_properties(port_boss_save_wiring PROPERTIES TIMEOUT 15 LABELS port)
+        # A totem scan, not the text refresh at room load, asks the AP server for
+        # the artifact hint (issue #170).
+        add_test(NAME port_ap_scan_hint_wiring
+            COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/tests/port_ap_scan_hint_wiring.py
+                    ${CMAKE_CURRENT_SOURCE_DIR})
+        set_tests_properties(port_ap_scan_hint_wiring PROPERTIES TIMEOUT 15 LABELS port)
+        # No raw string literal piece grows past MSVC's 16 KB limit (issue #170).
+        add_test(NAME port_msvc_string_limit
+            COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/tests/port_msvc_string_limit.py
+                    ${CMAKE_CURRENT_SOURCE_DIR})
+        set_tests_properties(port_msvc_string_limit PROPERTIES TIMEOUT 30 LABELS port)
         # The map side file reaches its staging, its flush and its load from the
         # card driver, and the save state carries the same data in its blob.
         add_test(NAME port_map_side_wiring

@@ -94,6 +94,8 @@ public:
   void DestroyParticles() override;
   uint Get4CharId() const override;
 #ifdef TARGET_PC
+  void ShutdownEffect() override;
+  void PortDoShutdownBehavior(u32 mode) override;
   uint PortFxAsset() const override;
   bool PortIsRemastered() const;
   void PortFxDescribe(PortFxInfo& out) const override;

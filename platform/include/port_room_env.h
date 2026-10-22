@@ -18,7 +18,7 @@
 // ambient colour.
 //
 // The file is little endian:
-//   'MPEV', u32 version (1 to 21), f32 tonemap[4], u32 probes, u32 cubes
+//   'MPEV', u32 version (1 to 22), f32 tonemap[4], u32 probes, u32 cubes
 //   probe: f32 worldToBox[12], f32 worldToCube[9], s32 layer, u32 cube, f32 scale, f32 padding
 //          and from version 8 on, s32 priority, f32 intensity min, f32 intensity max
 //          (before it the padding is unused, 1 m, and the rest 0, 0, 1). From version 9
@@ -66,7 +66,8 @@
 //   then links of u32 sender, u8 state, u8 action (PortRoomGeo::LinkAction: show = on,
 //   hide = off, toggle), u16 0. A sender is a retail script object's id (its state is an
 //   EScriptObjectState), or kSenderPlayerFluid / kSenderCameraWater (state 0 when the
-//   player or the camera goes into a fluid, 1 when it comes out). Of the grades that are on
+//   player or the camera goes into a fluid, 1 when it comes out), or kSenderWorldVolume + k
+//   (the camera going into world volume k, 1 out of it). Of the grades that are on
 //   and whose layer is active, the highest priority is the room's; of equals, the one
 //   turned on last. Before it, every grade is on, with priority 0.
 // Version 11 goes on (after the version 7 floats):
@@ -133,6 +134,12 @@
 //   hint: u8 mode (1 active while the camera is inside a fluid, 2 once it has left one), u8 pad[3],
 //         f32 min, f32 max, f32 bias, f32 sigma, f32 static lerp. Remastered's fluid-mode
 //         CAutoExposureHintGOC (see ExposureHints); the plain hint stays in the header fields.
+// Version 22 adds, after the hints:
+//   u32 volumes
+//   volume: f32 centre[3], f32 half[3], f32 axes[9] (retail world; axes[3 * i..] is the box's
+//         unit axis i, half[i] its half extent along it). The world's camera volumes (see
+//         WorldVolume); every room of a world has the same table, and link senders
+//         kSenderWorldVolume + k name its entries.
 // The tonemap is Remastered's: the exposure value without auto exposure, the radiance
 // that comes out as middle grey once exposed, and how far the curve's toe and shoulder
 // are pulled in.
@@ -199,6 +206,19 @@ constexpr size_t kGradeLutBytes = size_t(kGradeLutSize) * kGradeLutSize * kGrade
 // What drives a grade other than a script object: the player or the camera in a fluid.
 constexpr uint32_t kSenderPlayerFluid = 0xfffffff0;
 constexpr uint32_t kSenderCameraWater = 0xfffffff1;
+// The world master's camera volumes (TriggerMP1s that detect the camera, which turn the world's
+// own hints on and off): kSenderWorldVolume + k is entry k of the file's world volume table,
+// state 0 as the camera goes into it, 1 as it comes out. Above the 26 bits of a retail id and
+// below the two senders above.
+constexpr uint32_t kSenderWorldVolume = 0xfff00000;
+constexpr uint32_t kMaxWorldVolumes = 0x10000;
+// The camera going under water as the player holds item k (an EItemType) or not: a master's
+// InventoryActivator fired by its camera water proxy. kSenderCameraWaterItem + k, state 0 with
+// the item, 1 without; nothing as the camera comes out.
+constexpr uint32_t kSenderCameraWaterItem = 0xffff0000;
+constexpr uint32_t kCameraWaterItems = 64;
+// A sender that is no retail script object (keeps its high bits).
+inline bool PseudoSender(uint32_t sender) { return sender >= kSenderWorldVolume; }
 
 struct GradeLink {
   uint32_t sender = 0;
@@ -211,6 +231,9 @@ struct Grade {
   float fadeIn = 0.f;
   float fadeOut = 0.f;
   bool on = true;  // requested from the start (Remastered's global hints)
+  // The world's master area's (Over_Master's), not the room's own: shown only while the
+  // room has none on (HintOutranks). The byte after `on`; older imports wrote 0.
+  bool master = false;
   int32_t priority = 0;
   std::vector<GradeLink> links;
   size_t offset = 0; // of the LUT, in File::data
@@ -224,6 +247,7 @@ struct BacklightHint {
   float fadeIn = 1.f;
   float fadeOut = 1.f;
   bool on = false;
+  bool master = false;  // as Grade::master
   int32_t priority = 50;
   float top = 1.f;
   float back = 1.f;
@@ -244,6 +268,7 @@ struct FogHint {
   PortMayaSpline fadeInSpline;
   PortMayaSpline fadeOutSpline;
   bool on = false;
+  bool master = false;  // as Grade::master
   int32_t priority = 50;
   float range = 0.f;
   float scatter = 0.f;
@@ -263,6 +288,22 @@ struct FogHint {
   float lut[64] = {};
   std::vector<GradeLink> links;
 };
+
+// Whether a requested hint (grade, backlight or fog), turned on at `order`, replaces `pick`,
+// as CAreaPrioritizedGameHintManager::Update (0x5e4de4) picks: each area keeps its own
+// hint manager and the view area's current hint wins; only when the area has none does it
+// fall back to its parent, the master. Within one area, the highest priority, then the
+// one turned on last.
+template <class Hint>
+bool HintOutranks(const Hint& hint, uint64_t order, const Hint* pick, uint64_t pickOrder) {
+  if (pick == nullptr) {
+    return true;
+  }
+  if (hint.master != pick->master) {
+    return pick->master;
+  }
+  return hint.priority > pick->priority || (hint.priority == pick->priority && order >= pickOrder);
+}
 
 // A VolumetricFogRegion (CVolumetricFogRegionGOC::AddRegion, RebuildPositionalData). The
 // rows of m take a retail world point to 0..1 over the region's box; with l = 2 * that - 1,
@@ -392,6 +433,35 @@ struct FluidHint {
   float staticLerp = 0.5f;
 };
 
+// A box of the world the camera is inside or not (version 22).
+struct WorldVolume {
+  float centre[3] = {};
+  float half[3] = {};
+  float axes[9] = {1.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 1.f};
+};
+bool InsideWorldVolume(const WorldVolume& volume, const float pos[3]);
+bool SameWorldVolumes(const std::vector<WorldVolume>& a, const std::vector<WorldVolume>& b);
+
+// Which world volumes the camera is in, as a TriggerMP1 sees it: outside every one to begin
+// with, so a camera that starts inside one enters it on the first Update.
+struct WorldVolumeState {
+  struct Event {
+    uint32_t volume;
+    int state; // 0 entered, 1 exited
+  };
+  std::vector<uint8_t> inside;
+  // Per volume: the sequence numbers of its last entry and its last exit (0: none).
+  std::vector<uint64_t> entered, exited;
+  uint64_t seq = 0;
+  void Clear();
+  // The camera at `pos` now: the volumes it went into or came out of since the last call, in
+  // volume order. A table of another size starts over.
+  void Update(const std::vector<WorldVolume>& volumes, const float pos[3], std::vector<Event>& out);
+  // What an area loaded now has to hear to be where the others are: each volume's last entry,
+  // and its exit when it came out after it, oldest first.
+  void Replay(std::vector<Event>& out) const;
+};
+
 struct File {
   uint32_t version = 0;
   float tonemap[4] = {};
@@ -400,6 +470,7 @@ struct File {
   float exposureSigma = 32.f; // Remastered's default
   float staticLerp = 0.5f;
   std::vector<FluidHint> fluidHints; // version 20
+  std::vector<WorldVolume> worldVolumes; // version 22
   float contrast = 0.f;
   float bloomThreshold = 0.9f;
   std::vector<float> bloomTints; // RGBA; empty: the room has no bloom
@@ -714,9 +785,15 @@ std::string FogInfo();
 void OnScriptState(uint32_t mrea, uint32_t sender, int state);
 // The console's `roomenv state`: as if `sender` sent `state` in every loaded area.
 void SendScriptState(uint32_t sender, int state);
-// Once a frame: whether the player and the camera are in a fluid. A change drives the
-// grades of the loaded areas linked to kSenderPlayerFluid / kSenderCameraWater.
-void SetFluid(bool player, bool camera);
+// Once a frame: whether the player and the camera are in a fluid, and the items the player holds
+// (bit k: EItemType k). A change drives the grades of the loaded areas linked to
+// kSenderPlayerFluid / kSenderCameraWater; the camera going in, kSenderCameraWaterItem too.
+void SetFluid(bool player, bool camera, uint64_t items);
+// Once a frame: where the camera is. Going into or out of one of the world's volumes (the table
+// of the last loaded area's file that has one) drives the hints of every loaded area linked to
+// kSenderWorldVolume + k; an area that loads later hears the entries and exits so far
+// (WorldVolumeState::Replay).
+void SetCameraPoint(const float pos[3]);
 
 // CAutoExposureHintGOC's fluid modes (0x539574 EntityLoaded, 0x539644 InsideFluidStateChanged):
 // the hints of a room are told whether the CAMERA is inside a fluid. Mode 1 is active while it
@@ -799,6 +876,11 @@ float SkyGain();
 // pass) takes the frame's. 0.10 where rooms are not exposed or MP_REMASTERED_GLOW_EXPOSURE=0,
 // the constant the glow used to be baked at.
 float GlowGain(bool frameExposed);
+// What a Remastered particle light's LCLR x LINT is multiplied by for the PBR HDR carrier, as the
+// room lights' (RoomLights): the frame's exposure, over pi. With LIXP (`inverseExposed`)
+// CParticleLight::Create 0x2df010 has already divided LINT by the static exposure, so it is
+// 2^(static EV - EV) / pi (GlowScale's ratio). 1 / pi where rooms are not exposed.
+float ParticleLightGain(bool inverseExposed);
 // What a bare unlit surface (mode bit 131072: the Surface shaders 67135a0b / 6fc4d540) is
 // multiplied by besides GlowScale, so that it is exposed at the frame's 2^(3 - EV) as the
 // tonemap exposes it; GlowGain's rule without the 0.10 fallback (1 outside exposed rooms).
