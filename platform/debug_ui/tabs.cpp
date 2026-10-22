@@ -270,6 +270,7 @@ void DrawSystemTab() {
   PortDataFolder::DrawPanel();
 #endif
   DrawLogSection();
+  DrawDiscCheckSection();
   DrawDiscordSection();
   DrawUpdateSection();
   ImGui::SeparatorText("About");

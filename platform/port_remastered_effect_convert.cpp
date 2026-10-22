@@ -514,12 +514,22 @@ constexpr uint32_t kColorTex = 1, kOpacityTex = 2, kErosion = 4, kRamp = 8, kInd
                    kOpacityFade = 2048, kColorRgbOnly = 4096, kPyro = 8192, kDisintegration = 16384,
                    kSceneWarp = 32768, kVisorSplat = 65536, kIceChargeBeam = 1u << 20,
                    kIceChargeCollision = 1u << 21, kUnfogged = 1u << 22, kVisorRunOff = 1u << 23,
-                   kVisorRunOffLit = 1u << 24, kIceChargeCollisionLit = 1u << 25;
+                   kVisorRunOffLit = 1u << 24, kIceChargeCollisionLit = 1u << 25, kParticleLit = 1u << 26;
 // aurora::gfx::vfx::Blend::Multiply, the port's stand-in for the FrameBuffer_* shaders without a SceneWarp recipe.
 constexpr uint32_t kBlendMultiply = 4;
 constexpr uint32_t kBlendAdditiveOne = 5;  // aurora::gfx::vfx::Blend::AdditiveOne (RGB One/One)
 // aurora::gfx::vfx::AlreadyExposed: an exposure policy carried in the features word, not a shader feature.
 constexpr uint32_t kAlreadyExposed = 1u << 31;
+
+// The VFX_*_Lit sprite shaders whose lit perms (080_0..091_0) are the unlit perm's colour x the light x
+// BLCM x PCMD / pi (aurora's ParticleLit). Checked perm by perm against 000_0 (re.sh fold); 7a29ff64,
+// whose lit perms carry no BLCM, is left out.
+bool IsLitTailShader(uint32_t shader) {
+  static constexpr uint32_t kShaders[] = {0x04276ae1, 0x08757dae, 0x20e149b2, 0x2eaed6b8, 0x3fe57e12, 0x4dfde16d,
+                                          0x54844806, 0x55584bd3, 0x58d7fb7b, 0x63c470ce, 0x9adb322c, 0xa617da1d,
+                                          0xb9ccfc57, 0xccdf1984, 0xd471baa6, 0xf0e276eb, 0xfef02d58};
+  return std::find(std::begin(kShaders), std::end(kShaders), shader) != std::end(kShaders);
+}
 
 // MTIN 756533fc-e832-48f2-b1ef-ebb41fcea14f, the wave orb's material, as the table's little-endian GUID.
 constexpr EffectGuid kWaveOrbMati = {0xfc, 0x33, 0x65, 0x75, 0x32, 0xe8, 0xf2, 0x48,
@@ -3562,6 +3572,24 @@ public:
         constantIs(powerDvvn, 1, 4, false, true) && constantIs(powerPbdm, 1, 2, true, false) && !hasIexp) {
       features |= kAlreadyExposed;
     }
+    // LIT_ 1 on a VFX_*_Lit sprite shader draws its lit perm (20e149b2 080_0..091_0): the unlit recipe's
+    // colour x (AMBS + the baked probe + the clustered lights) x BLCM x PCMD / pi, alpha unchanged. The
+    // runtime fills the light. The lit vertex perm (080_1) passes the particle colour through (o6 = v3) and
+    // never reads the ITEN x inverse exposure scalar the vertex-lit perm 000_1 multiplies in (v2.z), so IEXP
+    // has no effect: the light is radiance, exposed by the room as the scene is, and the runtime leaves ITEN
+    // out of a lit particle's colour.
+    uint32_t lit = 0;
+    if (!swoosh && !electric && IsLitTailShader(mati.shader)) {
+      if (const EffectProperty* litProperty = find(F("LIT_"))) {
+        if (!SmallInteger(*litProperty, lit)) {
+          m_approximated.push_back("VMAT: LIT_ taken as 0");
+          lit = 0;
+        }
+      }
+    }
+    if (lit != 0) {
+      features = (features | kParticleLit) & ~kAlreadyExposed;
+    }
     if (recipe->frameBuffer) {
       if (cch0[0] != 0.0f || cch0[1] != 0.0f) {
         m_approximated.push_back(std::string("VMAT: shader ") + shaderText + "'s scene warp dropped (drawn as a multiply)");
@@ -4806,6 +4834,20 @@ public:
         }
         continue;
       }
+      // BLIT (static-state word0 bit 14, 0x4000): CParticleSceneNode::AppendBakedLightingIfRequested
+      // 0x2b12a8 appends the room's baked probe texture (BPTX) and BLCM to a lit sprite's draw only with
+      // it set. 1 is the port-only PBLT 1; 0 (the default) writes nothing.
+      if (part && fourcc == F("BLIT")) {
+        uint32_t value = 0;
+        if (!SmallInteger(property, value) || value > 1) {
+          result.dropped.push_back("BLIT: not a constant 0 or 1");
+        } else if (value == 1) {
+          AppendBE32(out, F("PBLT"));
+          AppendBE32(out, F("CNST"));
+          AppendBE32(out, 1);
+        }
+        continue;
+      }
       // SHTT, the delayed shutdown (ShutdownEffect 0x27a66c, UpdateCountdownTimerForShutdown
       // 0x27b864): an int number of ticks, counted down once per tick after the owner's shutdown.
       if (part && fourcc == F("SHTT")) {
@@ -5897,7 +5939,7 @@ bool SplitRetailEffect(uint32_t type, const uint8_t* data, size_t size, std::vec
     } else if ((part && (fourcc == F("VORN") || fourcc == F("XFMD") ||
                          fourcc == F("PSHP") || fourcc == F("PHDR") || fourcc == F("PHFO") || fourcc == F("PLIX") || fourcc == F("PGID") || fourcc == F("PBDM") ||
                          fourcc == F("PDFG") || fourcc == F("PZTS") || fourcc == F("PIVS") ||
-                         fourcc == F("PITP") || fourcc == F("PSHM") || fourcc == F("PISD") ||
+                         fourcc == F("PITP") || fourcc == F("PSHM") || fourcc == F("PISD") || fourcc == F("PBLT") ||
                          fourcc == F("PMRF") || fourcc == F("PVSD") || fourcc == F("PVSN") ||
                          fourcc == F("PVSM"))) ||
                (vfx && fourcc == F("PIRN"))) {

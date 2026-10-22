@@ -258,6 +258,11 @@ set(MP_PORT_SOURCES
     platform/port_savestate_format.cpp
     platform/port_dynamic_res.cpp
     platform/port_savestate_room.cpp
+    platform/port_savestate_boss.cpp
+    platform/port_boss_flaahgra.cpp
+    platform/port_boss_prime.cpp
+    platform/port_boss_ridley.cpp
+    platform/port_boss_thardus.cpp
     platform/port_skip_cutscenes.cpp
     platform/port_revision_scripts.cpp
     platform/port_skip_streams.cpp
@@ -300,6 +305,8 @@ set(MP_PORT_SOURCES
     platform/port_room_geo.cpp
     platform/port_room_geo_file.cpp
     platform/port_room_liquid.cpp
+    platform/port_room_effects.cpp
+    platform/port_room_effects_file.cpp
     platform/port_collision_view.cpp
     platform/port_pointer.cpp
     platform/port_pointer_menu.cpp
@@ -329,6 +336,7 @@ set(MP_PORT_SOURCES
     platform/port_remastered_room_file.cpp
     platform/port_remastered_room_retail.cpp
     platform/port_remastered_room_scripts.cpp
+    platform/port_remastered_room_effects.cpp
     platform/port_remastered_anim.cpp
     platform/port_remastered_text.cpp
     platform/port_custom_res.cpp
@@ -336,6 +344,9 @@ set(MP_PORT_SOURCES
     platform/port_ball_looks_disc.cpp
     platform/port_hints.cpp
     platform/port_ws.cpp
+    platform/port_disc_verify.cpp
+    platform/port_disc_replace.cpp
+    platform/port_disc_verify_core.cpp
     platform/touch_pad.cpp
     platform/glibc_compat.c
     platform/ai_dma.cpp)
@@ -746,6 +757,10 @@ if(MP_BUILD_TESTS)
         INCLUDES platform/include extern/aurora/include
         DEFINITIONS TARGET_PC
         LIBRARIES ZLIB::ZLIB)
+    mp_port_test(port_disc_verify_tests
+        SOURCES tests/port_disc_verify.cpp platform/port_disc_verify_core.cpp
+        INCLUDES platform/include platform
+        LIBRARIES ZLIB::ZLIB)
     mp_port_test(port_mouse_tests SOURCES tests/port_mouse.cpp INCLUDES platform/include)
     # Drives a real SDL virtual gamepad through the touch overlay's own code.
     # That code was Android-only and untested, so a wrong button mapping could
@@ -809,6 +824,9 @@ if(MP_BUILD_TESTS)
         INCLUDES platform/include)
     mp_port_test(port_room_geo_tests
         SOURCES tests/port_room_geo.cpp platform/port_room_geo_file.cpp
+        INCLUDES platform/include)
+    mp_port_test(port_room_effects_tests
+        SOURCES tests/port_room_effects.cpp platform/port_room_effects_file.cpp
         INCLUDES platform/include)
     mp_port_test(port_hd_font_tests
         SOURCES tests/port_hd_font.cpp platform/port_hd_font_file.cpp
@@ -1096,6 +1114,7 @@ if(MP_BUILD_TESTS)
         SOURCES tests/port_remastered_driver_tests.cpp
             platform/port_remastered_room_file.cpp platform/port_remastered_room_retail.cpp
             platform/port_remastered_room_scripts.cpp
+            platform/port_remastered_room_effects.cpp platform/port_room_effects_file.cpp
             platform/port_remastered_anim.cpp platform/port_remastered_cmdl.cpp
             platform/port_remastered_txtr.cpp platform/port_room_env_file.cpp
             platform/port_remastered_tegra_swizzle.cpp platform/port_remastered_bcdec.cpp
@@ -1104,11 +1123,12 @@ if(MP_BUILD_TESTS)
         INCLUDES platform/include include extern/aurora/include
         DEFINITIONS TARGET_PC VERSION=0
         LIBRARIES mp_test_remastered_convert)
-    # The world master's script resolver, over synthetic ROOM files.
+    # The world master's script resolver and the rooms' effect actors, over synthetic ROOM files.
     mp_port_test(port_remastered_room_scripts_tests
         SOURCES tests/port_remastered_room_scripts.cpp
             platform/port_remastered_room_file.cpp platform/port_remastered_room_retail.cpp
             platform/port_remastered_room_scripts.cpp
+            platform/port_remastered_room_effects.cpp platform/port_room_effects_file.cpp
             platform/port_remastered_anim.cpp platform/port_remastered_cmdl.cpp
             platform/port_remastered_txtr.cpp platform/port_room_env_file.cpp
             platform/port_remastered_tegra_swizzle.cpp platform/port_remastered_bcdec.cpp
