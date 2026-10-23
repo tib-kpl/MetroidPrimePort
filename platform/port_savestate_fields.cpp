@@ -4,6 +4,7 @@
 
 #include "Kyoto/Animation/CAnimTreeNode.hpp"
 #include "MetroidPrime/BodyState/CAdditiveBodyState.hpp"
+#include "MetroidPrime/BodyState/CBSLocomotion.hpp"
 #include "MetroidPrime/BodyState/CBodyController.hpp"
 #include "MetroidPrime/BodyState/CBodyState.hpp"
 #include "MetroidPrime/CAnimData.hpp"
@@ -164,6 +165,33 @@ struct PortStateCodec {
     });
     w.U8(static_cast< uint8_t >(count));
     w.bytes += cmds.bytes;
+    // What the AI state machine delivered last tick and the next Update acts on (a flyer's
+    // locomotion impulse, its animation's delta): the steering and the delivered mask.
+    const CBodyStateCmdMgr& m = bc.x4_cmdMgr;
+    for (const CVector3f* v : {&m.x0_move, &m.xc_face, &m.x18_target, &m.x24_additiveTarget})
+      for (int i = 0; i < 3; ++i)
+        w.F32((*v)[i]);
+    w.U32(static_cast< uint32_t >(m.x30_steeringMode));
+    w.F32(m.x34_steeringSpeedMin);
+    w.F32(m.x38_steeringSpeedMax);
+    w.F32(m.x3c_steeringSpeed);
+    w.U32(m.xb4_deliveredCmdMask);
+    // Which locomotion animation (idle/walk/run/strafe) the state is on and how long since it
+    // last switched: Start resets both, and the next update then picks by speed alone.
+    const CBodyStateInfo& info = bc.x2a4_bodyStateInfo;
+    const CBodyState* cur =
+        info.x0_stateMap.find(info.x14_state) != info.x0_stateMap.end() ? info.GetCurrentState() : nullptr;
+    if (const CBSBiPedLocomotion* biped = dynamic_cast< const CBSBiPedLocomotion* >(cur)) {
+      w.U8(1);
+      w.U32(static_cast< uint32_t >(biped->x3c4_anim));
+      w.F32(biped->x3c8_primeTime);
+    } else if (const CBSRestrictedLocomotion* restricted = dynamic_cast< const CBSRestrictedLocomotion* >(cur)) {
+      w.U8(2);
+      w.U32(static_cast< uint32_t >(restricted->x44_anim));
+      w.F32(0.f);
+    } else {
+      w.U8(0);
+    }
   }
 
   // Moves the body into the saved state and additive state (the current one's Shutdown,
@@ -197,9 +225,21 @@ struct PortStateCodec {
       cmd = r.bytes.substr(r.pos, size);
       r.pos += size;
     }
-    if (!r.ok)
+    float steer[12];
+    for (float& v : steer)
+      v = r.F32();
+    const uint32_t steerMode = r.U32();
+    const float steerParams[3] = {r.F32(), r.F32(), r.F32()};
+    const uint32_t deliveredMask = r.U32();
+    const uint8_t locoKind = r.U8();
+    const uint32_t locoAnim = locoKind != 0 ? r.U32() : 0;
+    const float primeTime = locoKind != 0 ? r.F32() : 0.f;
+    if (!r.ok || !(primeTime == primeTime))
       return false;
     for (float v : f)
+      if (!(v == v) || v > 1e9f || v < -1e9f)
+        return false;
+    for (float v : steer)
       if (!(v == v) || v > 1e9f || v < -1e9f)
         return false;
     size_t want = 0;
@@ -242,6 +282,18 @@ struct PortStateCodec {
         }
       }
     }
+    if (fits) {
+      CBodyStateCmdMgr& m = bc.x4_cmdMgr;
+      m.x0_move = CVector3f(steer[0], steer[1], steer[2]);
+      m.xc_face = CVector3f(steer[3], steer[4], steer[5]);
+      m.x18_target = CVector3f(steer[6], steer[7], steer[8]);
+      m.x24_additiveTarget = CVector3f(steer[9], steer[10], steer[11]);
+      m.x30_steeringMode = static_cast< ESteeringBlendMode >(steerMode);
+      m.x34_steeringSpeedMin = steerParams[0];
+      m.x38_steeringSpeedMax = steerParams[1];
+      m.x3c_steeringSpeed = steerParams[2];
+      m.xb4_deliveredCmdMask = deliveredMask;
+    }
     bc.x2ec_locomotionType = loco;
     bc.x2f0_fallState = fall;
     bc.x2f8_curAnim = curAnim;
@@ -262,6 +314,19 @@ struct PortStateCodec {
     bc.x330_restrictedFlyerMoveSpeed = f[11];
     info.x30_maxPitch = f[12];
     info.x34_24_changeLocoAtEndOfAnimOnly = changeLoco;
+    // After the Start above, which reset them.
+    if (info.x14_state == state && info.x0_stateMap.find(state) != info.x0_stateMap.end() &&
+        (static_cast< int >(locoAnim) == pas::kLA_Invalid || locoAnim <= static_cast< uint32_t >(pas::kLA_StrafeDown))) {
+      const pas::ELocomotionAnim anim = static_cast< pas::ELocomotionAnim >(static_cast< int >(locoAnim));
+      CBodyState* cur = info.GetCurrentState();
+      if (CBSBiPedLocomotion* biped = dynamic_cast< CBSBiPedLocomotion* >(cur); biped && locoKind == 1) {
+        biped->x3c4_anim = anim;
+        biped->x3c8_primeTime = primeTime;
+      } else if (CBSRestrictedLocomotion* restricted = dynamic_cast< CBSRestrictedLocomotion* >(cur);
+                 restricted && locoKind == 2) {
+        restricted->x44_anim = anim;
+      }
+    }
     return true;
   }
 
@@ -340,7 +405,7 @@ namespace PortSaveState {
 namespace {
 
 // Bump when what SavedField picks or how a kind is written changes.
-constexpr uint32_t kFieldPolicy = 3;
+constexpr uint32_t kFieldPolicy = 6;
 
 constexpr uint32_t kUidNone = 0xFFFFFFFFu;    // kInvalidUniqueId
 constexpr uint32_t kUidDynamic = 0xFFFFFFFEu; // an object without an editor id: left alone
@@ -383,8 +448,14 @@ bool SavedField(const PortSchemaClass& cls, const PortSchemaField& f) {
                           "xe6_31_targetableVisorFlags", "xe7_27_enableRender", "xe7_29_drawEnabled",
                           "xe7_30_doTargetDistanceTest", "xe7_31_targetable"});
   if (std::strcmp(cls.name, "CPhysicsActor") == 0)
-    return Named(f.name, {"xf8_24_movable", "xf8_25_angularEnabled", "x108_angularMomentum",
-                          "x144_angularVelocity", "x24c_numTicksStuck"});
+    // Motion too, though kTagMotion has velocity and momentum: these are applied after
+    // the codecs, and the force/impulse a Think queued for the next physics step would
+    // otherwise be lost (war wasps' x168_impulse).
+    return Named(f.name, {"xf8_24_movable", "xf8_25_angularEnabled", "xfc_constantForce",
+                          "x108_angularMomentum", "x138_velocity", "x144_angularVelocity",
+                          "x150_momentum", "x15c_force", "x168_impulse", "x174_torque",
+                          "x180_angularImpulse", "x18c_moveImpulse", "x198_moveAngularImpulse",
+                          "x24c_numTicksStuck"});
   // CAi's health is the kTagHealth block's (Omega Pirate keeps its own elsewhere).
   if (std::strcmp(cls.name, "CAi") == 0)
     return std::strcmp(f.name, "x258_healthInfo") != 0;
@@ -734,6 +805,29 @@ int ApplyEntityFields(CStateManager& mgr, CEntity& ent, const std::string& data)
       set += n;
   }
   return set;
+}
+
+bool EntityFieldsCover(CEntity& ent, const std::string& data) {
+  if (!Enabled())
+    return false;
+  BlockReader r(data);
+  if (r.U32() != kFieldPolicy || !r.ok)
+    return false;
+  const std::vector< const PortSchemaClass* > chain = Chain(ent);
+  const int classes = r.U8();
+  int matched = 0;
+  for (int c = 0; c < classes && r.ok; ++c) {
+    const uint64_t lo = r.U32();
+    const uint64_t fingerprint = lo | (static_cast< uint64_t >(r.U32()) << 32);
+    const uint32_t len = r.U32();
+    if (!r.ok || r.bytes.size() - r.pos < len)
+      return false;
+    for (const PortSchemaClass* k : chain)
+      if (k->fingerprint == fingerprint)
+        ++matched;
+    r.pos += len;
+  }
+  return !chain.empty() && matched == static_cast< int >(chain.size());
 }
 
 } // namespace PortSaveState
