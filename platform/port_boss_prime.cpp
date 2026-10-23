@@ -101,15 +101,26 @@ bool PortBossState::PutMetroidPrime(CStateManager& mgr, CMetroidPrimeRelay& rela
     if (face->GetHealthInfo(mgr)->GetHP() > 0.f && !exo->x8f4_28_)
       faceHP = face->GetHealthInfo(mgr)->GetHP();
   }
+  bool started = exo->x1444_24_;
+  if (exo->mPortFaceHits > 0 && mode == kExoWaiting && !InState(*exo, "Retreat")) {
+    // A restored fight still in InActive's hand-over: what it hands over is the fight.
+    // Saved as waiting, a save taken in that second (quick resume) loses the stage's hits.
+    mode = kExoFighting;
+    hits = exo->mPortFaceHits;
+    faceHP = exo->mPortFaceHP;
+    started = false;
+  }
   w.U8(mode);
   w.U32(static_cast< uint32_t >(stage));
   w.U32(static_cast< uint32_t >(hits));
   w.F32(faceHP);
   w.U32(static_cast< uint32_t >(exo->x570_));
   w.U32(exo->x580_);
-  w.U8(exo->x1444_24_ ? 1 : 0);
+  w.U8(started ? 1 : 0);
   w.U8(mgr.GetBossId() == exo->GetUniqueId() ? 1 : 0);
   PutTransform(w, xf);
+  // Appended after version 1's payload: a build that predates it reads up to the pose.
+  w.U8(exo->GetActive() ? 1 : 0);
   return true;
 }
 
@@ -129,7 +140,12 @@ void PortBossState::RestoreMetroidPrime(CStateManager& mgr, CMetroidPrimeRelay& 
   const bool bossBar = r->U8() != 0;
   CTransform4f xf = CTransform4f::Identity();
   const bool pose = GetTransform(*r, xf);
-  if (!r->ok || !pose || mode > kExoFighting || stage < 0 || stage > 3 || used > 0xF ||
+  if (!r->ok || !pose)
+    return;
+  // Saves without the byte: a fighting exo was active.
+  const uint8_t activeByte = r->U8();
+  const bool active = r->ok ? activeByte != 0 : mode == kExoFighting;
+  if (mode > kExoFighting || stage < 0 || stage > 3 || used > 0xF ||
       !(faceHP == faceHP) || faceHP < 0.f || faceHP > 1e6f)
     return;
   if (mode == kExoFighting && (hits < 1 || hits > 64))
@@ -174,6 +190,11 @@ void PortBossState::RestoreMetroidPrime(CStateManager& mgr, CMetroidPrimeRelay& 
   }
   if (bossBar)
     mgr.SetBossParams(exo->GetUniqueId(), kExoBossEnergy, kExoBossString);
+  // The relay made it from its patterned info, inactive; the room script's Activate went
+  // through the relay (forwarded), and the restore replays no relay message. Without it
+  // the exo never thinks, so InActive never hands the saved stage back.
+  if (active && !exo->GetActive())
+    mgr.DeliverScriptMsg(exo, relay.GetUniqueId(), kSM_Activate);
 }
 
 // The essence's health is restored on its record, but Think copies the health of its

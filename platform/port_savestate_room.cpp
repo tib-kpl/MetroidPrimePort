@@ -18,12 +18,15 @@
 #include "MetroidPrime/Player/CWorldState.hpp"
 #include "MetroidPrime/ScriptObjects/CScriptActorRotate.hpp"
 #include "MetroidPrime/ScriptObjects/CScriptCounter.hpp"
+#include "MetroidPrime/ScriptObjects/CScriptDebris.hpp"
+#include "MetroidPrime/ScriptObjects/CScriptDock.hpp"
 #include "MetroidPrime/ScriptObjects/CScriptDoor.hpp"
 #include "MetroidPrime/ScriptObjects/CScriptEMPulse.hpp"
 #include "MetroidPrime/ScriptObjects/CScriptHUDMemo.hpp"
 #include "MetroidPrime/ScriptObjects/CScriptMazeNode.hpp"
 #include "MetroidPrime/ScriptObjects/CScriptMemoryRelay.hpp"
 #include "MetroidPrime/ScriptObjects/CScriptMidi.hpp"
+#include "MetroidPrime/ScriptObjects/CScriptPickup.hpp"
 #include "MetroidPrime/ScriptObjects/CScriptPlatform.hpp"
 #include "MetroidPrime/ScriptObjects/CScriptSpiderBallWaypoint.hpp"
 #include "MetroidPrime/ScriptObjects/CScriptStreamedMusic.hpp"
@@ -46,11 +49,12 @@ enum RoomTag : uint32_t {
   kTagCounter = 6,    // current
   kTagDoor = 7,       // open
   kTagPlatform = 8,   // current and target waypoint (editor ids), speed, move delay
-  kTagGenerated = 9,  // empty: a script generator's copy of the enemy with this editor id
+  kTagGenerated = 9,  // empty: a script generator's copy of the enemy or pickup with this editor id
   kTagMessages = 10,  // the script messages the enemy was sent (EncodeScriptMsgs)
   kTagBoss = 11,      // a boss's fight state beyond its health (port_savestate_boss.h)
   kTagRotate = 12,    // a turn in progress: flags, time, then per actor editor id + start rotation
   kTagFields = 13,    // an enemy's own fields through the entity schema (port_savestate_fields.cpp)
+  kTagDock = 14,      // the dock's reference, then per reference its load-other flag
 };
 
 // Friend of the script classes whose state is private.
@@ -333,6 +337,14 @@ uint32_t ScriptId(const CEntity& ent) {
   return ent.GetEditorId().Value();
 }
 
+// The area an object lives in, which owns its record. Usually its editor id's area, but
+// not always (Subchamber Two holds a relay, 000600B5, with Subchamber One's area bits):
+// keyed by the id, the restore of the area it is in would neither save nor delete it.
+int OwnerArea(const CEntity& ent) {
+  const int area = ent.GetAreaId().Value();
+  return area >= 0 ? area : ent.GetEditorId().AreaNum();
+}
+
 // What the CStateManager hooks noted per object (raw TUniqueId value), tagged with
 // the manager it belongs to so a world being torn down never touches the next one's.
 struct Noted {
@@ -362,14 +374,18 @@ TUniqueId RawId(uint16_t value) {
   return uid;
 }
 
+// A dead enemy that is still active plays out its death and deletes itself. One killed
+// while inactive never does: it stays, and may be a script generator's template (Hive
+// Totem's wasps, each one a generator's), so it is saved like any other object.
 bool IsGone(const CEntity& ent) {
   const CPatterned* patterned = TCastToConstPtr< CPatterned >(const_cast< CEntity* >(&ent));
-  return patterned != nullptr && !patterned->IsAlive();
+  return patterned != nullptr && !patterned->IsAlive() && patterned->GetActive();
 }
 
 // A script generator's copy carries its template's editor id. Enemy copies are saved
-// as copies (fights count their deaths); other copies (pickups, maze walls) are not
-// saved at all, as before, but no longer overwrite their template's record.
+// as copies (fights count their deaths), and so are pickups (the Essence's drops) and
+// debris (SavesGeneratedCopy); other copies (maze walls, sounds) are not saved at all,
+// but no longer overwrite their template's record.
 bool IsGeneratedCopy(const CStateManager& mgr, CEntity& ent) {
   const Noted* n = FindNoted(mgr, ent.GetUniqueId());
   return n != nullptr && n->generated;
@@ -402,7 +418,9 @@ void CaptureObject(CStateManager& mgr, CEntity& ent, RoomObject& obj) {
     // platforms and anything moving are saved.
     const bool moving = physics->GetVelocityWR().IsNonZero() ||
                         physics->GetMomentumWR().IsNonZero();
-    if (moving || TCastToPtr< CPatterned >(&ent) != nullptr ||
+    // A generated pickup or debris stands where its generator dropped it, not at its template.
+    const bool dropped = IsGeneratedCopy(mgr, ent);
+    if (moving || dropped || TCastToPtr< CPatterned >(&ent) != nullptr ||
         TCastToPtr< CScriptPlatform >(&ent) != nullptr) {
       BlockWriter xf;
       PutTransform(xf, physics->GetTransform());
@@ -422,6 +440,21 @@ void CaptureObject(CStateManager& mgr, CEntity& ent, RoomObject& obj) {
     BlockWriter w;
     PortRoomState::PutCounter(*counter, w);
     obj.blocks.push_back({kTagCounter, w.bytes});
+  }
+  if (CScriptDock* dock = TCastToPtr< CScriptDock >(&ent)) {
+    const CWorld* world = mgr.GetWorld();
+    const int area = dock->GetAreaId().Value();
+    if (area >= 0 && area < world->GetNumAreas() &&
+        dock->GetDockId() < world->GetAreaAlways(TAreaId(area)).GetDockCount()) {
+      const IGameArea::Dock& d = world->GetAreaAlways(TAreaId(area)).GetDock(dock->GetDockId());
+      const int refs = static_cast< int >(d.GetDockRefs().size());
+      BlockWriter w;
+      w.U8(static_cast< uint8_t >(d.GetReferenceCount()));
+      w.U8(static_cast< uint8_t >(refs));
+      for (int i = 0; i < refs; ++i)
+        w.U8(d.GetShouldLoadOther(i) ? 1 : 0);
+      obj.blocks.push_back({kTagDock, w.bytes});
+    }
   }
   if (CScriptDoor* door = TCastToPtr< CScriptDoor >(&ent)) {
     DoorSaveState state;
@@ -816,10 +849,10 @@ void CaptureRoomState(CStateManager& mgr, RoomState& out) {
   }
   ForEachObject(mgr, [&](CEntity& ent) {
     const uint32_t id = ScriptId(ent);
-    if (id == kNoEditorId || areas.count(ent.GetEditorId().AreaNum()) == 0 || IsGone(ent))
+    if (id == kNoEditorId || areas.count(OwnerArea(ent)) == 0 || IsGone(ent))
       return;
     const bool generated = IsGeneratedCopy(mgr, ent);
-    if (generated && TCastToPtr< CPatterned >(&ent) == nullptr)
+    if (generated && !SavesGeneratedCopy(ent))
       return;
     // A copy's editor id is its template's: the template decides whether that id is present.
     if (!generated)
@@ -873,6 +906,50 @@ static bool RequestResidentArea(CStateManager& mgr, int current, int area) {
     }
   }
   return false;
+}
+
+// Which neighbours an area streams in is the load-other flags of its docks, and a
+// rebuilt dock starts from its script property (load connected): every neighbour of the
+// room comes up, also the ones a script had shut (the Impact Crater relays close the
+// Subchambers' docks for the fight). Put back as saved, so the world streams what it
+// streamed at the save. A flag to a neighbour that was resident at the save stays up:
+// RequestResidentArea is still bringing that one back.
+static void RestoreDocks(CStateManager& mgr, const RoomState& room, const std::set< int >& now) {
+  CWorld* world = mgr.World();
+  for (const RoomObject& obj : room.objects) {
+    if (now.count(TEditorId(obj.editorId).AreaNum()) == 0)
+      continue;
+    const RoomBlock* b = FindBlock(obj, kTagDock);
+    if (b == nullptr)
+      continue;
+    CEntity* ent = mgr.ObjectById(mgr.GetIdForScript(TEditorId(obj.editorId)));
+    CScriptDock* dock = ent != nullptr ? TCastToPtr< CScriptDock >(ent) : nullptr;
+    if (dock == nullptr)
+      continue;
+    const int area = dock->GetAreaId().Value();
+    if (area < 0 || area >= world->GetNumAreas() ||
+        dock->GetDockId() >= world->Area(TAreaId(area))->GetDockCount())
+      continue;
+    IGameArea::Dock& d = world->Area(TAreaId(area))->DockNC(dock->GetDockId());
+    BlockReader r(b->data);
+    const int ref = r.U8();
+    const int refs = r.U8();
+    if (!r.ok || refs != static_cast< int >(d.GetDockRefs().size()) || ref >= refs)
+      continue;
+    std::vector< bool > load(refs);
+    for (int i = 0; i < refs; ++i)
+      load[i] = r.U8() != 0;
+    if (!r.ok)
+      continue;
+    if (ref != d.GetReferenceCount())
+      dock->SetDockReference(mgr, ref);
+    for (int i = 0; i < refs; ++i) {
+      const int other = d.GetConnectedAreaId(i).Value();
+      const bool resident =
+          std::find(room.areas.begin(), room.areas.end(), other) != room.areas.end();
+      d.SetShouldLoadOther(i, load[i] || resident);
+    }
+  }
 }
 
 bool RoomAreaAwaitsRestore(CStateManager& mgr, const RoomState& room,
@@ -939,7 +1016,7 @@ int ApplyRoomState(CStateManager& mgr, const RoomState& room, std::vector< int32
   std::vector< TUniqueId > doomed;
   ForEachObject(mgr, [&](CEntity& ent) {
     const uint32_t id = ScriptId(ent);
-    if (id == kNoEditorId || now.count(ent.GetEditorId().AreaNum()) == 0)
+    if (id == kNoEditorId || now.count(OwnerArea(ent)) == 0)
       return;
     if (present.count(id) == 0 || IsGone(ent))
       doomed.push_back(ent.GetUniqueId());
@@ -951,24 +1028,27 @@ int ApplyRoomState(CStateManager& mgr, const RoomState& room, std::vector< int32
   const bool waypointsMoved = RestorePlatforms(mgr, room, now);
   std::vector< const RoomObject* > copies;
   for (const RoomObject& obj : room.objects) {
-    if (now.count(TEditorId(obj.editorId).AreaNum()) == 0)
-      continue;
     if (FindBlock(obj, kTagGenerated) != nullptr) {
-      copies.push_back(&obj);
+      if (now.count(TEditorId(obj.editorId).AreaNum()) != 0)
+        copies.push_back(&obj);
       continue;
     }
     CEntity* ent = mgr.ObjectById(mgr.GetIdForScript(TEditorId(obj.editorId)));
     if (ent == nullptr || ent->IsInGraveyard()) {
-      ++stats.unmatched;
+      if (now.count(TEditorId(obj.editorId).AreaNum()) != 0)
+        ++stats.unmatched;
       continue;
     }
+    if (now.count(OwnerArea(*ent)) == 0)
+      continue;
     ApplyObject(mgr, *ent, obj, stats);
     ++stats.applied;
   }
-  // The enemies a script generator made (Hive Totem's wasps): the rebuilt room has
-  // only their templates, and a fight counting their deaths would wait forever.
-  // Made again from the template the way CScriptGenerator does, then given the
-  // copy's saved state (ApplyObject sends the Activate the generator sent).
+  // The enemies and pickups a script generator made (Hive Totem's wasps, the Essence's
+  // drops): the rebuilt room has only their templates, and a fight counting their
+  // deaths would wait forever. Made again from the template the way CScriptGenerator
+  // does, then given the copy's saved state (ApplyObject sends the Activate the
+  // generator sent).
   for (const RoomObject* obj : copies) {
     const bool wasGenerating = mgr.IsGeneratingObject();
     mgr.SetIsGeneratingObject(true);
@@ -979,17 +1059,27 @@ int ApplyRoomState(CStateManager& mgr, const RoomState& room, std::vector< int32
       ++stats.unmatched;
       continue;
     }
+    // Also in the fields block; set here for saves without one.
+    if (CScriptPickup* pickup = TCastToPtr< CScriptPickup >(ent))
+      pickup->SetWasGenerated();
     ApplyObject(mgr, *ent, *obj, stats);
     ++stats.generated;
   }
   if (waypointsMoved)
     PortRoomState::RebuildSpiderBallWaypoints(mgr);
+  RestoreDocks(mgr, room, now);
   done.insert(done.end(), now.begin(), now.end());
   return waiting;
 }
 
 // Read-only views of state the room save keeps, for the statedump console command.
 bool IsScriptGeneratedCopy(const CStateManager& mgr, CEntity& ent) { return IsGeneratedCopy(mgr, ent); }
+
+// A sound copy is left out: made again it would play from its start a second time.
+bool SavesGeneratedCopy(CEntity& ent) {
+  return TCastToPtr< CPatterned >(&ent) != nullptr || TCastToPtr< CScriptPickup >(&ent) != nullptr ||
+         dynamic_cast< CScriptDebris* >(&ent) != nullptr;
+}
 
 bool ScriptTimerState(CEntity& ent, float& time, bool& timing) {
   return PortRoomState::TimerValue(ent, time, timing);

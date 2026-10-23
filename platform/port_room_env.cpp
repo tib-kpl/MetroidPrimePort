@@ -10,6 +10,7 @@ std::vector<uint32_t> sLoadedSpare; // FrameState::loaded of the frame before la
 int sAuto = -1;
 int sStatic = -1;
 int sAreaLights = -1;
+int sHdrScene = -1;
 
 // Areas in memory; one without a file has an empty File.
 std::unordered_map<uint32_t, Area> sAreas;
@@ -897,6 +898,15 @@ bool AreaLights() {
 
 void SetAreaLights(bool on) { sAreaLights = on ? 1 : 0; }
 
+bool HdrScene() {
+  if (sHdrScene < 0) {
+    sHdrScene = port::EnvFlag("MP_HDR_SCENE") ? 1 : 0;
+  }
+  return sHdrScene != 0;
+}
+
+void SetHdrScene(bool on) { sHdrScene = on ? 1 : 0; }
+
 bool AutoExposure() {
   if (sAuto < 0) {
     sAuto = port::EnvFlag("MP_ROOM_ENV_AUTO_EXPOSURE", true) ? 1 : 0;
@@ -1421,6 +1431,7 @@ FogCore FogOf(const FogHint& h) {
   c.lightCap = h.lightCap;
   for (int i = 0; i < 3; ++i) {
     c.wind[i] = h.useScriptWind ? h.wind[i] : 0.f;
+    c.worldShift[i] = h.worldShift[i];
     c.colorB[i] = h.colorB[i];
     c.colorA[i] = h.colorA[i];
   }
@@ -1455,6 +1466,7 @@ FogCore BlendFog(const FogCore& a, const FogCore& b, float t) {
   o.lightCap = mix(a.lightCap, b.lightCap);
   for (int i = 0; i < 3; ++i) {
     o.wind[i] = b.wind[i]; // snaps
+    o.worldShift[i] = b.worldShift[i];
     o.colorB[i] = mix(a.colorB[i], b.colorB[i]);
     o.colorA[i] = mix(a.colorA[i], b.colorA[i]);
   }
@@ -1631,8 +1643,13 @@ bool VolumetricFog(Fog& out) {
   out.noiseFreq = c.noiseFreq;
   out.noiseStrength = c.noiseStrength;
   out.lightCap = c.lightCap;
+  // Remastered's m3 (minus the wind's travel) plus its world's origin, in its axes (-x, z, y).
+  const float travel[3] = {c.worldShift[0] + c.wind[0] * sFog.time, c.worldShift[1] + c.wind[1] * sFog.time,
+                           c.worldShift[2] + c.wind[2] * sFog.time};
+  out.noiseOffset[0] = travel[0];
+  out.noiseOffset[1] = -travel[2];
+  out.noiseOffset[2] = -travel[1];
   for (int i = 0; i < 3; ++i) {
-    out.noiseOffset[i] = c.wind[i] * sFog.time;
     out.colorB[i] = c.colorB[i];
     out.colorA[i] = c.colorA[i];
   }
@@ -2038,6 +2055,36 @@ bool HasVolume(uint32_t mrea) {
 
 namespace {
 
+// What an area's lightmap is multiplied by, 0 for none yet. Like the volume's level (see
+// Compose): the lightmap holds irradiance as the grid does. Without the room's exposure,
+// the grid's average comes out at the key.
+float LightmapLevel(const Area& area) {
+  const float exposure = RoomExposed() ? FrameExposure(area) : 0.f;
+  if (exposure > 0.f) {
+    return exposure * LightGain();
+  }
+  if (!area.file.grids.empty() && area.file.grids[0].average > 0.f) {
+    return 0.18f / area.file.grids[0].average;
+  }
+  return 0.f;
+}
+
+} // namespace
+
+bool HasLightmapOnly(uint32_t mrea) {
+  if (!Enabled() || !VolumesEnabled()) {
+    return false;
+  }
+  const auto found = sAreas.find(mrea);
+  if (found == sAreas.end()) {
+    return false;
+  }
+  const Area& area = found->second;
+  return area.file.tiles == nullptr && area.file.grids.empty() && area.lightmap != 0 && LightmapLevel(area) > 0.f;
+}
+
+namespace {
+
 // The material cubes made so far, by file id; 0 for a file that could not be read.
 struct MaterialCubeGpu {
   uint32_t id = 0;
@@ -2434,24 +2481,13 @@ bool AddLightmap(Selection& out) {
   if (found == sAreas.end() || found->second.lightmap == 0) {
     return false;
   }
-  const Area& area = found->second;
-  // Like the volume's level (see Compose): the lightmap holds irradiance as the grid does.
-  // Without the room's exposure, the grid's average comes out at the key.
-  float level;
-  const float exposure = RoomExposed() ? FrameExposure(area) : 0.f;
-  if (exposure > 0.f) {
-    level = exposure * LightGain();
-  } else if (!area.file.grids.empty() && area.file.grids[0].average > 0.f) {
-    level = 0.18f / area.file.grids[0].average;
-  } else {
-    return false;
-  }
+  const float level = LightmapLevel(found->second);
   static const float scale = port::EnvFloat("MP_ROOM_ENV_LIGHTMAP_SCALE", 1.f);
   // The shader takes a level of 0 for no lightmap (a scale of 0 is a one-texel lookup).
   if (!(level * scale > 0.f)) {
     return false;
   }
-  out.lightmap = area.lightmap;
+  out.lightmap = found->second.lightmap;
   out.lightmapRect[0] = sHintLightmap[0];
   out.lightmapRect[1] = sHintLightmap[1];
   out.lightmapRect[2] = sHintLightmap[2];

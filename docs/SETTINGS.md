@@ -1228,7 +1228,8 @@ other `X:\Users\<name>`: `X:\Users\<user>`); the
   the grid; adding them as well blew actors out near lamps.
   `MP_ROOM_ENV_AREA_LIGHTS=1` (console `roomenv arealights on|off`) adds them
   back. This also applies to room geometry under `MP_ROOM_GEO_AREA_LIGHTS=1`.
-  `MP_HDR_SCENE=1` opts into experimental HDR scene rendering. It is default-off and only
+  `MP_HDR_SCENE=1` (F1 > Debug > Remastered materials and lighting "HDR scene", console `roomenv hdr on|off`, both live)
+  opts into experimental HDR scene rendering. It is default-off and only
   applies to Remastered room-environment scenes with a valid tone curve in the Combat or Scan
   visor, outside visor transitions; Thermal/X-ray, HUD/UI, and inventory remain LDR. This is
   not full beam/effect parity: other legacy effects may still use inherited exposure.
@@ -1241,6 +1242,12 @@ other `X:\Users\<name>`: `X:\Users\<user>`); the
   contribution: TEV alpha can slightly exceed one, and subsequent volumetric fog attenuates light.
   Other legacy SRCALPHA/ONE effects intentionally share this policy; this is not full visual
   certification of those effects.
+  Draws whose source colour scales the destination (ZERO/SRCCLR and DSTCLR/ZERO multiply, the
+  camera filters' DSTCLR/ONE add-dest-colour) take it as a linear gain instead (sRGB decode;
+  `(1 + c)^2.2 - 1` for add-dest-colour): through the inverse curve the factor depended on the
+  room's exposure (the underwater filter darkened Frigate Crash Site; white would go to the
+  shoulder's asymptote). The inverting filter (INVDSTCLR/ZERO) and
+  destination-alpha blends are not converted.
   This is not exact LDR compositing over a nonblack background: the tone curve is nonlinear.
   It does not claim Remastered parity or change other blend modes, native HDR writers, bloom,
   room tone or exposure.

@@ -89,8 +89,13 @@ class Wiring(WiringCase):
         capture = between(room, "void CaptureRoomState(", "\nint ApplyRoomState(", str(ROOM))
         # A copy never decides whether its template's editor id is present.
         self.assertIn("if (!generated)\n      out.present.push_back(id);", capture)
-        self.assertIn("if (generated && TCastToPtr< CPatterned >(&ent) == nullptr)", capture)
+        # Enemy, pickup and debris copies are saved; other copies (maze walls, sounds) are not.
+        self.assertIn("if (generated && !SavesGeneratedCopy(ent))", capture)
+        keeps = braced(room, "bool SavesGeneratedCopy(CEntity& ent) {", str(ROOM))
+        self.assertIn("CPatterned", keeps)
+        self.assertNotIn("CScriptSound", keeps)
         apply = braced(room, "int ApplyRoomState(", str(ROOM))
+        self.assertIn("pickup->SetWasGenerated();", apply)
         self.assertIn("if (FindBlock(obj, kTagGenerated) != nullptr) {", apply)
         self.assertIn("mgr.SetIsGeneratingObject(true);", apply)
         self.assertIn("mgr.GenerateObject(TEditorId(obj->editorId)).second;", apply)

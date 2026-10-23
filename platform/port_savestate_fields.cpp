@@ -405,7 +405,7 @@ namespace PortSaveState {
 namespace {
 
 // Bump when what SavedField picks or how a kind is written changes.
-constexpr uint32_t kFieldPolicy = 6;
+constexpr uint32_t kFieldPolicy = 7;
 
 constexpr uint32_t kUidNone = 0xFFFFFFFFu;    // kInvalidUniqueId
 constexpr uint32_t kUidDynamic = 0xFFFFFFFEu; // an object without an editor id: left alone
@@ -441,6 +441,10 @@ bool SavedField(const PortSchemaClass& cls, const PortSchemaField& f) {
   if (f.kind != PortSchemaKind::bitfield && f.addr == nullptr)
     return false;
   if (std::strcmp(cls.name, "CEntity") == 0)
+    return false;
+  // Asset streaming is this run's, not the game's: Flaahgra's copies, still loading
+  // after a load, given the saved "loaded" never built their body controller.
+  if (std::strstr(f.name, "oaded") != nullptr || std::strstr(f.name, "oading") != nullptr)
     return false;
   if (std::strcmp(cls.name, "CActor") == 0)
     return Named(f.name, {"x64_modelData", "xb4_drawFlags", "xd0_damageMag", "xe5_26_muted", "xe5_28_callTouch",
@@ -759,8 +763,16 @@ int ApplyClasses(CStateManager& mgr, CEntity& ent, const std::vector< const Port
 
 } // namespace
 
+bool EntityFieldsSaved(const CStateManager& mgr, CEntity& ent) {
+  // Enemies, and the pickups and debris a generator made (life timers, generated flag).
+  return Enabled() && (TCastToConstPtr< CPatterned >(&ent) != nullptr ||
+                       (IsScriptGeneratedCopy(mgr, ent) && SavesGeneratedCopy(ent)));
+}
+
+bool SchemaFieldSaved(const PortSchemaClass& cls, const PortSchemaField& f) { return SavedField(cls, f); }
+
 bool CaptureEntityFields(const CStateManager& mgr, CEntity& ent, std::string& out) {
-  if (!Enabled() || TCastToConstPtr< CPatterned >(&ent) == nullptr)
+  if (!EntityFieldsSaved(mgr, ent))
     return false;
   const std::vector< const PortSchemaClass* > chain = Chain(ent);
   BlockWriter w;

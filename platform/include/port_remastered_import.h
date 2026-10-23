@@ -73,13 +73,14 @@ inline constexpr const char* kImportModName = "remastered-models";
 namespace ImportStage {
 // port_remastered_convert/cmdl: how models and materials are written (models, effects, rooms,
 // room models, HUD).
-inline constexpr int kConverter = 52;
+inline constexpr int kConverter = 53;
 // What a converted texture holds: port_remastered_image/txtr/dds/astc, and Converter's Get, Cube
 // and Baked. Each converted texture is kept across imports under its tag and this number, so a
 // kConverter bump re-imports the models without converting their textures again.
 inline constexpr int kTextures = 3;
+// 10: a plain cutout over a retail fx material is drawn opaque, cut by the shader.
 // 9: a ColorUnlit mesh (the door shields) gets a back copy.
-inline constexpr int kModels = 9;      // the table's models, their looks and the ANCS copies
+inline constexpr int kModels = 10;     // the table's models, their looks and the ANCS copies
 // 63: ELPS reads its CNST surface flag; the system tween is 0 only at a 0x1000000 lifetime.
 // 62: NEGT, CRCV, SPEV, ELPS, ROTV, PNCV, KEYF, SLTW, CRLN octaves, KESP, one-stop GRAD, PAP0/9,
 //     ADV9 and IAV0..3 are converted; PLNV counts come from MAXP.
@@ -116,14 +117,15 @@ inline constexpr int kModels = 9;      // the table's models, their looks and th
 // 93: LIT_ 1 on a VFX_*_Lit sprite shader is the vfx ParticleLit feature (AlreadyExposed under IEXP).
 // 94: a ParticleLit material is never AlreadyExposed (the lit perm reads no inverse exposure).
 // 95: BLIT 1 (a lit sprite takes the room's baked probe) is the port-only PBLT 1.
-inline constexpr int kEffects = 95;    // port_remastered_effect_import and the particle converters
+inline constexpr int kEffects = 96;    // port_remastered_effect_import and the particle converters
 // 20: two rooms matching one area write only the closer match's files, not the later room's.
 // 21: roomenv version 22, the world master's hints driven by its camera volumes (the table in every roomenv).
 // 22: a master's InventoryActivator fired by the camera going under water drives its hints (kSenderCameraWaterItem).
 // 23: a hint (grade, backlight, fog) marks whether it is the master's, so the room's own wins (HintOutranks).
 // 24: a room's effect actors of Remastered's own, as <MREA>.roomfx (port_room_effects.h).
 // 25: .roomfx v2 carries each actor's particle variable values (property 3def0de6).
-inline constexpr int kRooms = 25;      // port_remastered_room: roomenv/, .roomgeo, .roomliquid, .roomfx, water maps
+// 26: roomenv version 23, the world shift (the fog's noise is read in Remastered's world).
+inline constexpr int kRooms = 26;      // port_remastered_room: roomenv/, .roomgeo, .roomliquid, .roomfx, water maps
 inline constexpr int kRoomModels = 1;  // the rooms' own models and their levels of detail
 inline constexpr int kText = 1;        // port_remastered_text, and the font (port_remastered_font)
 inline constexpr int kHud = 8;         // port_remastered_hud, port_remastered_map

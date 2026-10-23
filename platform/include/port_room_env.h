@@ -140,6 +140,9 @@
 //         unit axis i, half[i] its half extent along it). The world's camera volumes (see
 //         WorldVolume); every room of a world has the same table, and link senders
 //         kSenderWorldVolume + k name its entries.
+// Version 23 adds, at the end:
+//   f32 worldShift[3]: the world's origin move (retail world = Remastered's (-x, z, y) plus it;
+//         every room of a world has the same). The fog's noise is looked up in Remastered's world.
 // The tonemap is Remastered's: the exposure value without auto exposure, the radiance
 // that comes out as middle grey once exposed, and how far the curve's toe and shoulder
 // are pulled in.
@@ -283,6 +286,7 @@ struct FogHint {
   float wind[3] = {};
   bool useScriptWind = false;
   bool noProbe = false;
+  float worldShift[3] = {}; // the file's (version 23)
   float colorB[4] = {1.f, 1.f, 1.f, 1.f};
   float colorA[4] = {};
   float lut[64] = {};
@@ -471,6 +475,7 @@ struct File {
   float staticLerp = 0.5f;
   std::vector<FluidHint> fluidHints; // version 20
   std::vector<WorldVolume> worldVolumes; // version 22
+  float worldShift[3] = {};              // version 23
   float contrast = 0.f;
   float bloomThreshold = 0.9f;
   std::vector<float> bloomTints; // RGBA; empty: the room has no bloom
@@ -668,6 +673,11 @@ struct ProbeOverrideScope {
 // Whether a model announced for this area would get a volume: false until all of the
 // area's volumes are on the GPU.
 bool HasVolume(uint32_t mrea);
+// An area with a lightmap and no grid (25 rooms, e.g. Energy Core Access): true once the
+// lightmap is on the GPU with a level. Remastered binds an area's lightmap to its world
+// models whenever it has one (CWorldModelRenderable::BindBakedLightingMaterialData), grid
+// or not, so its room geometry is lit as baked.
+bool HasLightmapOnly(uint32_t mrea);
 // MP_ROOM_ENV_VOLUME, the console's `roomenv volume`.
 void SetVolumesEnabled(bool on);
 bool VolumesEnabled();
@@ -747,13 +757,15 @@ std::string RoomLightInfo();
 // since the change, unclamped: scalars and colours lerp, the wind snaps, `noProbe` snaps
 // halfway and the LUT lerps in distance space. A hint without a fade, or a change on the first
 // update after ResetGrades (a fresh state manager, update count 0), changes at once. The
-// fog draws while a hint is picked or an interpolation runs. noiseOffset is the shown wind
-// times the seconds since the start; a hint that uses the world's wind has none here.
+// fog draws while a hint is picked or an interpolation runs. The noise is read, as Remastered
+// does, at (its world position + noiseOffset) * noiseFreq, where its world is retail's minus the
+// world shift, turned to (-x, z, y); noiseOffset is that turn of minus the shift and minus the
+// shown wind times the seconds since the start (a hint that uses the world's wind has none here).
 struct Fog {
   float range, scatter, absorb, density; // density: the decay (0: no fog)
   float attenSlope, attenBias;           // height term over retail world z
   float noiseFreq, noiseStrength, lightCap;
-  float noiseOffset[3]; // wind times elapsed time (world units)
+  float noiseOffset[3]; // in Remastered's world axes (see above)
   bool noProbe;               // lit by Remastered's default white volume, not the probes
   float colorB[4], colorA[3]; // colorB.a scales the volume's light; colorA already times the intensity
   float lut[64];
@@ -893,6 +905,10 @@ bool StaticExposure();
 // (the console's `roomenv arealights`).
 void SetAreaLights(bool on);
 bool AreaLights();
+// Whether the world is drawn into the HDR scene frame (CMFGame's drawWorld; docs/SETTINGS.md).
+// Experimental, off unless MP_HDR_SCENE=1 (F1 > Debug, the console's `roomenv hdr`).
+void SetHdrScene(bool on);
+bool HdrScene();
 // Whether the reflection is Remastered's blend of probes around the camera (UpdateBlend,
 // drawn into one cube on the GPU) with its ambient occlusion; otherwise each model reflects
 // the one probe it stands in (PickProbe). MP_ROOM_ENV_BLEND=0, the console's `roomenv blend`.
