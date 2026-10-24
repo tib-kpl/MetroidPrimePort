@@ -14,7 +14,7 @@ namespace PortRoomEnv {
 namespace {
 
 constexpr uint32_t kMagic = 0x5645504D; // 'MPEV'
-constexpr uint32_t kVersion = 23;
+constexpr uint32_t kVersion = 26;
 constexpr uint32_t kMaxGrades = 64;
 // A fog record up to its link count (inclusive).
 constexpr size_t kFogBytes = 368;
@@ -815,7 +815,7 @@ bool Parse(std::vector<uint8_t>&& data, File& out, std::string& error) {
     }
     const uint32_t suns = ReadLE32(data.data() + at);
     at += 4;
-    const size_t size = version >= 17 ? 36 : 32;
+    const size_t size = version >= 24 ? 40 : version >= 17 ? 36 : 32;
     if ((data.size() - at) / size < suns) {
       error = "cut short";
       return false;
@@ -832,6 +832,7 @@ bool Parse(std::vector<uint8_t>&& data, File& out, std::string& error) {
       if (version >= 17) {
         s.group = ReadLE32(q + 32);
       }
+      s.casts = version >= 24 && q[36] != 0;
       at += size;
     }
   }
@@ -978,12 +979,16 @@ bool Parse(std::vector<uint8_t>&& data, File& out, std::string& error) {
       const uint8_t* q = data.data() + at;
       FluidHint h;
       h.mode = q[0];
+      if (version >= 25 && q[1] <= 2) {
+        h.role = q[1];
+        h.pair = q[2];
+      }
       h.exposure[0] = ReadLEFloat(q + 4);
       h.exposure[1] = ReadLEFloat(q + 8);
       h.bias = ReadLEFloat(q + 12);
       h.sigma = ReadLEFloat(q + 16);
       h.staticLerp = ReadLEFloat(q + 20);
-      if ((h.mode != 1 && h.mode != 2) || !std::isfinite(h.exposure[0]) || !std::isfinite(h.exposure[1]) ||
+      if ((h.role == 0 && h.mode != 1 && h.mode != 2) || !std::isfinite(h.exposure[0]) || !std::isfinite(h.exposure[1]) ||
           h.exposure[1] < h.exposure[0]) {
         continue;
       }
@@ -1046,6 +1051,15 @@ bool Parse(std::vector<uint8_t>&& data, File& out, std::string& error) {
       std::copy(out.worldShift, out.worldShift + 3, fog.worldShift);
     }
   }
+  if (version >= 26) {
+    if (data.size() - at < 4) {
+      error = "cut short";
+      return false;
+    }
+    const float v = ReadLEFloat(data.data() + at);
+    at += 4;
+    out.envFxIntensity = std::isfinite(v) && v >= 0.f ? v : 1.f;
+  }
   out.data = std::move(data);
   return true;
 }
@@ -1107,32 +1121,68 @@ void WorldVolumeState::Replay(std::vector<Event>& out) const {
   }
 }
 
-bool ExposureHints::Load(const std::vector<FluidHint>& hints, bool cameraInside) {
+bool ExposureHints::Load(const std::vector<FluidHint>& hints, bool cameraInside, uint8_t state) {
   inside = false;
+  seen = false;
+  pairState = state;
   active.assign(hints.size(), 0);
+  disabled.assign(hints.size(), 0);
   order.assign(hints.size(), 0);
-  return Set(hints, cameraInside);
+  if (cameraInside) {
+    inside = seen = true;
+  }
+  return Update(hints, false);
 }
 
 bool ExposureHints::Set(const std::vector<FluidHint>& hints, bool cameraInside) {
-  if (active.size() != hints.size()) {
-    active.assign(hints.size(), 0);
-    order.assign(hints.size(), 0);
-  }
   if (cameraInside == inside) {
     return false;
   }
   inside = cameraInside;
+  seen = true;
+  return Update(hints, true);
+}
+
+bool ExposureHints::SetPair(const std::vector<FluidHint>& hints, uint8_t state) {
+  if (state == pairState) {
+    return false;
+  }
+  pairState = state;
+  return Update(hints, true);
+}
+
+bool ExposureHints::Update(const std::vector<FluidHint>& hints, bool snapMode0) {
+  if (active.size() != hints.size()) {
+    active.assign(hints.size(), 0);
+    disabled.assign(hints.size(), 0);
+    order.assign(hints.size(), 0);
+  }
   bool registered = false;
   for (size_t i = 0; i < hints.size(); ++i) {
-    const uint8_t now = hints[i].mode == 1 ? (cameraInside ? 1 : 0) : (cameraInside ? 0 : 1);
+    const FluidHint& hint = hints[i];
+    disabled[i] = hint.role == 0 ? 0 : (hint.role == 1 ? pairState == 0 : pairState != 0) ? 1 : 0;
+    bool eligible = false;
+    switch (hint.mode) {
+    case 0:
+      eligible = hint.role != 0;
+      break;
+    case 1:
+      eligible = inside;
+      break;
+    case 2:
+      eligible = seen && !inside;
+      break;
+    default:
+      break;
+    }
+    const uint8_t now = eligible && !disabled[i] ? 1 : 0;
     if (now == active[i]) {
       continue;
     }
     active[i] = now;
     if (now != 0) {
       order[i] = next++;
-      registered = true;
+      registered = registered || hint.mode != 0 || snapMode0;
     } else {
       order[i] = 0;
     }
@@ -1211,6 +1261,40 @@ void Convergence::Step(float target) {
   history[1] = history[0];
   history[0] = next;
   value = float(next);
+}
+
+void ExposureAverage::Reset() {
+  L = -1.f;
+  created = false;
+}
+
+void ExposureAverage::Take(const float rgb[3]) {
+  L = std::max(std::max(rgb[0], rgb[1]), rgb[2]);
+}
+
+float ExposureAverage::Update(bool hint, float tonemapEv, float lo, float hi, float bias, float s, bool snap,
+                              int steps, float* target) {
+  constexpr float kGrey = 0.2158605f; // sRGB 128, linear
+  if (!hint || !(L >= 0.f)) {
+    *target = tonemapEv;
+    return tonemapEv;
+  }
+  if (sigma != s) {
+    sigma = s;
+    ev.SetSigma(s);
+  }
+  *target = std::min(std::max(std::log2(L / kGrey) + 3.f + bias, lo), hi);
+  if (!created) {
+    created = true;
+    ev.SetValue(*target);
+  } else if (snap) {
+    ev.SetValue(*target);
+  } else {
+    for (int i = steps; i > 0; --i) {
+      ev.Step(*target);
+    }
+  }
+  return ev.value;
 }
 
 void SetExtents(Probe& probe) {

@@ -1334,6 +1334,15 @@ void CmdGod() {
   Finish();
 }
 
+void CmdHint() {
+  if (sCmd.args.size() < 2 || Lower(sCmd.args[1]) != "show") {
+    return Finish("usage: hint show");
+  }
+  PortDebug::RequestShowHint();
+  Out("hint requested");
+  Finish();
+}
+
 void CmdMemo() {
   std::wstring wide;
   for (size_t i = 1; i < sCmd.args.size(); ++i) {
@@ -1553,6 +1562,14 @@ void CmdStats() {
     Out("frame: %.0f fps, %u draws (%u merged), %u PBR, %u passes, pipelines %u made %u waiting", aurora_get_fps(),
         stats->drawCallCount, stats->mergedDrawCallCount, CCubeMaterial::sPortPBRDraws, stats->renderPassCount,
         stats->createdPipelines, stats->queuedPipelines);
+    AuroraPipelineStats pipes{};
+    aurora_get_pipeline_stats(&pipes);
+    Out("pipeline cache: %llu skipped draws, misses %llu new %llu known %llu late; %llu prefetches queued %llu; "
+        "%u pinned, %u known",
+        static_cast< unsigned long long >(pipes.skippedDraws), static_cast< unsigned long long >(pipes.newMisses),
+        static_cast< unsigned long long >(pipes.knownMisses), static_cast< unsigned long long >(pipes.lateMisses),
+        static_cast< unsigned long long >(pipes.prefetches), static_cast< unsigned long long >(pipes.prefetchQueued),
+        pipes.pinned, pipes.known);
     Out("buffers: %.1f MiB vertices, %.1f indices, %.1f arrays, %.1f uniforms, %.1f texture uploads",
         stats->lastVertSize / 1048576.f, stats->lastIndexSize / 1048576.f, stats->lastStorageSize / 1048576.f,
         stats->lastUniformSize / 1048576.f, stats->lastTextureUploadSize / 1048576.f);
@@ -2324,6 +2341,18 @@ void CmdStackBeams() {
   Finish();
 }
 
+void CmdWalkSpeed() {
+  if (sCmd.args.size() > 1) {
+    const int value = std::atoi(sCmd.args[1].c_str());
+    if (value < PortDebug::kWalkSpeedMin || value > PortDebug::kWalkSpeedMax) {
+      return Finish("usage: walkspeed [50..200]");
+    }
+    PortDebug::SetWalkSpeed(value);
+  }
+  Out("walkspeed %d", PortDebug::WalkSpeed());
+  Finish();
+}
+
 void CmdSunShadow() {
   if (sCmd.args.size() > 1) {
     const std::string& v = sCmd.args[1];
@@ -2808,9 +2837,6 @@ void CmdRoomEnv() {
       Out("at %.2f %.2f %.2f", at[0], at[1], at[2]);
       OutLines(info.empty() ? std::string("no room environment loaded") : info);
       return Finish();
-    } else if (arg == "exposure" && sCmd.args.size() > 2 &&
-               (Lower(sCmd.args[2]) == "on" || Lower(sCmd.args[2]) == "off")) {
-      PortRoomEnv::SetRoomExposed(Lower(sCmd.args[2]) == "on");
     } else if (arg == "auto" && sCmd.args.size() > 2 &&
                (Lower(sCmd.args[2]) == "on" || Lower(sCmd.args[2]) == "off")) {
       PortRoomEnv::SetAutoExposure(Lower(sCmd.args[2]) == "on");
@@ -2820,9 +2846,6 @@ void CmdRoomEnv() {
     } else if (arg == "arealights" && sCmd.args.size() > 2 &&
                (Lower(sCmd.args[2]) == "on" || Lower(sCmd.args[2]) == "off")) {
       PortRoomEnv::SetAreaLights(Lower(sCmd.args[2]) == "on");
-    } else if (arg == "hdr" && sCmd.args.size() > 2 &&
-               (Lower(sCmd.args[2]) == "on" || Lower(sCmd.args[2]) == "off")) {
-      PortRoomEnv::SetHdrScene(Lower(sCmd.args[2]) == "on");
     } else if (arg == "balllight" && sCmd.args.size() > 2 &&
                (Lower(sCmd.args[2]) == "on" || Lower(sCmd.args[2]) == "off")) {
       PortRemasteredBallLight::SetEnabled(Lower(sCmd.args[2]) == "on");
@@ -2869,8 +2892,8 @@ void CmdRoomEnv() {
                 Lower(sCmd.args[2]) == "light")) {
       PortRoomEnv::SetVolumeView(Lower(sCmd.args[2]) == "off" ? 0 : Lower(sCmd.args[2]) == "coords" ? 1 : 2);
     } else {
-      return Finish("usage: roomenv [on|off|info [<x> <y> <z>]|exposure on|off|auto on|off|static on|off|"
-                    "arealights on|off|hdr on|off|balllight on|off|<scale>|blend on|off|bloom on|off|"
+      return Finish("usage: roomenv [on|off|info [<x> <y> <z>]|auto on|off|static on|off|"
+                    "arealights on|off|balllight on|off|<scale>|blend on|off|bloom on|off|"
                     "grade on|off|grades|fog|volfog on|off|fogregions on|off|"
                     "volume on|off|ambient <scale>|"
                     "show off|coords|light]");
@@ -2885,13 +2908,13 @@ void CmdRoomEnv() {
   float backlightBack = 0.f;
   PortRoomEnv::Backlight(backlightTop, backlightBack);
   static const char* const kViews[] = {"off", "coords", "light"};
-  Out("roomenv %s: %d area(s), %d probe(s), %d cube(s) loaded, %d ambient grid(s), exposure by %s, "
-      "auto %s, static %s (glow x%g), area lights %s, hdr scene %s, probe blend %s, bloom %s, grade %s, volume %s, "
+  Out("roomenv %s: %d area(s), %d probe(s), %d cube(s) loaded, %d ambient grid(s), "
+      "auto %s, static %s (glow x%g), area lights %s, probe blend %s, bloom %s, grade %s, volume %s, "
       "ambient %g, show %s, backlight top %g back %g",
       PortRoomEnv::Enabled() ? "on" : "off", areas, probes, cubes, grids,
-      PortRoomEnv::RoomExposed() ? "room" : "cube", PortRoomEnv::AutoExposure() ? "on" : "off",
+      PortRoomEnv::AutoExposure() ? "on" : "off",
       PortRoomEnv::StaticExposure() ? "on" : "off", PortRoomEnv::GlowScale(),
-      PortRoomEnv::AreaLights() ? "on" : "off", PortRoomEnv::HdrScene() ? "on" : "off",
+      PortRoomEnv::AreaLights() ? "on" : "off",
       PortRoomEnv::ProbeBlend() ? "on" : "off",
       PortRoomEnv::BloomEnabled() ? "on" : "off",
       PortRoomEnv::ColorGradeEnabled() ? "on" : "off", PortRoomEnv::VolumesEnabled() ? "on" : "off",
@@ -3725,6 +3748,8 @@ const CommandSpec kCommands[] = {
     {"die", nullptr, CmdDie, ""},
     {"god", nullptr, [](CStateManager&) { CmdGod(); },
      "god [on|off]               the player takes no damage (no argument: show)"},
+    {"hint", nullptr, [](CStateManager&) { CmdHint(); },
+     "hint show                  show the hint the game would show next"},
     {"memo", nullptr, [](CStateManager&) { CmdMemo(); },
      "memo <text>                show text as a HUD message"},
     {"strg", nullptr, [](CStateManager&) { CmdStrg(); },
@@ -3798,7 +3823,7 @@ const CommandSpec kCommands[] = {
     {"stats", CmdStats, nullptr,
      "stats [textures [n]]       the last frame's draws and buffers, texture and lighting totals, Dawn's GPU memory, the heap, room geometry and environments; `textures` lists the n (25) most numerous live texture groups by label, size and format"},
     {"roomenv", nullptr, nullptr,
-     "roomenv [on|off|exposure on|off]  the room environments mods supply; exposure: by room, not by cube\n"
+     "roomenv [on|off]           the room environments mods supply\n"
      "roomenv grades | state <id> <state>  the colour grades; as if script object <id> (hex) sent <state>\n"
      "roomenv volume on|off | ambient <scale> | show off|coords|light\n"
      "                           the baked light per pixel; the baked ambient's weight (0: the game's);\n"
@@ -3880,6 +3905,8 @@ const CommandSpec kCommands[] = {
      "mapui [0|1]                 the map's extra legend entries and the Mark room prompt"},
     {"stackbeams", CmdStackBeams, nullptr,
      "stackbeams [0|1]           every shot also fires the other owned beams' projectiles (stack_beams)"},
+    {"walkspeed", CmdWalkSpeed, nullptr,
+     "walkspeed [50..200]        on-foot movement speed in percent (walk_speed); no argument prints it"},
     {"beamdoors", nullptr, CmdBeamDoors,
      "beamdoors [status|on|off|list [here]|unlock <door index|all>|reset]  the beam doors opened for good\n"
      "                           (beam_doors_stay_unlocked; on/off, unlock restyle the loaded doors)"},

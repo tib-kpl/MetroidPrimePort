@@ -69,14 +69,23 @@
   touch controls, bindings, cheats, save states, the randomizer and Archipelago,
   rich presence and the timer stay available; the settings it forces are greyed
   out in F1.
-- EFB scale (F1 > Video > Quality, persisted as `render_scale`): 1x-4x of the GameCube's
-  640x528 EFB, or the window's own size with "Auto render scale". Above 2x it
+- Resolution scale (F1 > Video > Quality, persisted as `render_scale`): 1x-4x of the GameCube's
+  640x528 EFB, shown with the lines it draws (1x is 480p in NTSC), or the window's own size with
+  "Auto render scale". Above 2x it
   supersamples (4x at 16:9 is 3755x2112; with MSAA 4 the targets take
   several hundred MB). "Dynamic
-  resolution" (`dynamic_res`, `dynamic_res_target` in fps, 0 = the display's
-  rate) lowers the scale while the GPU cannot hold the target, down to "Lowest
-  scale" (`dynamic_res_min`: 0.5, 0.75 or 1, default 1), and raises it back when
-  there is room. Where the GPU can time itself (timestamp queries, Aurora's
+  resolution" (`dynamic_resolution`) lowers the scale while the GPU cannot hold the
+  "Frame rate target" (`dynamic_res_target`, 30-500 fps, 0 = "Display", the
+  display's rate, however high; never above the frame rate cap), down to "Minimum resolution
+  scale" (`dynamic_res_min`, 0.25x up to the top, default 1), and raises it back when
+  there is room. Its mode is the two settings together: Auto (`render_scale` 0)
+  goes up to the window's own scale (the height Aurora draws at auto, fitted to the
+  game's aspect, over what 1x draws) and starts over when the window is resized; it
+  does nothing while that top is not above the minimum (a window of 480 lines or less
+  with the minimum at 1x), and F1 says so; User goes up to "Maximum resolution scale" (the
+  `render_scale` set). The old key `dynamic_res` is still read: on with a fixed
+  scale stays on, but on with auto render scale, which did nothing before, loads as
+  Off. Where the GPU can time itself (timestamp queries, Aurora's
   `gpu_prof`, switched on while dynamic resolution is) it reads the GPU's time per
   frame: a slow scene whose GPU has time to spare is CPU-bound and left alone, and
   a GPU-bound one goes toward the scale predicted to fit 85% of the frame budget
@@ -371,6 +380,15 @@
   rows apply in menus and the map with or without a controller, replacing what that key
   does in gameplay there; touch is unchanged. With
   the option off, menus and the map follow the gameplay bindings and the rows do nothing.
+  The Morph Ball rows (issue #167: Bomb, Power Bomb, Boost Ball, Spider Ball, Unmorph;
+  `ball_bomb`, `ball_power_bomb`, `ball_boost`, `ball_spider`, `ball_unmorph` in
+  controls.toml) press A, Y, B, R and X only in Morph Ball. They start unbound, so the ball
+  uses the game buttons until one is set. A key, mouse button or controller input bound to
+  one does only that in the ball, held layers included (the same mouse button under any of
+  its codes, an axis at any threshold); outside the ball its other bindings work as before,
+  and the prompts in the ball follow it. A combo on a row replaces the same combo; its
+  buttons alone keep what they do, as with any combo. A row given layers in controls.toml
+  works in the ball while one is held. Touch buttons can't take them; touch is unchanged.
   "Point and click menus" (on by default; `pointer_menus=`, `MP_POINTER_MENUS`) lets
   the mouse and touch work the game's own menus (front end, pause screen, save stations,
   upgrade messages) and the map. A hover selects (a tap on touch), a click confirms (a
@@ -619,6 +637,14 @@
 - Scan speed (Game > Cutscenes, `scan_speed`, `MP_SCAN_SPEED`, 100-500, default
   100): percent speed of the scan visor's progress bar and the scan's minimum
   time. 100 under Original experience.
+- Hint delay (Game > Cutscenes, `hint_delay`, `MP_HINT_DELAY`, 0-30 minutes,
+  default 0 = Game default): caps the wait before a hint first shows, also for
+  hints already waiting in a loaded save. Needs the in-game hint system on. Game
+  default under Original experience.
+- Show current hint (Game > Cutscenes button; console `hint show`): shows the hint
+  the game would show next. A hint already on screen comes back with its map
+  marker; otherwise the waiting hint due soonest shows now. Needs the in-game
+  hint system on.
 - Auto-aim (Controls > Options > Aiming, `auto_aim`, `MP_AUTO_AIM`, default on):
   off clears the gun's aim target unless Lock-On holds one, so free-aimed shots go
   straight to where you aim instead of turning toward the enemy nearest the screen
@@ -755,8 +781,16 @@
   setting does nothing while the Phazon Beam is active), unowned beams never
   fire, and a beam whose projectile data isn't loaded yet is skipped for that
   shot (nothing blocks). The other beams' projectile data is kept loaded while
-  the setting is on and released when it is turned off. Shots wait for the
-  slowest owned beam's cool down (the Ice Beam's), whichever beam is selected.
+  the setting is on and released when it is turned off. Shots fire at the
+  selected beam's rate.
+- Walk speed (F1 > Game > Cutscenes, `walk_speed`, 50 to 200 percent, 100 by
+  default and 100 in the Original experience): scales how fast Samus moves on
+  foot. The top speed, acceleration and friction of walking and strafing (also
+  with direct aim and Remastered movement, on the ground, in the air and in
+  water) and the orbit strafe and approach speeds are all multiplied by it, so
+  she reaches k times the retail speed in the same time and stops in the same
+  time. Jump height, sideways dashes, turning, the grapple and the Morph Ball
+  are unchanged; speed carries into a jump. At 100 movement is exactly retail.
 - Unlock beam doors once opened (F1 > Game > Cutscenes, `beam_doors_stay_unlocked`,
   off by default and off in the Original experience): a door locked to the Wave,
   Ice, Plasma or Power Beam that you open by breaking its force field becomes a
@@ -847,6 +881,10 @@
   until Show cheats is ticked (`cheats`, off by default). Invulnerable
   (`invulnerable`, off by default) makes Samus take no damage; it stays on
   across runs until unticked, and `MP_GODMODE=<0|1>` overrides it for one run (see below).
+  Phazon Beam (`cheat_phazon_beam`, off by default) puts the Phazon Beam in the Power Beam's
+  place, in any room and without the Phazon Suit: selecting Wave, Ice or Plasma leaves it through
+  the game's exit morph, selecting Power enters it again, and missiles fire from it. Unticking
+  it leaves the beam at once; real phazon pools behave as in the original either way.
 - F1 > System > Log, "Write the log to a file" (`logging`, on by default; the older `log_file` key is ignored):
   everything the game prints to stdout/stderr, including the
   line Aurora prints before it aborts, also goes to `metroid_prime_port.log` in
@@ -1083,6 +1121,17 @@ other `X:\Users\<name>`: `X:\Users\<user>`); the
   direction rather than at accumulated mouse angles. Jump/fall auto-pitch is
   bypassed during free mouse aim. Capture/UI transitions cancel held charges and
   require mouse-button release before another mouse shot can begin.
+- Lock-on free aim (Controls > Options > Aiming, `lock_on_free_aim`, default off;
+  needs Mouse aim, Twin stick or the modern touch layout), as in Remastered: under a
+  combat lock the mouse, twin stick's right stick, gyro aim or a touch aim drag moves a
+  crosshair over the view and shots leave along the ray through it, as with pointer
+  aim, while the lock steers the view (no edge turn). Without pointer aim the
+  crosshair is there only during the lock. It starts and ends each lock at the
+  centre, where shots and homing go for the locked target as before; off the centre
+  beams, missiles and the Wavebuster head for the crosshair and do not home onto the
+  locked target. Under pointer aim with
+  gyro aim, the twin stick moves the crosshair too while locked, so either or both
+  can aim. Scan locks and grapples still aim through the centre.
 - `MP_DISABLE_AI_AUDIO=1`: start streamed AI audio muted. It can subsequently be
   enabled from the overlay. MusyX mute is independent.
 - `MP_FAST_BOOT=1`, `MP_SKIP_CUTSCENES=1`, `MP_CUTSCENE_SPEED=8`,
@@ -1206,12 +1255,10 @@ other `X:\Users\<name>`: `X:\Users\<user>`); the
   the mip a roughness of 1 reflects; unset, the cube's own top mip, which is
   what Remastered reads) and `MP_ROOM_ENV_AMBIENT` (scale of the
   baked ambient light, default 1; 0 keeps the game's ambient colour).
-  `MP_ROOM_ENV_EXPOSURE=0` (console `roomenv exposure on|off`) exposes each
-  cube on its own instead of the frame by the camera's room, and drops the
-  room's tone curve. Files older than version 4 lack the exposure bias and
+  Files older than version 4 lack the exposure bias and
   the curve's contrast, so re-import to get the right levels.
-  While room geometry is on screen the exposure follows the drawn picture's
-  average, held to the room's AutoExposureHint range and eased by its sigma
+  In a room with an AutoExposureHint the exposure follows the drawn picture's
+  average, whatever geometry draws, held to the room's AutoExposureHint range and eased by its sigma
   (Remastered's rule); a room change eases, a world load or warp snaps.
   `MP_ROOM_ENV_AUTO_EXPOSURE=0` (console `roomenv auto on|off`) keeps the
   probe-based exposure. Version 7 adds the hint's sigma and static lerp; older
@@ -1228,12 +1275,14 @@ other `X:\Users\<name>`: `X:\Users\<user>`); the
   the grid; adding them as well blew actors out near lamps.
   `MP_ROOM_ENV_AREA_LIGHTS=1` (console `roomenv arealights on|off`) adds them
   back. This also applies to room geometry under `MP_ROOM_GEO_AREA_LIGHTS=1`.
-  `MP_HDR_SCENE=1` (F1 > Debug > Remastered materials and lighting "HDR scene", console `roomenv hdr on|off`, both live)
-  opts into experimental HDR scene rendering. It is default-off and only
-  applies to Remastered room-environment scenes with a valid tone curve in the Combat or Scan
-  visor, outside visor transitions; Thermal/X-ray, HUD/UI, and inventory remain LDR. This is
-  not full beam/effect parity: other legacy effects may still use inherited exposure.
-  Legacy non-PBR GX draws using exactly SRCALPHA/ONE additive blending convert their
+  With a Remastered room environment loaded the world always draws in the HDR scene (linear
+  RGBA16F light, toned once by the frame's post), in every visor, as Remastered does; a room
+  without tone data tones through the identity (Remastered's `STonemapParams::BuildLinear(3.0)`:
+  exposure 1, clipped at 1). Retail never draws in it. HUD/UI and inventory remain LDR. If the
+  HDR target cannot be allocated (logged once) the frame draws without the Remastered post: each
+  PBR draw is toned on its own, and bloom, grade, fog, water and the visor posts are skipped. This is not full beam/effect parity: other legacy effects may still use inherited exposure.
+  Legacy non-PBR GX draws using SRCALPHA/ONE additive or SRCALPHA/INVSRCALPHA alpha-over
+  blending (retail particles through `CElementGen`, glass) convert their
   alpha-weighted display colour into exposed light before blending, then divide RGB by the
   locally clamped alpha (zero alpha emits zero RGB). With `a = clamp(alpha, 0, 1)`, the helper
   obeys `postTone(a * H_add(c, alpha)) = clamp(c, 0, 1) * a`, within inverse-curve/target precision.
@@ -1241,7 +1290,11 @@ other `X:\Users\<name>`: `X:\Users\<user>`); the
   times alpha identity therefore assumes normalized alpha in [0,1] and an isolated, unfogged
   contribution: TEV alpha can slightly exceed one, and subsequent volumetric fog attenuates light.
   Other legacy SRCALPHA/ONE effects intentionally share this policy; this is not full visual
-  certification of those effects.
+  certification of those effects. For alpha over, the plain inverse sent a blended white to the
+  curve's shoulder (Elite Quarters' tank glass drew flat saturated blue); converted, a layer over a
+  nonblack background draws somewhat darker than LDR's display blend instead (mid grey at alpha 0.5
+  over itself: about 0.43 for 0.5). ONE/INVSRCALPHA (premultiplied, Remastered's PBDM 1) is left
+  as is: its source term is already exact through the plain inverse.
   Draws whose source colour scales the destination (ZERO/SRCCLR and DSTCLR/ZERO multiply, the
   camera filters' DSTCLR/ONE add-dest-colour) take it as a linear gain instead (sRGB decode;
   `(1 + c)^2.2 - 1` for add-dest-colour): through the inverse curve the factor depended on the

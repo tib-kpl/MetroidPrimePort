@@ -130,6 +130,7 @@ struct State_ {
   // Set when an atlas is evicted: the cached bind groups still hold its views, so the render thread drops them.
   std::atomic<bool> groupsStale{false};
   wgpu::Texture dummyTexture;
+  wgpu::Texture dummyArrayTexture;
   wgpu::TextureView dummyView;
   wgpu::TextureView dummyColorView; // dummyTexture as a texture_2d
   wgpu::Texture dummyDepthTexture;  // 1x1 R32Float
@@ -745,8 +746,9 @@ R"(  // The tone map runs before this blend, so an alpha blend brighter than 1 t
   // BLEND 5 (AdditiveOne) takes no alpha compensation above and no fog below, as Additive; its tone is unchanged.
   // Remastered sets a no-fog bit for every particle blend but alpha and opaque
   // (SetupFogFromBlendMode), so additive and premultiplied draws are not fogged at all.
+  // Fogged (1 << 27) keeps the fog of an alpha/opaque row whose MATI EBlendMode draws with other factors.
   // IceChargeBeam: DFOG 1 (perm 000), so unfogged in either blend; IceChargeCollision too where Unfogged.
-  if ((BLEND == 0u || BLEND == 3u) && (FEAT & 1048576u) == 0u && (FEAT & 4194304u) == 0u) {
+  if ((BLEND == 0u || BLEND == 3u || (FEAT & 134217728u) != 0u) && (FEAT & 1048576u) == 0u && (FEAT & 4194304u) == 0u) {
     col = mix(col, u.fogColor.rgb, fog_factor(in.pos.z));
   }
   return vec4f(col, alpha);
@@ -815,7 +817,8 @@ uint32_t block_size(wgpu::TextureFormat format) {
 
 // The PBDM factors (RESOLVED-state.md Q1): alpha (SrcAlpha, 1-SrcAlpha | One, 1-SrcAlpha), premultiplied
 // (One, 1-SrcAlpha | Zero, One), additive (SrcAlpha, One | Zero, One), opaque (One, Zero for both).
-// AdditiveOne (port-only, the wave orb's model blend) is (One, One | Zero, One). Not in the anonymous namespace:
+// AdditiveOne (port-only, the wave orb's model blend) is (One, One | Zero, One). PremultipliedAlpha and AdditiveAlpha
+// are the MATI EBlendModes 5 (One, 1-SrcAlpha) and 6 (SrcAlpha, One), colour and alpha alike. Not in the anonymous namespace:
 // the unit tests call it.
 wgpu::BlendState blend_state(Blend blend) {
   wgpu::BlendComponent c{.operation = wgpu::BlendOperation::Add};
@@ -848,6 +851,14 @@ wgpu::BlendState blend_state(Blend blend) {
   case Blend::Opaque:
     c.srcFactor = a.srcFactor = wgpu::BlendFactor::One;
     c.dstFactor = a.dstFactor = wgpu::BlendFactor::Zero;
+    break;
+  case Blend::PremultipliedAlpha:
+    c.srcFactor = a.srcFactor = wgpu::BlendFactor::One;
+    c.dstFactor = a.dstFactor = wgpu::BlendFactor::OneMinusSrcAlpha;
+    break;
+  case Blend::AdditiveAlpha:
+    c.srcFactor = a.srcFactor = wgpu::BlendFactor::SrcAlpha;
+    c.dstFactor = a.dstFactor = wgpu::BlendFactor::One;
     break;
   case Blend::Multiply:
     c.srcFactor = wgpu::BlendFactor::Dst;
@@ -1018,8 +1029,22 @@ void ensure_dummy(const DrawContext& ctx) {
   const wgpu::TexelCopyBufferLayout layout{.bytesPerRow = 4, .rowsPerImage = 1};
   const wgpu::Extent3D size{1, 1, 1};
   ctx.queue.WriteTexture(&dst, white, 4, &layout, &size);
+  // A Compatibility device fixes a texture's binding view dimension, so the array view gets a texture of its own.
+  wgpu::TextureBindingViewDimension arrayBinding;
+  arrayBinding.textureBindingViewDimension = wgpu::TextureViewDimension::e2DArray;
+  const wgpu::TextureDescriptor arrayDescriptor{
+      .nextInChain = &arrayBinding,
+      .label = "VFX Dummy Array",
+      .usage = wgpu::TextureUsage::TextureBinding | wgpu::TextureUsage::CopyDst,
+      .size = {1, 1, 1},
+      .format = wgpu::TextureFormat::RGBA8Unorm,
+  };
+  AURORA_NOTE_TEXTURE(&arrayDescriptor);
+  g_state.dummyArrayTexture = ctx.device.CreateTexture(&arrayDescriptor);
+  const wgpu::TexelCopyTextureInfo arrayDst{.texture = g_state.dummyArrayTexture};
+  ctx.queue.WriteTexture(&arrayDst, white, 4, &layout, &size);
   const wgpu::TextureViewDescriptor view{.dimension = wgpu::TextureViewDimension::e2DArray, .arrayLayerCount = 1};
-  g_state.dummyView = g_state.dummyTexture.CreateView(&view);
+  g_state.dummyView = g_state.dummyArrayTexture.CreateView(&view);
   const wgpu::TextureViewDescriptor view2D{.dimension = wgpu::TextureViewDimension::e2D};
   g_state.dummyColorView = g_state.dummyTexture.CreateView(&view2D);
   const wgpu::TextureDescriptor depthDescriptor{
@@ -1096,13 +1121,22 @@ void build_array(const EncoderTaskContext& ctx, const wgpu::CommandEncoder& cmd,
   if (cw == 0 || ch == 0 || cw % block != 0 || ch % block != 0) {
     return fail("cell size");
   }
+  // Compatibility devices can't copy compressed textures on the GPU; the layers are written from the bytes the
+  // source was uploaded from instead (kept by the texture upload on those devices).
+  const bool writeFromBytes = !webgpu::g_hasCoreFeatures && block != 1;
+  if (writeFromBytes && !src.cpuBytes) {
+    return fail("compressed source without its uploaded bytes on a Compatibility device");
+  }
   // Mip m of a cell is its own copy only if the cell halves evenly that far (and stays block aligned).
   uint32_t mips = 1;
   while (mips < src.mipCount && (cw % (1u << mips)) == 0 && (ch % (1u << mips)) == 0 &&
          ((cw >> mips) % block) == 0 && ((ch >> mips) % block) == 0) {
     ++mips;
   }
+  wgpu::TextureBindingViewDimension arrayBinding;
+  arrayBinding.textureBindingViewDimension = wgpu::TextureViewDimension::e2DArray;
   const wgpu::TextureDescriptor descriptor{
+      .nextInChain = &arrayBinding,
       .label = "VFX Atlas",
       .usage = wgpu::TextureUsage::TextureBinding | wgpu::TextureUsage::CopyDst,
       .size = {cw, ch, entry->layers},
@@ -1111,12 +1145,51 @@ void build_array(const EncoderTaskContext& ctx, const wgpu::CommandEncoder& cmd,
   };
   AURORA_NOTE_TEXTURE(&descriptor);
   entry->texture = ctx.device.CreateTexture(&descriptor);
+  // Byte offset of each source mip in cpuBytes, and its row pitch in blocks.
+  std::array<size_t, 16> mipOffset{};
+  std::array<uint32_t, 16> mipBlocksWide{};
+  if (writeFromBytes) {
+    const auto info = format_info(src.format);
+    size_t offset = 0;
+    for (uint32_t mip = 0; mip < mips && mip < mipOffset.size(); ++mip) {
+      const uint32_t w = std::max(src.size.width >> mip, 1u);
+      const uint32_t h = std::max(src.size.height >> mip, 1u);
+      const uint32_t wideBlocks = (w + info.blockWidth - 1) / info.blockWidth;
+      const uint32_t highBlocks = (h + info.blockHeight - 1) / info.blockHeight;
+      mipOffset[mip] = offset;
+      mipBlocksWide[mip] = wideBlocks;
+      offset += size_t(wideBlocks) * highBlocks * info.blockSize;
+    }
+    if (mips > mipOffset.size() || offset > src.cpuBytes->size()) {
+      return fail("kept source bytes don't cover the mip chain");
+    }
+  }
+  std::vector<uint8_t> cell;
   for (uint32_t layer = 0; layer < entry->layers; ++layer) {
     const uint32_t col = layer % entry->cols;
     const uint32_t row = layer / entry->cols;
     for (uint32_t mip = 0; mip < mips; ++mip) {
       const uint32_t w = cw >> mip;
       const uint32_t h = ch >> mip;
+      if (writeFromBytes) {
+        const auto info = format_info(src.format);
+        const uint32_t cellBlocksWide = w / info.blockWidth;
+        const uint32_t cellBlocksHigh = h / info.blockHeight;
+        const size_t rowBytes = size_t(cellBlocksWide) * info.blockSize;
+        cell.resize(rowBytes * cellBlocksHigh);
+        const size_t firstBlockX = size_t(col) * cellBlocksWide;
+        const size_t firstBlockY = size_t(row) * cellBlocksHigh;
+        for (uint32_t by = 0; by < cellBlocksHigh; ++by) {
+          const size_t from =
+              mipOffset[mip] + ((firstBlockY + by) * mipBlocksWide[mip] + firstBlockX) * info.blockSize;
+          std::memcpy(cell.data() + by * rowBytes, src.cpuBytes->data() + from, rowBytes);
+        }
+        const wgpu::TexelCopyTextureInfo to{.texture = entry->texture, .mipLevel = mip, .origin = {0, 0, layer}};
+        const wgpu::TexelCopyBufferLayout layout{.bytesPerRow = uint32_t(rowBytes), .rowsPerImage = cellBlocksHigh};
+        const wgpu::Extent3D extent{w, h, 1};
+        ctx.queue.WriteTexture(&to, cell.data(), cell.size(), &layout, &extent);
+        continue;
+      }
       const wgpu::TexelCopyTextureInfo from{.texture = src.texture, .mipLevel = mip, .origin = {col * w, row * h, 0}};
       const wgpu::TexelCopyTextureInfo to{.texture = entry->texture, .mipLevel = mip, .origin = {0, 0, layer}};
       const wgpu::Extent3D extent{w, h, 1};
@@ -1269,7 +1342,8 @@ bool resolve_slot(const Texture& tex, uint32_t& id) {
   const uint32_t cols = std::max(tex.cols, 1u);
   const uint32_t rows = std::max(tex.rows, 1u);
   const uint32_t layers = std::max(tex.layers, 1u);
-  const bool copy = layers > 1 || cols > 1 || rows > 1;
+  // Compatibility devices can't view a plain 2D texture as a 2D array, so every entry is a copy there.
+  const bool copy = layers > 1 || cols > 1 || rows > 1 || !webgpu::g_hasCoreFeatures;
   std::shared_ptr<ArrayEntry> entry;
   bool request = false;
   {
@@ -1404,20 +1478,12 @@ std::string pipeline_source(const PipelineConfig& p) {
     const uint32_t v = (p.slotKey >> (3 * i)) & 7;
     source += std::string("const ") + SlotNames[i] + ": i32 = " + (v == 7 ? "-1" : std::to_string(v)) + ";\n";
   }
-  // The scene copy's light as the exposed linear the HDR tail writes: the HDR copy is that already;
-  // the display copy (RGBA8) goes back through the room's curve, exact below the white it clipped at.
+  // The scene copy's light: the HDR copy holds the exposed linear the HDR tail writes already. LDR
+  // draws never read a scene copy (draw_prims drops them), so theirs is never called.
   static constexpr std::string_view SceneLight = "fn scene_light(c: vec3f) -> vec3f { return c; }\n";
-  static constexpr std::string_view SceneLightDisplay =
-      "fn scene_light(c: vec3f) -> vec3f { return hdr_exposed(c, u.tone0, u.tone1, u.tone2); }\n";
   if (!hdr) {
-    // LDR: the source as it always was, and the curve's inverse only where SceneWarp reads it.
     source += ShaderSource;
-    if ((p.features & (SceneWarp | IceChargeCollision | IceChargeCollisionLit | VisorRunOff | VisorRunOffLit)) != 0) {
-      source += SceneLightDisplay;
-      source += hdr::ToneWgsl;
-    } else {
-      source += SceneLight;
-    }
+    source += SceneLight;
     return source;
   }
   source += "const HDR: bool = true;\n";
@@ -1431,7 +1497,7 @@ std::string pipeline_source(const PipelineConfig& p) {
   static constexpr std::string_view HdrTail = R"(  if (HDR) {
     var lin = max(rgb, vec3f(0.0));
     if (u.tone1.x > 0.0 && u.tone0.w > 0.0) { lin = lin * u.tone0.w; }
-    if ((BLEND == 0u || BLEND == 3u) && (FEAT & 1048576u) == 0u && (FEAT & 4194304u) == 0u) {
+    if ((BLEND == 0u || BLEND == 3u || (FEAT & 134217728u) != 0u) && (FEAT & 1048576u) == 0u && (FEAT & 4194304u) == 0u) {
       lin = mix(lin, hdr_exposed(u.fogColor.rgb, u.tone0, u.tone1, u.tone2), fog_factor(in.pos.z));
     }
     return vec4f(lin, alpha);
@@ -1512,6 +1578,10 @@ static void draw_prims(const DrawDesc& desc, const Vertex* verts, uint32_t verte
   std::memcpy(u.tone, &gx.pbrTone, sizeof(u.tone));
   // Per draw: the GX state keeps the room's exposure for every later draw.
   const bool hdr = scene_hdr_pass_active();
+  if (!hdr && (features & (SceneWarp | IceChargeCollision | IceChargeCollisionLit | VisorRunOff | VisorRunOffLit)) != 0) {
+    // The scene-reading effects read the HDR scene's light; outside it there is none to read.
+    return;
+  }
   u.tone[0][3] = draw_exposure(u.tone[0][3], hdr, desc.alreadyExposed);
   std::memcpy(u.fogColor, &gx.fog.color, sizeof(u.fogColor));
   u.fog[0] = float(gx.fog.type);
@@ -1706,6 +1776,7 @@ void shutdown() {
   g_state.dummyDepthTexture = {};
   g_state.dummyView = {};
   g_state.dummyTexture = {};
+  g_state.dummyArrayTexture = {};
   g_state.bindLayout = {};
   g_state.pipelineLayout = {};
   const auto task = g_state.task;

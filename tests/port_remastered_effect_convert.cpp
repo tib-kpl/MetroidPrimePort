@@ -3302,6 +3302,7 @@ std::vector<uint8_t> Mati(uint32_t shader, const std::vector<std::pair<const cha
   std::vector<uint8_t> out(0x6d, 0);
   for (int i = 0; i < 4; ++i) {
     out[0x48 + size_t(i)] = uint8_t(shader >> (24 - 8 * i));
+    out[0x61 + size_t(i)] = 0xff;  // EBlendMode -1: the generator's own blend row
   }
   const uint32_t count = uint32_t(textures.size());
   for (int i = 0; i < 4; ++i) {
@@ -3823,7 +3824,10 @@ void TestWaveOrbSwoosh(const std::vector<uint8_t>& mati) {
       }
     }
   }
-  CHECK_MSG(blend == 0, "a swoosh on the orb's MATI keeps SBDM (alpha), not AdditiveOne");
+  // A swoosh is not a model: BindGraphicsState takes the MATI's EBlendMode 1 (One/One) over SBDM, and the
+  // fog stays SBDM's (alpha, fogged).
+  CHECK_MSG(blend == 5, "a swoosh on the orb's MATI takes its EBlendMode 1 (AdditiveOne) over SBDM");
+  CHECK_MSG(features != ~0u && (features & (1u << 27)) != 0, "the swoosh keeps SBDM's fog under the MATI's factors");
   CHECK_MSG(features != ~0u && (features & kAlreadyExposedBit) == 0, "a swoosh on the orb's MATI keeps the room's exposure");
 }
 
@@ -3832,7 +3836,9 @@ void TestWaveOrbSwoosh(const std::vector<uint8_t>& mati) {
 void TestWaveOrbExposurePolicy() {
   auto orb = [](uint32_t shader, uint32_t headerBlend) {
     std::vector<uint8_t> mati = Mati(shader, {{shader == 0x642dd72b ? "BCLR" : "TCH0", Fresh(8)}});
-    mati[0x61] = uint8_t(headerBlend);
+    for (int i = 0; i < 4; ++i) {
+      mati[0x61 + size_t(i)] = uint8_t(headerBlend >> (8 * i));
+    }
     return mati;
   };
   const uint32_t flagged = ConvertBlend(orb(0x642dd72b, 1), kWaveMati, true, 0, 12);
@@ -4246,7 +4252,9 @@ void TestPowerChargeExposurePolicy() {
 void TestWaveOrbHeaderBlend() {
   auto orb = [](uint32_t shader, uint32_t headerBlend) {
     std::vector<uint8_t> mati = Mati(shader, {{shader == 0x642dd72b ? "BCLR" : "TCH0", Fresh(8)}});
-    mati[0x61] = uint8_t(headerBlend);
+    for (int i = 0; i < 4; ++i) {
+      mati[0x61 + size_t(i)] = uint8_t(headerBlend >> (8 * i));
+    }
     return mati;
   };
   CHECK_MSG(ConvertBlend(orb(0x642dd72b, 1), kWaveMati, true) == 5, "wave orb MATI + PMDL + header blend 1: AdditiveOne (5)");
@@ -4255,13 +4263,32 @@ void TestWaveOrbHeaderBlend() {
   CHECK_MSG(ConvertBlend(orb(0x461071b8, 1), kWaveMati, true) == 0, "another shader keeps PBDM 0");
   CHECK_MSG(ConvertBlend(orb(0x642dd72b, 2), kWaveMati, true) == 0, "header blend 2 keeps PBDM 0");
   CHECK_MSG(ConvertBlend(std::vector<uint8_t>(0x50, 0), kWaveMati, true) == ~0u, "a short MATI writes no VMAT, no crash");
-  CHECK_MSG(ConvertBlend(orb(0x642dd72b, 1), kWaveMati, false) == 0, "no PMDL keeps PBDM 0");
+  CHECK_MSG(ConvertBlend(orb(0x642dd72b, 1), kWaveMati, false) == 5, "no PMDL: the sprite takes EBlendMode 1 over PBDM");
   // The older modes are untouched: PBDM 0..3 convert as themselves, on the orb's MATI too without PMDL
   // and on its PMDL with another guid.
   for (uint32_t pbdm = 0; pbdm <= 3; ++pbdm) {
     CHECK_MSG(ConvertBlend(orb(0x642dd72b, 1), Fresh(7), true, pbdm) == pbdm, "PBDM 0..3 convert unchanged");
-    CHECK_MSG(ConvertBlend(orb(0x642dd72b, 1), kWaveMati, false, pbdm) == pbdm, "PBDM 0..3 without PMDL unchanged");
+    CHECK_MSG(ConvertBlend(orb(0x642dd72b, 1), kWaveMati, false, pbdm) == 5, "EBlendMode 1 without PMDL, whatever the PBDM");
   }
+  // A sprite's MATI EBlendMode (SBlendModeState 0xf0164) wins over PBDM; -1 and the modes the port has no
+  // exact state for keep the row.
+  const struct {
+    uint32_t header, pbdm, blend;
+  } sprite[] = {{~0u, 2, 2}, {0, 2, 3}, {1, 2, 5}, {2, 1, 0}, {5, 2, 6}, {6, 0, 7}, {3, 2, 2}, {4, 1, 1},
+                {7, 0, 0}, {10, 2, 2}, {14, 3, 3}};
+  for (const auto& c : sprite) {
+    CHECK_MSG(ConvertBlend(orb(0x461071b8, c.header), Fresh(7), false, c.pbdm) == c.blend,
+              "a sprite takes its MATI's EBlendMode where the port has it, else the PBDM row");
+  }
+  // The fog is the row's (SetupFogFromBlendMode on PBDM), whatever the MATI's factors.
+  const auto fogBits = [&orb](uint32_t header, uint32_t pbdm) {
+    return ConvertBlend(orb(0x461071b8, header), Fresh(7), false, pbdm, 12) & (1u << 27 | 1u << 22);
+  };
+  CHECK_MSG(fogBits(6, 0) == 1u << 27, "PBDM alpha under EBlendMode 6: fogged");
+  CHECK_MSG(fogBits(1, 3) == 1u << 27, "PBDM opaque under EBlendMode 1: fogged");
+  CHECK_MSG(fogBits(2, 1) == 1u << 22, "PBDM additive under EBlendMode 2: unfogged");
+  CHECK_MSG(fogBits(0, 2) == 1u << 22, "PBDM 2 under EBlendMode 0: unfogged");
+  CHECK_MSG(fogBits(2, 0) == 0 && fogBits(5, 1) == 0 && fogBits(~0u, 1) == 0, "matching fog pins nothing");
   CHECK_MSG(ConvertBlend(orb(0x642dd72b, 1), kWaveMati, true, 2) == 5, "the override is the orb's, whatever its PBDM");
   TestWaveOrbSwoosh(orb(0x642dd72b, 1));
 }
@@ -4955,6 +4982,50 @@ void TestElc2BlendAndLifetime() {
   }
 }
 
+// An ELC2's NCLR GRAD over ILPT reads slot 2 = nodes - 1, which CParticleElectric2Port sets as the
+// lifetime around the evaluation: PLPT offset 0. Its XFMD 3 is the port-only follow flag; 2 is not written.
+void TestElc2NclrAndXfmd() {
+  auto parts = ConvertElc2([](auto& o) {
+    PutProperty(o, "NCLR", 5);
+    PutFourCC(o, "GRAD");
+    o.push_back(2);
+    for (uint16_t half : {0x3c00, 0x0000, 0x0000, 0x3c00}) {
+      o.push_back(uint8_t(half));
+      o.push_back(uint8_t(half >> 8));
+    }
+    Put32(o, Bits(0.0f));
+    for (uint16_t half : {0x0000, 0x0000, 0x3c00, 0x0000}) {
+      o.push_back(uint8_t(half));
+      o.push_back(uint8_t(half >> 8));
+    }
+    Put32(o, Bits(1.0f));
+    PutFourCC(o, "ILPT");
+    PutConstant(o, 100);
+    o.push_back(1);
+    PutProperty(o, "XFMD", 1);
+    PutConstant(o, 3);
+  });
+  CHECK_MSG(parts.size() == 1, "ELC2 with an NCLR GRAD and XFMD 3 converts");
+  if (parts.size() == 1) {
+    Retail plpt;
+    plpt.f("PLPT").w(0).f("CNST").w(100).b(1);
+    CHECK_MSG(Contains(parts[0].part, plpt.bytes), "ELC2 NCLR GRAD over ILPT is PLPT offset 0");
+    Retail follow;
+    follow.f("XFMD").f("CNST").w(3);
+    CHECK_MSG(Contains(parts[0].part, follow.bytes), "ELC2 XFMD 3 is written as the follow flag");
+    CHECK_MSG(parts[0].approximated.empty(), "the ELC2 NCLR GRAD is exact");
+  }
+  parts = ConvertElc2([](auto& o) {
+    PutProperty(o, "XFMD", 1);
+    PutConstant(o, 2);
+  });
+  if (parts.size() == 1) {
+    Retail follow;
+    follow.f("XFMD");
+    CHECK_MSG(!Contains(parts[0].part, follow.bytes), "ELC2 XFMD 2 is not written");
+  }
+}
+
 // A generator with a PMDL but no TEXR or MTIN draws only models: its SIZE is
 // left out and a SIZE of 0 written instead, as with one that draws nothing.
 void TestModelsOnly() {
@@ -5127,6 +5198,7 @@ int main() {
   TestVmatIceChargeCollisionLitRecipe();
   TestVmatParticleLit();
   TestElc2BlendAndLifetime();
+  TestElc2NclrAndXfmd();
   TestWaveOrbHeaderBlend();
   TestWaveOrbExposurePolicy();
   TestPowerBallExposurePolicy();

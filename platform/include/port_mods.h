@@ -224,6 +224,10 @@ std::vector<std::string> GalleryPaths();
 std::string HudBarsPath(uint32_t frame);
 // The thermal.lut a mod supplies (the thermal visor's heat gradient, 256x4 RGBA8); empty when none.
 std::string ThermalLutPath();
+// The envfx.bin a mod supplies (Remastered's EnvironmentFX textures, port_envfx_assets.h); empty when none.
+std::string EnvFxPath();
+// The retailplacements.bin a mod supplies (port_retail_placement.h); empty when none.
+std::string RetailPlacementPath();
 // The id a retail asset (a WPSC) reads for an effect in its field ('APS2'...), when a mod's
 // effectids.map gives that effect its own id (the Remastered import does so where two projectiles
 // share a disc id); `id` itself when none does. Safe from any thread.
@@ -246,6 +250,9 @@ bool HasRoomGeometry();
 bool AnyModEnabled();
 // Whether the loaded mods supply room geometry for any area.
 bool RoomGeometryLoaded();
+// Whether the loaded mods supply a room environment for any area (Remastered's lighting and tone,
+// which CMFGame draws in the HDR scene).
+bool RoomEnvLoaded();
 
 // Folder names the settings disable, '/'-separated (no folder name has one).
 std::vector<std::string> SplitDisabled(const std::string& list);

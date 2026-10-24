@@ -928,6 +928,53 @@ void TestExposureHints() {
   g.Set(one, true);
   CHECK_MSG(!g.Set(one, false) && g.Pick(1) == -1, "hints: leaving only unregisters mode 1");
 
+  // CAutoExposureHintMP1: pair A (role 1) and B (role 2), plus an ordinary mode 1 hint.
+  {
+    using Swap = ExposureHints;
+    std::vector<FluidHint> pair(3);
+    pair[0].mode = 0;
+    pair[0].role = 1;
+    pair[1].mode = 0;
+    pair[1].role = 2;
+    pair[2].mode = 1;
+    ExposureHints p;
+    CHECK_MSG(!p.Load(pair, false, 1) && p.Pick(3) == 0, "pair: A registers at load, without a snap");
+    CHECK_MSG(!p.SetPair(pair, Swap::SwapState(true, false, false)), "pair: no change, no snap");
+    CHECK_MSG(p.SetPair(pair, Swap::SwapState(true, true, false)) && p.Pick(3) == 1, "pair: thermal registers B (snap)");
+    CHECK_MSG(!p.SetPair(pair, Swap::SwapState(true, true, false)), "pair: same state, no snap");
+    CHECK_MSG(p.SetPair(pair, Swap::SwapState(true, false, false)) && p.Pick(3) == 0, "pair: back to A (snap)");
+    CHECK_MSG(!p.SetPair(pair, Swap::SwapState(false, true, false)), "pair: morphed thermal stays on A");
+    CHECK_MSG(p.SetPair(pair, Swap::SwapState(true, true, true)) == false && p.Pick(3) == 0,
+              "pair: thermal in a cinematic stays on A");
+    CHECK_MSG(p.SetPair(pair, Swap::SwapState(true, true, false)) && p.Pick(3) == 1, "pair: thermal again picks B");
+    // The newest registered hint wins: a fluid hint registered after B outranks it.
+    CHECK_MSG(p.Set(pair, true) && p.Pick(3) == 2, "pair: the fluid hint registered last wins");
+    CHECK_MSG(p.SetPair(pair, 1) && p.Pick(3) == 0, "pair: A registers after the fluid hint and wins");
+    // Load straight into thermal: B, no snap.
+    ExposureHints q;
+    CHECK_MSG(!q.Load(pair, false, 0) && q.Pick(3) == 1, "pair: load in thermal starts B");
+    // Fluid-mode pair hint: eligible only inside the fluid while enabled.
+    std::vector<FluidHint> fl(2);
+    fl[0].mode = 1;
+    fl[0].role = 1;
+    fl[1].mode = 1;
+    fl[1].role = 2;
+    ExposureHints r;
+    r.Load(fl, false, 1);
+    CHECK_MSG(r.Pick(2) == -1, "pair: fluid-mode hints idle outside");
+    CHECK_MSG(r.Set(fl, true) && r.Pick(2) == 0, "pair: inside registers A only");
+    CHECK_MSG(r.SetPair(fl, 0) && r.Pick(2) == 1, "pair: swap inside registers B");
+    // Script modes never register.
+    std::vector<FluidHint> sc(2);
+    sc[0].mode = 5;
+    sc[0].role = 1;
+    sc[1].mode = 5;
+    sc[1].role = 2;
+    ExposureHints s5;
+    s5.Load(sc, true, 1);
+    CHECK_MSG(!s5.SetPair(sc, 0) && !s5.Set(sc, false) && s5.Pick(2) == -1, "pair: mode 5 never registers");
+  }
+
   const float a[6] = {1, 2, 3, 4, 5, 6};
   const float b[6] = {11, 12, 13, 14, 15, 16};
   const float c[6] = {21, 22, 23, 24, 25, 26};
@@ -1096,6 +1143,19 @@ void TestWorldVolumes() {
   CHECK_MSG(PortRoomEnv::Parse(std::vector<uint8_t>(v23), file, error) && file.worldShift[0] == 1.5f &&
                 file.worldShift[1] == -2.f && file.worldShift[2] == 30.f && file.worldVolumes.size() == 2,
             "shift: version 23 read back");
+  // Version 26 adds the EnvironmentFX colour intensity after the shift; before it, 1.
+  CHECK_MSG(file.envFxIntensity == 1.f, "envfx: version 23 has the default intensity");
+  std::vector<uint8_t> v26 = v23;
+  v26[4] = 26;
+  CHECK_MSG(!PortRoomEnv::Parse(std::vector<uint8_t>(v26), file, error), "envfx: cut short");
+  PutFloat(v26, 5.f);
+  CHECK_MSG(PortRoomEnv::Parse(std::vector<uint8_t>(v26), file, error) && file.envFxIntensity == 5.f &&
+                file.worldShift[2] == 30.f,
+            "envfx: version 26 read back");
+  v26.resize(v26.size() - 4);
+  PutFloat(v26, std::numeric_limits<float>::infinity());
+  CHECK_MSG(PortRoomEnv::Parse(std::vector<uint8_t>(v26), file, error) && file.envFxIntensity == 1.f,
+            "envfx: a bad intensity is the default");
   const float inB[3] = {10.f, 1.5f, 0.f}, outB[3] = {11.5f, 0.f, 0.f};
   CHECK_MSG(PortRoomEnv::InsideWorldVolume(b, inB) && !PortRoomEnv::InsideWorldVolume(b, outB), "volumes: turned box");
 
@@ -1130,6 +1190,43 @@ void TestWorldVolumes() {
   state.Replay(events);
   CHECK_MSG(events.empty(), "volumes: cleared");
 }
+// CPostFXManager::UpdateTonemapping 0xaffb18: L from the readback, and the start.
+void TestExposureAverage() {
+  constexpr float kGrey = 0.2158605f;
+  PortRoomEnv::ExposureAverage e;
+  float target = 0.f;
+  CHECK_MSG(e.L == -1.f && !e.created, "exposure average: starts without a measurement");
+  CHECK_MSG(e.Update(true, 1.5f, -4.f, 8.f, 0.f, 32.f, false, 1, &target) == 1.5f && target == 1.5f && !e.created,
+            "exposure average: the tonemap EV before the first L");
+  const float rgb[3] = {0.1f, 4.f * kGrey, 0.3f};
+  e.Take(rgb);
+  CHECK_MSG(e.L == 4.f * kGrey, "exposure average: L is the largest channel");
+  CHECK_MSG(e.Update(false, 1.5f, -4.f, 8.f, 0.f, 32.f, false, 1, &target) == 1.5f && !e.created,
+            "exposure average: no hint, the tonemap EV and no Gaussian");
+  // log2(4) + 3 + 0.5 = 5.5
+  CHECK_MSG(Near(e.Update(true, 1.5f, -4.f, 8.f, 0.5f, 32.f, false, 1, &target), 5.5f) && Near(target, 5.5f) &&
+                e.created,
+            "exposure average: the Gaussian starts at the first target");
+  const float bright[3] = {64.f * kGrey, 0.f, 0.f}; // log2(64) + 3 = 9, past hi
+  e.Take(bright);
+  const float before = e.ev.value;
+  const float stepped = e.Update(true, 1.5f, -4.f, 8.f, 0.f, 32.f, false, 10, &target);
+  CHECK_MSG(target == 8.f && stepped > before && stepped < 8.f, "exposure average: clamped to hi, steps towards it");
+  CHECK_MSG(e.Update(true, 1.5f, -4.f, 8.f, 0.f, 32.f, true, 0, &target) == 8.f, "exposure average: a snap sets it");
+  const float black[3] = {0.f, 0.f, 0.f}; // log2(0) = -inf, clamped to lo
+  e.Take(black);
+  CHECK_MSG(e.Update(true, 1.5f, -4.f, 8.f, 0.f, 32.f, true, 0, &target) == -4.f && target == -4.f,
+            "exposure average: L = 0 clamps to lo");
+  const float nan[3] = {std::numeric_limits<float>::quiet_NaN(), 0.f, 0.f};
+  e.Take(nan);
+  CHECK_MSG(e.Update(true, 1.5f, -4.f, 8.f, 0.f, 32.f, false, 1, &target) == 1.5f,
+            "exposure average: a NaN L fails L >= 0");
+  e.Reset();
+  CHECK_MSG(!e.created && e.L == -1.f, "exposure average: reset");
+  e.Take(rgb);
+  CHECK_MSG(Near(e.Update(true, 1.5f, -4.f, 8.f, 0.f, 32.f, false, 5, &target), 5.f) && e.created,
+            "exposure average: after a reset the Gaussian starts again at L");
+}
 } // namespace
 
 int main() {
@@ -1146,6 +1243,7 @@ int main() {
   TestLod();
   TestExposureHints();
   TestHintOutranks();
+  TestExposureAverage();
   if (port_test::Failures() == 0) {
     std::puts("port_room_env tests passed");
   }

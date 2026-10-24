@@ -126,6 +126,7 @@ public:
   // acts at once; PortDoShutdownBehavior(0xff) uses the description's mode.
   void ShutdownEffect() override;
   void PortDoShutdownBehavior(u32 mode) override;
+  void PortSetSpawnSpread(const CVector3f& spread, const CVector3f& origin) override;
   // SDTR: the countdown's remaining over its total, 1 when none is running.
   float PortShutdownTimeRemaining() const;
 #endif
@@ -300,6 +301,7 @@ public:
   // particles at the given local positions, at rest, the PART children first.
   void PortCreateParticlesAtPositions(int n, const CVector3f* pos);
   const CGenDescription* PortDesc() const { return x28_loadedGenDesc; }
+  int PortCurFrame() const { return x74_curFrame; }
   void PortCreateParticlesAtPositionsIncludingChildren(int n, const CVector3f* pos);
   // Remastered particle variables (PVRT): a handle is looked up once and then binds are cheap.
   // Binds are generator-wide, persist until rebound, and are no-ops when the variable is absent.
@@ -552,6 +554,8 @@ private:
   // A PINR or PINT outside XFMD 4 (whose mover overrides them): the setters keep the owner's
   // orientations and local translation here, which EXTR/EXTT and the getters read.
   bool xPortIntFrame = false;
+  CVector3f xPortSpawnSpread{1.f, 1.f, 1.f};
+  CVector3f PortSpreadSpawn(const CVector3f& rel) const;
   CTransform4f xPortExtOrientation = CTransform4f::Identity();
   CTransform4f xPortExtGlobalOrientation = CTransform4f::Identity();
   CVector3f xPortExtTranslation{0.f, 0.f, 0.f};

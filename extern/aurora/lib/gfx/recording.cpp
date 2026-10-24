@@ -1270,11 +1270,17 @@ bool set_scene_hdr(bool on) {
     return false;
   }
   // An HDR scene must be convertible before its first draw. Check the same FIFO-owned post budget
-  // used by bloom::record so an unsupported third segment falls back to the display EFB here.
+  // used by bloom::record so an unsupported third segment is refused here, and draws without the post.
   if (on && !bloom::scene_post_available()) {
     return false;
   }
   if (on && !webgpu::ensure_scene_hdr_target()) {
+    // No retail fallback: the frame draws without the Remastered post, each PBR draw toned on its own.
+    static bool warned = false;
+    if (!warned) {
+      warned = true;
+      Log.warn("HDR scene unavailable: the frame draws without the Remastered post (warned once)");
+    }
     return false;
   }
 
@@ -1397,7 +1403,7 @@ bool resolve_scene_copy(TextureHandle color, const ResolveHdr* hdr, wgpu::Textur
   const auto& attachment = pass.colorAttachments[SceneColorAttachmentIndex];
   const uint32_t width = attachment.size.width;
   const uint32_t height = attachment.size.height;
-  if (pass.hasDepth && tex_copy_conv::snapshot_depth_supported()) {
+  if (pass.hasDepth && tex_copy_conv::snapshot_depth_supported(pass.msaaSamples)) {
     auto& entry = acquire_pass_snapshot(width, height, attachment.format, pass.msaaSamples, false, true);
     pass.snapshotDepthDst = entry.depth.view;
     depth = entry.depth.view;
@@ -1419,13 +1425,13 @@ bool resolve_pass(const ResolveDesc& desc, ResolvedTargets& out) {
     return false;
   }
 
+  auto& prevPass = current_render_passes()[g_recorder.currentRenderPass];
   bool wantDepth = desc.depth;
-  if (wantDepth && !tex_copy_conv::snapshot_depth_supported()) {
+  if (wantDepth && !tex_copy_conv::snapshot_depth_supported(prevPass.msaaSamples)) {
     Log.warn("resolve_pass: depth snapshots are unsupported on this device");
     wantDepth = false;
   }
 
-  auto& prevPass = current_render_passes()[g_recorder.currentRenderPass];
   const uint32_t width = prevPass.colorAttachments[SceneColorAttachmentIndex].size.width;
   const uint32_t height = prevPass.colorAttachments[SceneColorAttachmentIndex].size.height;
   // Requesting no snapshots is a plain pass break (or offscreen close, discarding its output).

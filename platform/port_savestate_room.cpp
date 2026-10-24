@@ -3,6 +3,7 @@
 #include "port_savestate_boss.h"
 #include "port_room_effects.h"
 
+#include "Kyoto/Audio/CStreamAudioManager.hpp"
 #include "Kyoto/Math/CTransform4f.hpp"
 #include "MetroidPrime/CGameArea.hpp"
 #include "MetroidPrime/CHealthInfo.hpp"
@@ -55,6 +56,13 @@ enum RoomTag : uint32_t {
   kTagRotate = 12,    // a turn in progress: flags, time, then per actor editor id + start rotation
   kTagFields = 13,    // an enemy's own fields through the entity schema (port_savestate_fields.cpp)
   kTagDock = 14,      // the dock's reference, then per reference its load-other flag
+  kTagCinematic = 15, // a running cinematic camera: elapsed time, passed view point, passed target
+  kTagMusic = 16,     // music playing at the save: kind (kMusicMidi/kMusicStream), stream file
+};
+
+enum : uint8_t {
+  kMusicMidi = 0,
+  kMusicStream = 1,
 };
 
 // Friend of the script classes whose state is private.
@@ -456,6 +464,15 @@ void CaptureObject(CStateManager& mgr, CEntity& ent, RoomObject& obj) {
       obj.blocks.push_back({kTagDock, w.bytes});
     }
   }
+  if (CCinematicCamera* cine = TCastToPtr< CCinematicCamera >(&ent)) {
+    if (cine->GetActive()) {
+      BlockWriter w;
+      w.F32(cine->PortElapsed());
+      w.U32(static_cast< uint32_t >(cine->PortPassedViewPoint()));
+      w.U32(static_cast< uint32_t >(cine->PortPassedTarget()));
+      obj.blocks.push_back({kTagCinematic, w.bytes});
+    }
+  }
   if (CScriptDoor* door = TCastToPtr< CScriptDoor >(&ent)) {
     DoorSaveState state;
     state.open = door->IsOpen();
@@ -477,6 +494,23 @@ void CaptureObject(CStateManager& mgr, CEntity& ent, RoomObject& obj) {
     BlockWriter w;
     if (PortRoomState::PutRotate(mgr, *rotate, w))
       obj.blocks.push_back({kTagRotate, w.bytes});
+  }
+  // The music actually playing, which the load restarts: the rebuilt objects never get
+  // the Play their trigger sent (CScriptMidi's destructor stopped its song).
+  if (CScriptMidi* midi = dynamic_cast< CScriptMidi* >(&ent)) {
+    if (midi->PortPlaying()) {
+      BlockWriter w;
+      w.U8(kMusicMidi);
+      obj.blocks.push_back({kTagMusic, w.bytes});
+    }
+  }
+  if (CScriptStreamedMusic* music = dynamic_cast< CScriptStreamedMusic* >(&ent)) {
+    if (music->PortPlayingLoop()) {
+      BlockWriter w;
+      w.U8(kMusicStream);
+      w.Str(std::string(music->PortFileName().data()));
+      obj.blocks.push_back({kTagMusic, w.bytes});
+    }
   }
   std::string boss;
   if (CaptureBossState(mgr, ent, boss))
@@ -546,8 +580,51 @@ int ReplayScriptMsgs(CStateManager& mgr, CEntity& ent, const RoomObject& obj, bo
   return replayed;
 }
 
+// Plays the music a kTagMusic block says was playing at the save. A stream still
+// playing that file (a load in the same world keeps it through the quit) goes on as it
+// is. Returns whether the music is playing.
+bool RestoreMusic(CStateManager& mgr, CEntity& ent, const RoomBlock& b) {
+  if (!ent.GetActive())
+    return false;
+  BlockReader r(b.data);
+  const uint8_t kind = r.U8();
+  if (CScriptMidi* midi = dynamic_cast< CScriptMidi* >(&ent)) {
+    if (!r.ok || kind != kMusicMidi)
+      return false;
+    if (!midi->PortPlaying())
+      DeliverUnlinked(mgr, ent, kInvalidUniqueId, kSM_Play);
+    PortLog::Write("[savestate] music: MIDI %s\n", ent.GetDebugName().data());
+    return midi->PortPlaying();
+  }
+  if (dynamic_cast< CScriptStreamedMusic* >(&ent) != nullptr) {
+    const std::string file = r.Str();
+    if (!r.ok || kind != kMusicStream)
+      return false;
+    const bool playing =
+        CStreamAudioManager::PortIsPlaying(CStreamAudioManager::kSC_Default, file.c_str());
+    if (!playing)
+      DeliverUnlinked(mgr, ent, kInvalidUniqueId, kSM_Play);
+    PortLog::Write("[savestate] music: stream %s %s (%s)\n", ent.GetDebugName().data(),
+                   file.c_str(), playing ? "plays on" : "started");
+    return true;
+  }
+  return false;
+}
+
 void ApplyObject(CStateManager& mgr, CEntity& ent, const RoomObject& obj, RoomApplyStats& stats) {
   RestoreActive(mgr, ent, obj.active);
+  // A cinematic camera saved mid-shot picks the shot up where it was (RestoreActive only
+  // set its flag: its Activate handler would restart it). Saves without the block keep that.
+  if (CCinematicCamera* cine = TCastToPtr< CCinematicCamera >(&ent)) {
+    const RoomBlock* b = FindBlock(obj, kTagCinematic);
+    if (b != nullptr && obj.active && cine->GetActive()) {
+      BlockReader r(b->data);
+      const float t = r.F32();
+      const int viewPoint = static_cast< int >(r.U32());
+      const int target = static_cast< int >(r.U32());
+      cine->PortResumeCinematic(t, viewPoint, target, mgr);
+    }
+  }
   // An enemy whose fields block covers it gets its state (AI, body, animation, boss phase)
   // from that block, on top of the Activate above: replaying its messages and the per-boss
   // restore would only be undone (2026-10-23 sweep, 19 enemy/boss scenarios). Saves without
@@ -653,6 +730,10 @@ void ApplyObject(CStateManager& mgr, CEntity& ent, const RoomObject& obj, RoomAp
       BlockReader r(b->data);
       PortRoomState::GetRotate(mgr, *rotate, r);
     }
+  }
+  if (const RoomBlock* b = FindBlock(obj, kTagMusic)) {
+    if (RestoreMusic(mgr, ent, *b))
+      ++stats.music;
   }
 }
 
@@ -1074,6 +1155,14 @@ int ApplyRoomState(CStateManager& mgr, const RoomState& room, std::vector< int32
 
 // Read-only views of state the room save keeps, for the statedump console command.
 bool IsScriptGeneratedCopy(const CStateManager& mgr, CEntity& ent) { return IsGeneratedCopy(mgr, ent); }
+
+bool RoomStateHasMusic(const RoomState& room) {
+  for (const RoomObject& obj : room.objects) {
+    if (FindBlock(obj, kTagMusic) != nullptr)
+      return true;
+  }
+  return false;
+}
 
 // A sound copy is left out: made again it would play from its start a second time.
 bool SavesGeneratedCopy(CEntity& ent) {

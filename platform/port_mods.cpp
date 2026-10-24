@@ -3,6 +3,7 @@
 // result with Aurora's DVD overlays.
 
 #include "port_mods.h"
+#include "port_retail_placement.h"
 #include "port_env.h"
 #include "port_strings.h"
 #include "port_paths.h"
@@ -69,6 +70,10 @@ std::unordered_map<uint32_t, std::string> sRoomEffects;
 std::unordered_map<uint32_t, std::string> sHudBars;
 // thermal.lut: the thermal visor's heat gradient (port_thermal.h).
 std::string sThermalLut;
+// envfx.bin: Remastered's EnvironmentFX textures (port_envfx_assets.h).
+std::string sEnvFx;
+// retailplacements.bin: the transforms objects draw Remastered's per-object retail models through (port_retail_placement.h).
+std::string sRetailPlacements;
 // effectids.map: the retail effect ids a mod gives a second user its own effect for. Loaded on first use.
 std::string sEffectIdMapPath;
 std::mutex sEffectIdsMutex;
@@ -401,6 +406,10 @@ std::string HudBarsPath(uint32_t frame) {
 
 std::string ThermalLutPath() { return sThermalLut; }
 
+std::string EnvFxPath() { return sEnvFx; }
+
+std::string RetailPlacementPath() { return sRetailPlacements; }
+
 uint32_t RemapEffectId(uint32_t owner, uint32_t field, uint32_t id) {
   std::lock_guard<std::mutex> lock(sEffectIdsMutex);
   if (!sEffectIdsLoaded) {
@@ -424,6 +433,8 @@ std::string RoomGeoPath(uint32_t mrea) {
 }
 
 bool RoomGeometryLoaded() { return !sRoomGeos.empty(); }
+
+bool RoomEnvLoaded() { return !sRoomEnvs.empty(); }
 
 std::string RoomEffectsPath(uint32_t mrea) {
   const auto found = sRoomEffects.find(mrea);
@@ -476,6 +487,8 @@ void Initialize() {
   sRoomEffects.clear();
   sHudBars.clear();
   sThermalLut.clear();
+  sEnvFx.clear();
+  sRetailPlacements.clear();
   {
     std::lock_guard<std::mutex> lock(sEffectIdsMutex);
     sEffectIdMapPath.clear();
@@ -595,6 +608,14 @@ void Initialize() {
       }
       if (name == "thermal.lut") {
         sThermalLut = PathString(file);
+        continue;
+      }
+      if (name == "envfx.bin") {
+        sEnvFx = PathString(file);
+        continue;
+      }
+      if (name == PortRetailPlacement::kFileName) {
+        sRetailPlacements = PathString(file);
         continue;
       }
       if (PortHudBars::ParseFileName(name, id)) {
