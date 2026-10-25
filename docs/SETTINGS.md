@@ -303,7 +303,7 @@
   none): a second controller button or trigger per GameCube button. Aurora maps
   one native button to each PAD button, so the port reads the alt one itself and
   ORs it in (`PortControls::HeldAltPadButtons`, from `CDolphinController`).
-- Control presets (Controls > Remap, "Reset..." beside the device list: Keyboard & mouse and Controllers). Keyboard: **Classic** (the first-run layout)
+- Control presets (Controls > Remap, "Presets..." beside the device list: one click applies a layout to Keyboard & mouse or to all Controllers, replacing your own bindings there; a selected kind or model keeps its own on top). Keyboard: **Classic** (the first-run layout)
   and **Mouse & keyboard** (WASD, E fire, Space jump, left ctrl/C morph, F
   missile, Q lock on, left alt free look, Tab/M map, 1-4 beams and 5-8 visors
   through whichever C-stick direction or D-pad button the disc's tweak gives
@@ -368,7 +368,7 @@
   Record accepts keyboard, mouse or controller input; repeated identical
   mappings are ignored. Editing a default makes it yours, and "Revert" gives the default back. Keyboard &
   mouse, Touch and Controllers are the Default profile restricted to that family of input;
-  a kind or model is its own profile on top. "Reset..." restores a preset (after a confirmation).
+  a kind or model is its own profile on top. "Reset..." removes a device's own bindings (after a confirmation), bringing back the Classic and GameCube layouts.
   "Separate menu buttons" (on by default; `menu_standard_buttons=`,
   `MP_MENU_STANDARD_BUTTONS`) makes a controller read the "Menus and map" rows instead of
   the game buttons in the pause screen, front end, map, save stations and upgrade messages
@@ -382,13 +382,29 @@
   the option off, menus and the map follow the gameplay bindings and the rows do nothing.
   The Morph Ball rows (issue #167: Bomb, Power Bomb, Boost Ball, Spider Ball, Unmorph;
   `ball_bomb`, `ball_power_bomb`, `ball_boost`, `ball_spider`, `ball_unmorph` in
-  controls.toml) press A, Y, B, R and X only in Morph Ball. They start unbound, so the ball
-  uses the game buttons until one is set. A key, mouse button or controller input bound to
-  one does only that in the ball, held layers included (the same mouse button under any of
+  controls.toml) press A, Y, B, R and X only in Morph Ball, so the ball's controls are
+  separate from gameplay's; the stick, Start, Z (map) and the C-stick are shared. On
+  keyboard & mouse and controller they start unbound, and an unbound row follows gameplay:
+  the game button's inputs do it in the ball. Once a row is set in one of those kinds, it
+  replaces that button in the ball for that kind only (setting Bomb on the controller
+  stops the pad's A bombing; the keyboard's A key still does). An input bound to a row
+  does only that in the ball, held layers included (the same mouse button under any of
   its codes, an axis at any threshold); outside the ball its other bindings work as before,
   and the prompts in the ball follow it. A combo on a row replaces the same combo; its
   buttons alone keep what they do, as with any combo. A row given layers in controls.toml
-  works in the ball while one is held. Touch buttons can't take them; touch is unchanged.
+  works in the ball while one is held and adds to the game button rather than replacing
+  it; without the layer, its input does what it did. A preset from Reset… also sets the
+  rows where the game button would clash: Remastered and Modern pads put Spider Ball on
+  LT (their R is the right stick click), Mouse & keyboard on Q; the rest follow gameplay.
+  On touch the overlay has a Morph Ball page, shown instead of the gameplay one while
+  morphed (not in the map, pause menu or a message box). It has its own buttons, Bomb,
+  Boost, P.Bomb, Spider and Unmorph, which are the rows themselves (bound by default;
+  a touch remap of a row moves it, and the label follows); the stick, START, MENU, the
+  map and the eye are on both pages, and a drag on free screen still aims (the Spring
+  swipe). The face buttons, pills, D-pad or wheels, right stick and Turbo are only on
+  the gameplay page. The layout editor's "Ball page" button edits the other page, where
+  the ball buttons move, resize, hide and delete like any; an added button belongs to
+  the page it was added on, and its "On …" button moves it to Gameplay, Ball or Both.
   "Point and click menus" (on by default; `pointer_menus=`, `MP_POINTER_MENUS`) lets
   the mouse and touch work the game's own menus (front end, pause screen, save stations,
   upgrade messages) and the map. A hover selects (a tap on touch), a click confirms (a
@@ -425,7 +441,7 @@
   bindings stay. Touch inputs are named after the overlay controls (`touch:a`,
   `touch:fire`, `touch:missile`, `touch:morph`, ..., plus `touch:beam_shift`,
   `touch:turbo_held`, `touch:map_tap`); a bound touch control no longer sends
-  its own button. The overlay hides while F1 is open, so Record can't see touch
+  its own button wherever its binding works. The overlay hides while F1 is open, so Record can't see touch
   controls: the editor's "Add a touch control..." list picks them instead.
   The D-pad, the sticks and the menu button can't be remapped.
 - `stretch_menus=0|1` (Video > Display "Stretch menus to the screen", default off; off
@@ -656,6 +672,16 @@
   second drops the faceplate decoration, Samus's face reflection and the
   on-visor billboard effects (rain, splashes, steam). Console:
   `hudscale <50..100>`, `helmet <0|1>`, `visorfx <0|1>` (0 hides).
+- Third-person camera (Video > Display, `third_person`, off by default): plays
+  from behind Samus's shoulder, drawing her body animated with Prime's
+  cutscene clips and hiding the arm cannon and helmet. The Morph Ball,
+  cutscenes and scripted cameras are unchanged. The camera pulls in at walls.
+  It is how the Dread Samus bodies are seen in play (`docs/DREAD_SAMUS.md`).
+  `third_person_distance` (metres behind, 0.5..10, default 3.5),
+  `third_person_shoulder` (metres right, -2..2, default 0.6) and
+  `third_person_height` (metres above the first-person eye, -1..2, default
+  0.1) place it. Console: `thirdperson [on|off] [distance N] [shoulder N]
+  [height N]`.
 - Speedrun timer and LiveSplit (F1 > Game > Speedrun; the timer also in pause Options >
   Display as In-Game Timer). `speedrun_timer` draws the in-game time (the play
   time the save shows, which stops in cutscenes, menus and loads) in the bottom
@@ -862,10 +888,11 @@
   system's preferred languages that `translations/` has (`fr`), unless English
   comes first. Texts with no translation stay English (`translations/README.md`).
 - Settings other pages keep, described with them: F1 > Mods' "Load mods"
-  (`mods`, on by default) and per-mod boxes (`mods_disabled`, the names left
-  out, `/`-separated), read at startup (`MODS.md`); the Remastered import's "What
-  to import" (`remastered_skip`: the parts left out, comma-separated from
-  `geometry`, `effects`, `hud`, `text`, `movies` and `gallery`; `MODS.md`); the
+  (`mods`, on by default) and every mod's box, the built-in ones included
+  (`mods_disabled`, the names left out, `/`-separated), read at startup
+  (`MODS.md`); the Remastered import's "What to import" (`remastered_skip`: the
+  parts left out, comma-separated from `geometry`, `effects`, `hud`, `text`,
+  `movies` and `gallery`; `MODS.md`); the
   Randomizer page's options (`rando_settings`, one line of JSON;
   `RANDOMIZER.md`); and Archipelago's "Staggered suit damage" (`ap_suit_damage`:
   0 Default, 1 Progressive, the default, 2 Additive), set by hand to match the

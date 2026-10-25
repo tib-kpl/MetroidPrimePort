@@ -636,6 +636,10 @@ constexpr MatchedEffect kMatchedEffects[] = {
     {"fbfee463-1dec-4d67-bc51-c528a125043d", 0xD7FFF8D6},  // 020B6226 LCTR_MAGMOUTH
     {"fc6a3e0d-eb0d-4b81-99a9-e208ec1b80e4", 0x599B4D00},  // 76C35773 Collar
     {"fe324176-fcbe-480b-8437-fd19c3369f9e", 0x88460B49},  // 76C35773 root
+    // The visor's rain drops: the splash is drawn by the visor's own CHUDBillboardEffect, whose GENP
+    // no room or CHPR reaches (kb topic/unpaired-retail-particles.md). VFX_VisorRain (0ec41df0) is
+    // its shader, so the pair draws Remastered's drops.
+    {"45ba782d-5656-40dd-a115-9f20cac3955e", 0xBC978532},  // PART_EnvRainSplash, visor rain drops (RenderLooseDataMP1.LDTA)
     {"#script-slot", 0},  // method of the entries below
     // By script slot: Remastered keeps retail's property order, so a ROOM
     // object and the retail object it stands for name their assets in the same
@@ -842,15 +846,20 @@ constexpr MatchedEffect kMatchedEffects[] = {
     // (Missile_Launcher_SDK) stays retail. The energy tank pickup: CHPR f37bcbc7
     // has two GENPs, e460a1ad (sparks + light) and cd809719 (the same light only),
     // for one PART.
-    // Left out: 47b4f5e0-5a5d-4a9b-a1fb-62486ec76c5a -> 2ECE9B8C and 68907841 (lava
-    // spit, one GENP for both retail PARTs). It reads per-actor external vars that
-    // only Remastered room-effect actors get (port_room_effects.cpp), so on a retail
-    // Effect object it runs on its PVAR defaults and shows no spurt.
-    // Left out: 45ba782d-5656-40dd-a115-9f20cac3955e -> BC978532 (PART_EnvRainSplash).
-    // Paired, the visor drops draw as grey noise squares (its VMAT shader 0ec41df0
-    // has no recipe), worse than retail's drops.
     {"c0aefd83-1327-4ae6-a4bc-9b2593393244", 0xC6D1DD10},  // A9B8E446 missile pickup
     {"e460a1ad-6142-413d-b04c-7adb655b0410", 0xECD68B2F},  // F37BCBC7 energy tank pickup
+    {"#shared-genp", 0},  // method of the entries below
+    // The lava spit: one GENP for both retail PARTs, the big spit and the small one, so
+    // neither PART says which of the two it is. The rooms step gives a retail Effect object
+    // that draws one of them the Remastered actor's particle variables, which set its size
+    // (port_remastered_room_effects.cpp).
+    {"47b4f5e0-5a5d-4a9b-a1fb-62486ec76c5a", 0x2ECE9B8C},  // bigspittle
+    {"47b4f5e0-5a5d-4a9b-a1fb-62486ec76c5a", 0x68907841},  // spittle
+    {"#visual-inferred", 0},  // method of the entries below
+    // FlickerBat root burst (EVNT 31BF4B18, frames 6-60): inferred from the blue circular
+    // effect, a model shell replacing retail's radial sprite. Checked on the bat in the port;
+    // no Remastered runtime reference or CHPR mapping establishes this pairing.
+    {"3b29b0b3-0c3d-42b6-9159-f4863f6c3ed9", 0x0B9E48EB},  // 1E14B003 FlickerBat root
 };
 
 // Retail PARTs whose Remastered effect is a stub because Remastered draws them
@@ -1694,5 +1703,19 @@ bool WantsRemasteredEffects() { return port::EnvFlag("MP_REMASTERED_EFFECTS", tr
 EffectImportResult ImportEffects(const EffectImportIO& io) { return Importer(io).Run(); }
 
 uint32_t RoomEffectId(const EffectGuid& id) { return SyntheticEffectId(EffectGuidString(Swap(id)).c_str()); }
+
+std::vector<uint32_t> MatchedRetailEffects(const EffectGuid& id) {
+  const std::string text = EffectGuidString(Swap(id));
+  std::vector<uint32_t> out;
+  std::string method;
+  for (const MatchedEffect& matched : kMatchedEffects) {
+    if (matched.id[0] == '#') {
+      method = matched.id + 1;
+    } else if (method == "shared-genp" && text == matched.id) {
+      out.push_back(matched.retail);
+    }
+  }
+  return out;
+}
 
 }  // namespace PortRemastered

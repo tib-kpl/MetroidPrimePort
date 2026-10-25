@@ -64,6 +64,10 @@ std::chrono::steady_clock::time_point sUserChecked{};
 // ever touch one bit of one word.
 std::atomic<uint64_t> sTouchControls[2]{};
 std::atomic<uint64_t> sTouchBound[2]{};
+// Each stock and ball page control's Morph Ball row in the ball (its Action), None
+// elsewhere or without one, for the overlay's labels.
+constexpr int kTouchRowCodes = kTouchBallBase + kTouchBallCount;
+std::atomic<uint16_t> sTouchBallRow[kTouchRowCodes]{};
 static_assert(PortInput::kTouchCount == 128);
 
 std::bitset<PortInput::kTouchCount> TouchBits(const std::atomic<uint64_t> (&words)[2]) {
@@ -771,6 +775,7 @@ bool SetUserBindings(const PortInput::UserBindings& bindings) {
 
 static bool TouchControlCode(int control) {
   return (control >= 0 && control < kTouchControlCount) ||
+         (control >= kTouchBallBase && control < kTouchBallBase + kTouchBallCount) ||
          (control >= kTouchCustomBase && control < kTouchCustomBase + kTouchCustomCount);
 }
 static_assert(kTouchCustomBase == PortInput::kTouchButtonBase && kTouchCustomCount == PortInput::kTouchButtonSlots);
@@ -791,19 +796,41 @@ bool TouchControlBound(int control) {
   return (sTouchBound[control >> 6].load(std::memory_order_relaxed) >> (control & 63)) & 1;
 }
 
-static void PublishTouchBound(const SActiveProfiles& active) {
+Action TouchBallRow(int control) {
+  if (!TouchControlCode(control) || control >= kTouchRowCodes) return Action::None;
+  return Action(sTouchBallRow[control].load(std::memory_order_relaxed));
+}
+
+// A touch: binding takes its control over from the overlay's own button
+// (TouchControlsView.pressTarget), so only one that applies here counts: one
+// scoped elsewhere, like a Morph Ball row outside the ball (#167), would leave
+// the control dead. Layered ones count while any layer could be held. The ball
+// page's buttons are always taken: they do their rows' actions, or nothing once a
+// remap moves the row away; they have no GameCube button of their own.
+static void PublishTouchBound(const Profile& profile) {
+  const uint16_t here = GameContexts() | PortInput::kCtxLayers;
+  const bool inBall = (here & PortInput::kCtxMorphBall) != 0;
   uint64_t mask[2] = {};
-  for (const PortInput::UserProfile* p : {active.sel.base, active.sel.pad}) {
-    if (p == nullptr) continue;
-    for (const Binding& b : p->bindings) {
-      for (int i = 0; i < b.count; ++i) {
-        const Input& in = b.inputs[size_t(i)];
-        if (in.device == Device::Touch && TouchControlCode(in.code)) mask[in.code >> 6] |= uint64_t{1} << (in.code & 63);
-      }
+  Action rows[kTouchRowCodes] = {};
+  for (int i = 0; i < kTouchBallCount; ++i) mask[0] |= uint64_t{1} << (kTouchBallBase + i);
+  static_assert(kTouchBallBase + kTouchBallCount <= 64);
+  for (const Binding& b : profile.bindings) {
+    // A row works only in the ball, whatever contexts it was saved with (ApplyBallButtons).
+    const bool ball = PortInput::FindBallRow(b.action) != nullptr;
+    if (ball ? !inBall : (b.contexts & here) == 0) continue;
+    for (int i = 0; i < b.count; ++i) {
+      const Input& in = b.inputs[size_t(i)];
+      if (in.device != Device::Touch || !TouchControlCode(in.code)) continue;
+      mask[in.code >> 6] |= uint64_t{1} << (in.code & 63);
+      // The label: a row on the control alone, without a layer.
+      const bool layered = b.contexts != PortInput::kCtxAll && (b.contexts & PortInput::kCtxLayers) != 0;
+      if (ball && b.count == 1 && !layered && in.code < kTouchRowCodes && rows[in.code] == Action::None)
+        rows[in.code] = b.action;
     }
   }
   sTouchBound[0].store(mask[0], std::memory_order_relaxed);
   sTouchBound[1].store(mask[1], std::memory_order_relaxed);
+  for (int i = 0; i < kTouchRowCodes; ++i) sTouchBallRow[i].store(uint16_t(rows[i]), std::memory_order_relaxed);
 }
 
 bool ActivePad(std::string& guid, std::string& type, std::string& name) {
@@ -877,6 +904,9 @@ void BuildBaseProfile(Profile& out) {
   BindKeyboard(out);
   BindPortControls(out);
   BindMenuDefaults(out);
+  for (const PortInput::TouchBallControl& c : PortInput::kTouchBallControls) {
+    Bind(out, c.row, Make(Device::Touch, c.control));
+  }
 }
 
 // The Port menu can't be unbound for good: with no key or mouse input left for it
@@ -897,9 +927,9 @@ void KeepPortMenuReachable(Profile& p) {
 void BuildProfile(Profile& out) {
   BuildBaseProfile(out);
   const SActiveProfiles user = ActiveUserProfiles();
-  PublishTouchBound(user);
   if (user.sel.base != nullptr) PortInput::Overlay(out, *user.sel.base);
   if (user.sel.pad != nullptr) PortInput::Overlay(out, *user.sel.pad);
+  PublishTouchBound(out);
   // After the overlay: a controls.toml touch binding of the same action must not
   // drop the layout's own buttons. Re-read every poll, so an added one works at once.
   PortInput::BindTouchButtons(out, PortDebug::TouchLayout());

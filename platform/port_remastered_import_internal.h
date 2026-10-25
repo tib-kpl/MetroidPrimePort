@@ -97,6 +97,7 @@ constexpr uint32_t kSMDL = 0x534D444C;
 constexpr uint32_t kWMDL = 0x574D444C;  // a liquid's surface
 constexpr uint32_t kCSKR = 0x43534B52;
 constexpr uint32_t kANCS = 0x414E4353;
+constexpr uint32_t kCINF = 0x43494E46;
 constexpr uint32_t kTXTR = 0x54585452;
 constexpr uint32_t kMLVL = 0x4D4C564C;
 constexpr uint32_t kMREA = 0x4D524541;
@@ -118,6 +119,7 @@ constexpr uint32_t kELC2 = 0x454C4332;  // the same, in the newer form
 constexpr uint32_t kMATI = 0x4D415449;  // a material instance
 constexpr uint32_t kVECF = 0x56454346;  // a vector field (curl noise)
 constexpr uint32_t kWPSM = 0x5750534D;  // a projectile weapon (Remastered's WPSC)
+constexpr uint32_t kCHPR = 0x43485052;  // a character (retail ANCS), id the ANCS's
 constexpr uint32_t kWPSC = 0x57505343;  // the disc's projectile weapon
 constexpr uint32_t kCRSC = 0x43525343;  // the disc's projectile collision response
 constexpr uint32_t kPART = 0x50415254;  // a disc particle effect
@@ -125,6 +127,14 @@ constexpr uint32_t kPART = 0x50415254;  // a disc particle effect
 // The import's progress and its cancel flag (port_remastered_import.cpp), which the readers
 // report to.
 extern std::atomic<bool> sCancel;
+// The import's state and thread, shared with the Dread Samus import (port_dread_samus_import.cpp).
+extern std::mutex sStateMutex;
+extern ImportState sState;
+extern std::thread sThread;
+void Finish(bool ok, const std::string& message);
+int DefaultThreads();
+// A finished Dread Samus import still staged, moved into <mods>/dread-samus (port_dread_samus_import.cpp).
+bool ApplyPendingDreadImport();
 void SetMessage(const std::string& message);
 void SetStepProgress(size_t done, size_t total);
 void AddLine(const std::string& line);
@@ -173,7 +183,7 @@ private:
   std::map<int32_t, void*> m_handles;
   std::unordered_map<uint64_t, Where> m_resources;
   std::unordered_set<uint32_t> m_ids;
-  std::unordered_map<uint64_t, Where> m_wpsc;                 // the projectile weapons, read on demand
+  std::unordered_map<uint64_t, Where> m_wpsc;                 // the projectile weapons and skeletons, read on demand
   std::unordered_map<std::string, uint32_t> m_wpscNames;      // WPSC id by name
   std::unordered_set<std::string> m_ambiguousWpscNames;
   std::unordered_map<uint64_t, size_t> m_resourceCounts;      // typed ids, including PART/CRSC
@@ -188,6 +198,8 @@ public:
 
   bool ReadModel(const ModelUuid& id, std::vector<uint8_t>& out, std::string& error) const;
   bool HasModel(const ModelUuid& id) const { return m_models.count(id) != 0; }
+  // A character (CHPR) by id; a retail ANCS's is 10000000-0000-f000-f000-0000 and the ANCS id.
+  bool ReadCharacter(const ModelUuid& id, std::vector<uint8_t>& out, std::string& error) const;
   bool ReadTexture(const ModelUuid& id, std::vector<uint8_t>& out, std::string& error) const;
 
   // The FONT assets, in id order. There are several, with different sets of characters.
@@ -283,6 +295,7 @@ private:
   std::vector<std::unique_ptr<Pak>> m_paks;
   std::vector<std::string> m_paths;  // of m_paks, in the image
   Index m_models;
+  Index m_characters;
   Index m_textures;
   Index m_texts;
   Index m_fonts;

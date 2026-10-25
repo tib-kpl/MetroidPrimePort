@@ -32,14 +32,15 @@ constexpr std::string_view kPadAxisNames[] = {"leftx", "lefty", "rightx", "right
                                               "righttrigger"};
 constexpr std::string_view kGyroNames[] = {"pitch", "yaw", "roll"};
 // Touch codes: the overlay's control ids (TouchControlsView.CONTROL_IDS, the names
-// its saved layout uses), then the overlay's own signals at 32..34, then the
-// buttons added in its layout editor at 64..127 (their layout ids, k0..k63).
+// its saved layout uses), then the overlay's own signals at 32..34, its Morph Ball
+// page's buttons at 40..44, then the buttons added in its layout editor at 64..127
+// (their layout ids, k0..k63).
 constexpr std::string_view kTouchNames[] = {
     "lstick", "cstick", "dpad",    "a",     "b",    "x",   "y",          "l",          "r",
     "z",      "visor",  "beam",    "start", "menu", "map", "eye",        "rstick",     "jump",
     "fire",   "morph",  "missile", "lt",    "lb",   "rt",  "rb",         "tz",         "tr",
     "turbo",  "tturbo", "",        "",      "",     "beam_shift", "turbo_held", "map_tap",
-    "", "", "", "", "", "", "", "", "", "",
+    "", "", "", "", "", "bbomb", "bboost", "bpbomb", "bspider", "bunmorph",
     "", "", "", "", "", "", "", "", "", "",
     "", "", "", "", "", "", "", "", "", "k0",
     "k1", "k2", "k3", "k4", "k5", "k6", "k7", "k8", "k9", "k10",
@@ -977,10 +978,31 @@ void ApplyBallButtons(Profile& profile) {
     b.contexts = layers != 0 ? layers : uint16_t(kCtxMorphBall);
     b.blocked = layers != 0 ? uint16_t(kCtxAll & ~(kCtxMorphBall | kCtxLayers)) : 0;
   }
+  // A row with layers outranks the input's other bindings while one is held, and
+  // blocking them would leave the input dead in the ball without the layer.
   BlockRowInputs(
       profile,
-      [](const Binding& b) { return FindBallRow(b.action) != nullptr && BindingFamily(b) != Family::Touch; },
+      [](const Binding& b) {
+        return FindBallRow(b.action) != nullptr && b.contexts == kCtxMorphBall && BindingFamily(b) != Family::Touch;
+      },
       kCtxMorphBall, false);
+  // A row bound in a family replaces its game button there in the ball: that
+  // family's inputs for the button stop pressing it. A row with layers adds to it,
+  // and touch only replaces the overlay's own controls (TouchControlBound), so the
+  // turbo button and the layout's added buttons keep pressing theirs.
+  bool replaced[std::size(kBallRows)][size_t(Family::Touch)] = {};
+  for (const Binding& b : profile.bindings) {
+    const BallRow* row = FindBallRow(b.action);
+    const Family family = BindingFamily(b);
+    if (row != nullptr && b.count > 0 && b.contexts == kCtxMorphBall && family != Family::Touch)
+      replaced[size_t(row - kBallRows)][size_t(family)] = true;
+  }
+  for (Binding& b : profile.bindings) {
+    const BallRow* row = BallRowForGame(b.action);
+    const Family family = BindingFamily(b);
+    if (row != nullptr && b.count > 0 && family != Family::Touch && replaced[size_t(row - kBallRows)][size_t(family)])
+      b.blocked |= kCtxMorphBall;
+  }
 }
 
 bool TouchButtonAction(Action a) {
@@ -988,7 +1010,7 @@ bool TouchButtonAction(Action a) {
     return false;
   if (a >= Action::Layer1 && a <= Action::Layer4)
     return false;
-  return !(a >= Action::MenuA && a <= Action::MenuRight) && FindBallRow(a) == nullptr;
+  return !(a >= Action::MenuA && a <= Action::MenuRight);
 }
 
 std::vector<TouchButton> ParseTouchButtons(std::string_view layout) {
@@ -1013,19 +1035,20 @@ std::vector<TouchButton> ParseTouchButtons(std::string_view layout) {
     if (!digits || slot >= kTouchButtonSlots || (id.size() == 3 && id[1] == '0'))
       continue;
     std::string_view fields = entry.substr(colon + 1);
-    std::string_view last;
+    std::string_view key;
     int count = 0;
     while (true) {
       const size_t comma = fields.find(',');
-      last = fields.substr(0, comma);
-      ++count;
+      if (++count == 6)
+        key = fields.substr(0, comma);
       if (comma == std::string_view::npos)
         break;
       fields = fields.substr(comma + 1);
     }
-    if (count != 6)
+    // The 7th, the page the button shows on, is the overlay's alone.
+    if (count != 6 && count != 7)
       continue;
-    const Action a = ActionFromKey(Trim(last));
+    const Action a = ActionFromKey(Trim(key));
     if (TouchButtonAction(a))
       slots[slot] = a;
   }

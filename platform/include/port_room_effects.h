@@ -7,6 +7,9 @@
 #include <vector>
 
 class CStateManager;
+#ifdef TARGET_PC
+struct SPortExternalVar;  // Kyoto/Particles/CPortParticleVars.hpp
+#endif
 
 // Remastered's own particle effect actors (EffectMP1 entities the disc has no object for),
 // added to an area as retail Effect objects. A mod supplies them per area as
@@ -22,7 +25,7 @@ class CStateManager;
 // from kFirstInstance up: no retail area uses those (the import checks).
 //
 // The file is little endian:
-//   'MPRF', u32 version (1)
+//   'MPRF', u32 version (4)
 //   u32 skips, u32 editor id[skips] (retail objects not to create, layer bits included)
 //   u32 connected (effects left out because something connects to them; for the log)
 //   u32 layers, then per layer: u32 retail layer, u32 objects, u32 bytes, then that many
@@ -31,16 +34,32 @@ class CStateManager;
 //   version 2 then has, per object in order, u32 variables and that many Variable
 //   records (16 guid bytes as the particle tables store them, f32 colour[4], f32 vector[3],
 //   f32 real, s32 int). Version 1 files have no variables.
+//   version 3 then has u32 overrides, then per override: u32 editor id (layer bits included),
+//   u32 part (0xFFFFFFFF for none), u32 variables and that many Variable records. An override
+//   is a retail Effect object a Remastered effect actor matched: the object stays, with its
+//   connections, but takes the actor's PART and its particle variables.
+//   version 4 then has u32 barriers (0 or 1), then per barrier: u32 controller editor id,
+//   f32 duration, then 5 ring records (bottom to top), each u32 platform, u32 refraction,
+//   u32 glow and three 16 byte guids (breakup refraction, motion, breakup glow), in the byte
+//   order Variable::guid has. A barrier names retail script objects (the controller and each
+//   ring's platform) and the add-ons this same file adds (each ring's refraction and glow
+//   effect); the codec only checks what the file itself must hold, and says nothing about
+//   which room it is: versions 1 to 3 simply have no barriers.
 namespace PortRoomEffects {
 
 constexpr uint32_t kFileMagic = 0x4652504D;  // 'MPRF'
-constexpr uint32_t kFileVersion = 2;
+constexpr uint32_t kFileVersion = 4;
 constexpr uint8_t kEffectType = 7;
 constexpr uint32_t kEffectProps = 24;
 constexpr uint32_t kFirstInstance = 0xF000;
 constexpr uint32_t kMaxAddOns = 0x10000 - kFirstInstance;
 constexpr size_t kVariableBytes = 52;
 constexpr uint32_t kMaxVariables = 256;  // an object's; Remastered's most is 14
+constexpr uint32_t kBarrierRings = 5;
+constexpr uint32_t kMaxBarrierGroups = 1;
+constexpr size_t kBarrierRingBytes = 3 * 4 + 3 * 16;
+constexpr size_t kBarrierGroupBytes = 8 + kBarrierRings * kBarrierRingBytes;
+constexpr float kMaxBarrierDuration = 60.f;  // seconds
 
 // Whether an editor id is in the add-ons' range.
 constexpr bool IsAddOnId(uint32_t eid) { return (eid & 0xFFFF) >= kFirstInstance; }
@@ -94,10 +113,40 @@ struct Layer {
   std::vector<std::vector<Variable>> vars;    // per object; empty, or `count` of them
 };
 
+// A retail Effect object a Remastered effect actor matched (the script matcher paired them):
+// it is created as retail has it, with its connections, then given this PART (0xFFFFFFFF for
+// none the mod has) and these particle variables.
+struct Override {
+  uint32_t id = 0;
+  uint32_t part = 0xFFFFFFFF;
+  std::vector<Variable> vars;
+};
+
+// One of a barrier's five rings: its retail Platform object and the
+// two add-ons it shows, with the three particle table guids that drive the breakup.
+struct BarrierRing {
+  uint32_t platform = 0;
+  uint32_t refraction = 0;
+  uint32_t glow = 0;
+  std::array<uint8_t, 16> breakupRefraction{};
+  std::array<uint8_t, 16> motion{};
+  std::array<uint8_t, 16> breakupGlow{};
+};
+
+// The Intro Boss barrier: its retail SpecialFunction controller, imported breakup
+// duration and five explicit platform/effect associations.
+struct BarrierGroup {
+  uint32_t controller = 0;
+  float duration = 0;
+  std::array<BarrierRing, kBarrierRings> rings{};
+};
+
 struct File {
   std::vector<uint32_t> skips;
   uint32_t connected = 0;
   std::vector<Layer> layers;
+  std::vector<Override> overrides;
+  std::vector<BarrierGroup> barriers;
 };
 
 // Appends the effect as one SCLY object. Its light parameters are retail's most common
@@ -106,13 +155,19 @@ void AppendEffect(const Effect& effect, std::vector<uint8_t>& out);
 // Reads one SCLY object written by AppendEffect at `data`; `used` is its size.
 bool ReadEffect(const uint8_t* data, size_t size, Effect& out, size_t& used);
 std::vector<uint8_t> Write(const File& file);
-// Checks every object's framing, type and id range too.
+// Checks every object's framing, type and id range too, and a version 4 barrier group: its
+// duration, its members' ids and guids, the effects it names and where they live. `out` is
+// only ever the whole file, or empty when this returns false (a failed parse accepts nothing).
 bool Parse(const std::vector<uint8_t>& data, File& out, std::string& error);
 // Reads an EffectMP1's external variable list (property 3def0de6: u32 count, then per entry a
 // property list with the variable guid, in an 0xae893172 list as 0x82dde61c, and at most one
 // value, real 0xfd41dc4b, int 0xcd774f7a, colour 0x45eff31d or vector 0x282df928; the others
 // keep their defaults). False if it is malformed.
 bool ReadExternalVariables(const uint8_t* data, size_t size, std::vector<Variable>& out);
+// `vars` as CScriptEffect::PortSetExternalVars takes them (a value of each type per record).
+#ifdef TARGET_PC
+std::vector<SPortExternalVar> ExternalVars(const std::vector<Variable>& vars);
+#endif
 // "1A2B3C4D.roomfx" (any case) -> 0x1A2B3C4D.
 bool ParseFileName(const std::string& fileName, uint32_t& id);
 
@@ -123,6 +178,8 @@ void BeginArea(uint32_t mrea);
 void EndArea();
 // Whether the retail object `eid` is one the area being loaded leaves out.
 bool Skips(uint32_t eid);
+// The override of the retail object `eid` in the area being loaded, or null.
+const Override* FindOverride(uint32_t eid);
 // Creates the add-ons of `layer` in area `area` (TAreaId) and adds their editor ids to `ids`,
 // for InitializedInArea.
 void LoadLayer(CStateManager& mgr, int area, uint32_t layer, std::vector<uint32_t>& ids);

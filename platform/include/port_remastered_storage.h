@@ -35,6 +35,7 @@
 // (tests/port_remastered_storage.cpp).
 
 #include <algorithm>
+#include <cstdint>
 #include <filesystem>
 #include <string>
 #include <system_error>
@@ -121,6 +122,12 @@ struct ModFolder {
   bool builtin = false;  // the built-in import, which lives outside the mods folder
 };
 
+// The built-in barrier now uses roomfx effects; never let its obsolete platform
+// override replace the disc fallback. Other mods' deliberate replacements stay.
+inline bool RejectObsoleteBarrierModel(bool builtin, uint32_t type, uint32_t id) {
+  return builtin && type == 0x434D444C && id == 0x6556EEC5;
+}
+
 inline std::filesystem::path PathFromUtf8(const std::string& text) {
   return std::filesystem::path(std::u8string(text.begin(), text.end()));
 }
@@ -144,6 +151,11 @@ inline std::string FileName(const std::string& path) {
 // always left the import's own working folders (staging, held, backup, trash) alone.
 inline bool IsModFolderName(const std::string& name) { return !name.empty() && name[0] != '.'; }
 
+// Where a mod goes in the order apart from its name: the Dread Samus import ("dread-samus",
+// port_dread_samus_mod.h) loads after every other mod, so its bodies win over the Remastered
+// import's Samus whatever the names. Every other mod is 0.
+inline int ModPrecedence(const std::string& name) { return name == "dread-samus" ? 1 : 0; }
+
 // The folders a scan loads, in the order their files are applied: the mods folder's own folders plus
 // the built-in import when there is one (`builtinPath`, empty when not). A shared folder of the same
 // name is dropped, so the app's own import wins it; everything else keeps name order, so a later name
@@ -165,7 +177,10 @@ inline std::vector<ModFolder> OrderMods(std::vector<ModFolder> shared, const std
   if (hasBuiltin) {
     out.push_back(ModFolder{builtinName, builtinPath, true});
   }
-  std::stable_sort(out.begin(), out.end(), [](const ModFolder& a, const ModFolder& b) { return a.name < b.name; });
+  std::stable_sort(out.begin(), out.end(), [](const ModFolder& a, const ModFolder& b) {
+    return ModPrecedence(a.name) != ModPrecedence(b.name) ? ModPrecedence(a.name) < ModPrecedence(b.name)
+                                                          : a.name < b.name;
+  });
   return out;
 }
 

@@ -8,6 +8,7 @@
 #include "Kyoto/Streams/CMemoryInStream.hpp"
 #include "MetroidPrime/CStateManager.hpp"
 #include "MetroidPrime/ScriptObjects/CScriptEffect.hpp"
+#include "MetroidPrime/ScriptObjects/CScriptSpecialFunction.hpp"
 #include "MetroidPrime/TCastTo.hpp"
 
 #include <algorithm>
@@ -73,6 +74,31 @@ bool Skips(uint32_t eid) {
   return true;
 }
 
+const Override* FindOverride(uint32_t eid) {
+  if (!sLoading) {
+    return nullptr;
+  }
+  for (const Override& over : sFile.overrides) {
+    if ((over.id & 0x3FFFFFF) == (eid & 0x3FFFFFF)) {
+      return &over;
+    }
+  }
+  return nullptr;
+}
+
+std::vector< SPortExternalVar > ExternalVars(const std::vector< Variable >& vars) {
+  std::vector< SPortExternalVar > out(vars.size());
+  for (size_t k = 0; k < vars.size(); ++k) {
+    const Variable& v = vars[k];
+    std::copy(v.guid.begin(), v.guid.end(), out[k].guid.bytes.begin());
+    std::copy(std::begin(v.color), std::end(v.color), out[k].color);
+    std::copy(std::begin(v.vec), std::end(v.vec), out[k].vec);
+    out[k].real = v.real;
+    out[k].integer = v.integer;
+  }
+  return out;
+}
+
 void LoadLayer(CStateManager& mgr, int area, uint32_t layer, std::vector<uint32_t>& ids) {
   if (!sLoading) {
     return;
@@ -99,20 +125,25 @@ void LoadLayer(CStateManager& mgr, int area, uint32_t layer, std::vector<uint32_
       ids.push_back(made.first.value);
       if (i < l.vars.size() && !l.vars[i].empty()) {
         if (CScriptEffect* const effect = TCastToPtr< CScriptEffect >(mgr.ObjectById(made.second))) {
-          std::vector< SPortExternalVar > vars(l.vars[i].size());
-          for (size_t k = 0; k < vars.size(); ++k) {
-            const Variable& v = l.vars[i][k];
-            std::copy(v.guid.begin(), v.guid.end(), vars[k].guid.bytes.begin());
-            std::copy(std::begin(v.color), std::end(v.color), vars[k].color);
-            std::copy(std::begin(v.vec), std::end(v.vec), vars[k].vec);
-            vars[k].real = v.real;
-            vars[k].integer = v.integer;
-          }
-          effect->PortSetExternalVars(vars);
+          effect->PortSetExternalVars(ExternalVars(l.vars[i]));
         }
       }
       sSpawned[sMrea].push_back({sMrea, made.first.value, made.second.value, info.part, info.name,
                                  i < l.vars.size() ? l.vars[i].size() : 0});
+    }
+  }
+  for (const BarrierGroup& group : sFile.barriers) {
+    if ((group.controller >> 26) != layer) continue;
+    const TUniqueId uid = mgr.GetIdForScript(TEditorId(group.controller));
+    if (CScriptSpecialFunction* controller = TCastToPtr< CScriptSpecialFunction >(mgr.ObjectById(uid))) {
+      controller->PortConfigureBarrier(group, sMrea);
+    }
+    for (const BarrierRing& ring : group.rings) {
+      for (uint32_t eid : {ring.refraction, ring.glow}) {
+        if (CScriptEffect* e = TCastToPtr< CScriptEffect >(mgr.ObjectById(mgr.GetIdForScript(TEditorId(eid))))) {
+          e->PortAttachBarrier(uid, mgr.GetIdForScript(TEditorId(ring.platform)));
+        }
+      }
     }
   }
 }

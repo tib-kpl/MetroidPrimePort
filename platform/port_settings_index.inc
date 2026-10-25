@@ -148,6 +148,7 @@
 {"Video", "Display", "HUD and view", "Custom crosshair colour", "crosshair color reticle tint"},
 {"Video", "Display", "HUD and view", "Secondary crosshairs", "crosshair secondary extra"},
 {"Video", "Display", "HUD and view", "Hide helmet", "helmet visor frame hide first person"},
+{"Video", "Display", "HUD and view", "Third-person camera", "third person camera behind shoulder body over the shoulder view"},
 {"Video", "Display", "HUD and view", "Hide visor effects", "visor effects static scanlines hide"},
 {"Video", "Display", "HUD and view", "Field of view", "fov field of view zoom camera"},
 {"Video", "Display", "HUD and view", "Arm cannon right", "arm cannon gun offset right position"},
@@ -161,10 +162,11 @@
 {"Video", "Quality", "Quality", "Sun shadows", "sun shadow cascades outdoor remastered look"},
 {"Video", "Quality", "Quality", "Projected actor shadows", "actor shadow blob projected depth map floor remastered"},
 {"Video", "Quality", "Quality", "Auto render scale (native)", "resolution scale native auto render"},
-{"Video", "Quality", "Quality", "EFB scale", "resolution scale efb framebuffer"},
+{"Video", "Quality", "Quality", "Resolution scale", "resolution scale efb framebuffer draw resolution"},
+{"Video", "Quality", "Quality", "Maximum resolution scale", "resolution scale efb framebuffer draw resolution maximum highest"},
 {"Video", "Quality", "Quality", "Dynamic resolution", "dynamic resolution scale performance fps"},
-{"Video", "Quality", "Quality", "Target", "dynamic resolution target fps frame"},
-{"Video", "Quality", "Quality", "Lowest scale", "dynamic resolution minimum scale"},
+{"Video", "Quality", "Quality", "Frame rate target", "dynamic resolution target fps frame rate"},
+{"Video", "Quality", "Quality", "Minimum resolution scale", "dynamic resolution minimum scale lowest"},
 {"Video", "Quality", "Quality", "Sharpen when upscaled", "sharpening cas upscale blurry soft dynamic resolution"},
 {"Video", "Quality", "Quality", "Sharpening", "sharpen strength cas upscale"},
 {"Video", "Quality", "Quality", "HD font", "font text high resolution hd"},
@@ -187,28 +189,33 @@
 {"Video", "Compatibility", "Compatibility > Driver workarounds", "Alternative GPU sync (Direct3D 11)", "driver workaround intel flicker fence sync d3d11"},
 {"Video", "Compatibility", "Compatibility > Driver workarounds", "Driver error checks (next start only, slower)", "driver workaround validation errors debug dawn"},
 {"Video", "Compatibility", "Compatibility", "GPU self-test", "gpu test check diagnose"},
-{"Remastered", "", "Remastered models", "Use the Remastered models", "remastered mod enable disable toggle on off retail"},
-#if defined(__ANDROID__)
-{"Remastered", "", "Metroid Prime Remastered models", "Pick the .nsp/.xci...", "remastered file pick nsp xci game image"},
-{"Remastered", "", "Metroid Prime Remastered models", "Pick the keys...", "remastered keys prod.keys pick"},
-#else
-{"Remastered", "", "Metroid Prime Remastered models", "Browse...", "remastered browse image file path nsp xci game"},
-{"Remastered", "", "Metroid Prime Remastered models", "Browse...", "remastered browse keys prod.keys path decryption"},
-#endif
-{"Remastered", "", "Metroid Prime Remastered models", "Import", "remastered start import run room geometry particles effects movies"},
-{"Remastered", "", "Metroid Prime Remastered models", "Full import (no reuse)", "remastered full import again remake reuse convert everything"},
-{"Remastered", "", "Metroid Prime Remastered models", "Load it again", "remastered reload again import"},
-{"Remastered", "", "Metroid Prime Remastered models > What to import", "Room geometry", "remastered import parts room geometry models skip size"},
-{"Remastered", "", "Metroid Prime Remastered models > What to import", "Particle effects", "remastered import parts particle effects skip"},
-{"Remastered", "", "Metroid Prime Remastered models > What to import", "HUD", "remastered import parts hud skip"},
-{"Remastered", "", "Metroid Prime Remastered models > What to import", "Text", "remastered import parts text strings skip"},
-{"Remastered", "", "Metroid Prime Remastered models > What to import", "Movies", "remastered import parts movies fmv skip ffmpeg"},
-{"Remastered", "", "Metroid Prime Remastered models > What to import", "Gallery", "remastered import parts gallery extras skip"},
 {"Mods", "", "Mods", "Load mods", "mods enable disable mod loader"},
 {"Mods", "", "Mods", "Reload mods", "mods reload refresh"},
 #if !defined(__ANDROID__)
 {"Mods", "", "Mods", "Open mods folder", "mods folder open directory"},
 #endif
+{"Mods", "", "Built-in mods > Prime Remastered", "Use the Remastered models", "remastered mod enable disable toggle on off retail models"},
+// The one key file row, above both built-in sections: both imports read it, so it has one row.
+#if defined(__ANDROID__)
+{"Mods", "", "Built-in mods", "Pick the keys...", "keys prod.keys remastered dread pick decryption both imports shared"},
+{"Mods", "", "Built-in mods > Prime Remastered > Import", "Pick the .nsp/.xci...", "remastered file pick nsp xci game image"},
+{"Mods", "", "Built-in mods > Metroid Dread > Import", "Load Metroid Dread image", "dread image file pick nsp xci game"},
+#else
+{"Mods", "", "Built-in mods", "Browse...", "keys prod.keys remastered dread browse path decryption both imports shared"},
+{"Mods", "", "Built-in mods > Prime Remastered > Import", "Browse...", "remastered browse image file path nsp xci game"},
+{"Mods", "", "Built-in mods > Metroid Dread > Import", "Load Metroid Dread image", "dread browse image file path nsp xci game"},
+#endif
+{"Mods", "", "Built-in mods > Prime Remastered > Import", "Import##remastered", "remastered start import run room geometry particles effects movies"},
+{"Mods", "", "Built-in mods > Prime Remastered > Import", "Full import (no reuse)", "remastered full import again remake reuse convert everything"},
+{"Mods", "", "Built-in mods > Prime Remastered > Import", "Load it again", "remastered reload again import"},
+{"Mods", "", "Built-in mods > Prime Remastered > Import > What to import", "Room geometry", "remastered import parts room geometry models skip size"},
+{"Mods", "", "Built-in mods > Prime Remastered > Import > What to import", "Particle effects", "remastered import parts particle effects skip"},
+{"Mods", "", "Built-in mods > Prime Remastered > Import > What to import", "HUD", "remastered import parts hud skip"},
+{"Mods", "", "Built-in mods > Prime Remastered > Import > What to import", "Text", "remastered import parts text strings skip"},
+{"Mods", "", "Built-in mods > Prime Remastered > Import > What to import", "Movies", "remastered import parts movies fmv skip ffmpeg"},
+{"Mods", "", "Built-in mods > Prime Remastered > Import > What to import", "Gallery", "remastered import parts gallery extras skip"},
+{"Mods", "", "Built-in mods > Metroid Dread", "Use the Dread Suit models", "dread samus metroid suit models mod enable disable toggle on off"},
+{"Mods", "", "Built-in mods > Metroid Dread > Import", "Import##dread", "dread start import run samus suit models nsp xci"},
 #if !defined(__ANDROID__)
 {"Mods", "", "Importers", "Argument", "importer argument parameter file"},
 #endif

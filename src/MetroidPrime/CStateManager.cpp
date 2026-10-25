@@ -7,6 +7,7 @@
 #include "port_debug.h"
 #include "port_env.h"
 #include "port_freecam.h"
+#include "port_third_person.h"
 #include "port_photo.h"
 #include "port_pipeline_context.h"
 #include "port_discord.h"
@@ -20,6 +21,7 @@
 #include "port_scene_copy.h"
 #include "port_skip_cutscenes.h"
 #include "port_viewmodel.h"
+#include "port_world_holders.h"
 #include "port_console.h"
 #include "port_room_effects.h"
 #ifdef MP_ENABLE_SMOKE_DRIVER
@@ -760,6 +762,10 @@ CStateManager::~CStateManager() {
   PortRoomEnv::SetLoadedAreas(nullptr, 0);
   PortRoomGeo::SetLoadedAreas(nullptr, 0);
   PortRoomLiquid::SetLoadedAreas(nullptr, 0);
+  // Likewise the port's own model holders: their tokens would keep this world's models in
+  // gpSimplePool past the teardown, and the next world would take them for its own (a mod
+  // switched off in between: models whose texture files no PAK serves any more).
+  PortWorldHolders::Release();
   CMemory::OffsetFakeStatics(
       -(x808_objectLists.size() * sizeof(CObjectList) + 0x11c)); // TODO what is this 11c?
   x88c_rumbleManager->HardStopAll();
@@ -1694,6 +1700,9 @@ void CStateManager::Update(float dt) {
 
   if (x904_gameState != kGS_SoftPaused) {
     x870_cameraManager->Update(dt, *this);
+#ifdef TARGET_PC
+    PortThirdPerson::Update(*this, dt);
+#endif
   }
 
   while (xf76_lastRelay != kInvalidUniqueId) {
@@ -3820,7 +3829,7 @@ void CStateManager::DrawWorld() const {
     }
 #endif
 #ifdef TARGET_PC
-    if (!PortViewModel::Active() && !PortFreeCam::Active())
+    if (!PortViewModel::Active() && !PortFreeCam::Active() && !PortThirdPerson::Active())
 #endif
     {
 #ifdef TARGET_PC

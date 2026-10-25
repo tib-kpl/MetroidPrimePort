@@ -19,11 +19,13 @@
 // The output is derived from the player's own copy of both games and is for
 // their use only; nothing produced here may ship.
 
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <map>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "port_remastered_cmdl.h"
@@ -79,6 +81,24 @@ struct ConvertOptions {
   // `retail` and `skins` are still read for the materials and the skeleton.
   uint32_t outputModel = 0;
   std::vector<uint32_t> outputSkins;
+  // Weights chosen elsewhere (a model re-skinned onto the retail skeleton, port_dread_samus.h): per
+  // vertex buffer of the model, per vertex, (retail bone id, weight). When set they are written as
+  // given, quantised as the votes are, instead of the nearest-retail-vertex votes, and under every
+  // id in `skins` (the caller's skeleton binds them all, so no bone-set check). Every buffer a mesh
+  // draws needs one list per vertex. Empty: the votes.
+  std::vector<std::vector<std::vector<std::pair<uint32_t, float>>>> boneWeights;
+  // Optional, both or neither, for the votes: each Remastered skin joint's pivot (the translation
+  // of its inverse bind's inverse), Remastered model space, by joint index; and the retail
+  // skeleton of skins[0] (CINF joints: id, parent id, bind head in retail model space). A joint
+  // whose pivot sits on one retail bone's head drops that bone's ancestors from its vote (the
+  // Parasite Queen's jaw, else torn between Jaw_1 and Head_1).
+  std::vector<std::array<double, 3>> jointPivots;
+  struct RetailBone {
+    uint32_t id = 0;
+    uint32_t parent = 0xFFFFFFFFu;
+    double head[3] = {};
+  };
+  std::vector<RetailBone> retailBones;
   // A texture's id is hashed from a tag naming its source. These wrap the
   // Remastered texture's uuid in that tag; the test tool sets them to
   // reproduce the reference converter's ids, the game leaves them empty.

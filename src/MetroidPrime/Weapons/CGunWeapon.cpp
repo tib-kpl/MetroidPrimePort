@@ -29,6 +29,10 @@
 #include "Kyoto/Particles/CGenDescription.hpp"
 #include "MetaRender/CCubeRenderer.hpp"
 
+#ifdef TARGET_PC
+#include <dolphin/gx/GXExtra.h>
+#endif
+
 const char* const CGunWeapon::skMuzzleNames[10] = {
     "PowerMuzzle", "PowerCharge",  "IceMuzzle",    "IceCharge",    "PowerMuzzle",
     "WaveCharge",  "PlasmaMuzzle", "PlasmaCharge", "PhazonMuzzle", "EmptyMuzzle",
@@ -288,11 +292,29 @@ void CGunWeapon::UpdateMuzzleFx(const float dt, const CVector3f& scale, const CV
 #ifdef TARGET_PC
 void CGunWeapon::UpdateMuzzleFx(const float dt, const CVector3f& scale,
                                 const CTransform4f& locator, const bool emitting) {
+  if (x208_muzzleEffectIdx == 0 && PortRemasteredMuzzle()) {
+    // Muzzle generator 0 is replaced by mPortMuzzleFlash (PortUpdateMuzzleFlash).
+    return;
+  }
   CElementGen& generator = *x1a4_muzzleGenerators[x208_muzzleEffectIdx];
   NPortChargeFxDetail::SetLocalLocator(generator, locator);
   generator.SetGlobalScale(scale);
   generator.SetParticleEmission(emitting);
   generator.Update(dt);
+}
+
+bool CGunWeapon::PortRemasteredMuzzle() const {
+  return x1a4_muzzleGenerators.size() > 0 && !x1a4_muzzleGenerators[0].null() &&
+         x1a4_muzzleGenerators[0]->PortIsRemastered();
+}
+
+void CGunWeapon::PortStartMuzzleFlash() {
+  // CGunWeaponMP1::Fire 0xca2d3c: Phazon keeps no fading flash, the others keep two.
+  mPortMuzzleFlash.Start(x16c_muzzleEffects[0], x200_beamId == CPlayerState::kBI_Phazon ? 1 : 3);
+}
+
+void CGunWeapon::PortUpdateMuzzleFlash(float dt, const CVector3f& scale, const CTransform4f& xf) {
+  mPortMuzzleFlash.Update(dt, xf, scale);
 }
 #endif
 
@@ -305,6 +327,18 @@ CElementGen* CGunWeapon::GetChargeMuzzleFx() const {
 }
 
 void CGunWeapon::DrawMuzzleFx(const CStateManager& mgr) const {
+#ifdef TARGET_PC
+  if (PortRemasteredMuzzle()) {
+    // CGunWeaponMP1::DrawMuzzleFx 0xca1fd0: the normal-shot module, or the charge
+    // generator; no X-ray subtract blend.
+    if (x208_muzzleEffectIdx == 0) {
+      mPortMuzzleFlash.Render();
+    } else if (!x1a4_muzzleGenerators[1].null()) {
+      x1a4_muzzleGenerators[1]->Render();
+    }
+    return;
+  }
+#endif
   if (!x1a4_muzzleGenerators[x208_muzzleEffectIdx].null()) {
     if (x200_beamId != CPlayerState::kBI_Ice &&
         mgr.GetPlayerState()->GetActiveVisor(mgr) == CPlayerState::kPV_XRay) {
@@ -318,6 +352,20 @@ void CGunWeapon::DrawMuzzleFx(const CStateManager& mgr) const {
 }
 
 void CGunWeapon::ActivateCharge(bool enable, bool resetEffect) {
+#ifdef TARGET_PC
+  if (PortRemasteredMuzzle()) {
+    // CGunWeaponMP1::ActivateCharge 0xca1498: only the charge generator is stopped and
+    // rebuilt, and only on enable; resetEffect is unused (the normal flash is a module).
+    if (x208_muzzleEffectIdx != 0) {
+      x1a4_muzzleGenerators[1]->SetParticleEmission(false);
+    }
+    x208_muzzleEffectIdx = !!enable;
+    if (enable) {
+      x1a4_muzzleGenerators[1] = rs_new CElementGen(x16c_muzzleEffects[1]);
+    }
+    return;
+  }
+#endif
   x1a4_muzzleGenerators[x208_muzzleEffectIdx]->SetParticleEmission(false);
   x208_muzzleEffectIdx = !!enable;
   if (enable || resetEffect) {
@@ -397,6 +445,51 @@ void CGunWeapon::DrawHologram(const CStateManager& mgr, const CTransform4f& xf,
   }
 }
 
+#ifdef TARGET_PC
+// Keeps points with dot(normal, p) >= d (world space) on every draw until turned off. The
+// plane goes to the shaders in GX view space, against the current view matrix.
+static void PortSetWorldClipPlane(const CVector3f& normal, const float d) {
+  const CTransform4f& view = CGraphics::GetViewMatrix();
+  const float cx = CVector3f::Dot(view.GetColumn(kDX), normal);
+  const float cy = CVector3f::Dot(view.GetColumn(kDY), normal);
+  const float cz = CVector3f::Dot(view.GetColumn(kDZ), normal);
+  const f32 plane[4] = {cx, cz, -cy, CVector3f::Dot(normal, view.GetTranslation()) - d};
+  GXSetClipPlane(GX_TRUE, plane);
+}
+
+// Remastered CGunWeaponMP1::DrawHologramTransition 0xca2b40 + DrawUpperArmForTransition
+// 0xca2a3c: the solid gun below the plane through `point`, the hologram above it, a hard cut,
+// then the upper arm at the elbow locator (not gated on the suit arm being drawn).
+void CGunWeapon::PortDrawHologramTransition(const CStateManager& mgr, const CTransform4f& xf,
+                                            const CVector3f& normal, const CVector3f& point,
+                                            const CModelFlags& flags,
+                                            const CActorLights* lights) const {
+  if (!x218_26_loaded)
+    return;
+
+  const float d = CVector3f::Dot(point, normal);
+  PortSetWorldClipPlane(-normal, -d);
+  Draw(false, mgr, xf, flags, lights);
+  PortSetWorldClipPlane(normal, d);
+  DrawHologram(mgr, xf, CModelFlags::Normal());
+  GXSetClipPlane(GX_FALSE, NULL);
+
+  if (!xb0_suitArmModelData)
+    return;
+  const CTransform4f armXf =
+      xf * x10_solidModelData->GetScaledLocatorTransform(rstl::string_l(skElbowLocator));
+  if (mgr.GetThermalDrawFlag() == kTD_Hot && x200_beamId != CPlayerState::kBI_Ice) {
+    const float a = flags.GetColorRef().GetAlpha();
+    CModelFlags useFlags(CModelFlags::kT_Opaque, 1.0f);
+    xb0_suitArmModelData->RenderThermal(xf, CColor(a, a, a, a),
+                                        CColor(static_cast< uchar >(0x40), 0x40, 0x40, 0x40),
+                                        useFlags);
+  } else {
+    xb0_suitArmModelData->Render(mgr, armXf, lights, flags);
+  }
+}
+#endif
+
 const int CGunWeapon::skShootAnim[2] = {4, 3};
 
 void CGunWeapon::SpawnProjectile(const TToken< CWeaponDescription >& weapon, const bool underwater,
@@ -441,6 +534,13 @@ void CGunWeapon::SpawnProjectile(const TToken< CWeaponDescription >& weapon, con
       kInvalidAreaId, GetPlayerId(), homingTarget, projectileAttribs, underwater, scale,
       rstl::optional_object_null(), CSfxManager::kInternalInvalidSfxId, false);
   if (proj) {
+#ifdef TARGET_PC
+    // CGunWeaponMP1::Fire (0xca2d3c) applies GetProjectileRicochetCountOverride; only
+    // CPlasmaBeamMP1 (0xd6a3c0) has one, 1.
+    if (x1c0_weaponType == kWT_Plasma) {
+      proj->PortSetRemainingRicochetCount(1);
+    }
+#endif
     mgr.AddObject(proj);
     proj->Think(dt, mgr);
   }
@@ -498,6 +598,11 @@ void CGunWeapon::Fire(const bool underwater, const float dt,
     x218_25_enableCharge = true;
     mgr.CameraManager()->AddCameraShaker(CCameraShakeData::skSoftRecoil, false);
   }
+#ifdef TARGET_PC
+  else if (PortRemasteredMuzzle()) {
+    PortStartMuzzleFlash();
+  }
+#endif
 
   CAnimData& animData = *x10_solidModelData->AnimationData();
   animData.EnableLooping(false);
@@ -622,6 +727,9 @@ void CGunWeapon::FreeResPools() {
 
   x10c_anims = rstl::vector< CToken >();
   x1a4_muzzleGenerators = rstl::reserved_vector< rstl::auto_ptr< CElementGen >, 2 >();
+#ifdef TARGET_PC
+  mPortMuzzleFlash.Clear();
+#endif
   x1d0_velInfo.Clear();
 }
 

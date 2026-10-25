@@ -16,6 +16,7 @@
 #include "port_hud_bars.h"
 #include "port_log.h"
 #include "port_remastered_import.h"
+#include "port_dread_samus_mod.h"
 #include "port_room_env.h"
 #include "port_room_geo.h"
 #include "port_room_effects.h"
@@ -66,8 +67,17 @@ std::string sFont;
 std::unordered_map<uint32_t, std::string> sRoomGeos;
 std::unordered_map<uint32_t, std::string> sRoomLiquids;
 std::unordered_map<uint32_t, std::string> sRoomEffects;
+std::map<std::pair<uint32_t, uint32_t>, std::string> sResourceProviders;
+std::unordered_map<uint32_t, std::string> sRoomEffectsProviders;
+uint64_t sResourceGeneration = 0;
 // <FRME id>.hudbars files, by frame.
 std::unordered_map<uint32_t, std::string> sHudBars;
+// The CMDLs the dread-samus mod serves (PortDreadSamus::Replaces).
+std::set<uint32_t> sDreadBodies;
+std::set<uint32_t> sDreadBalls;
+std::set<uint32_t> sDreadLowBalls;
+// The Dread-proportioned CINFs it serves (PortDreadSamus::Skeleton).
+std::set<uint32_t> sDreadSkeletons;
 // thermal.lut: the thermal visor's heat gradient (port_thermal.h).
 std::string sThermalLut;
 // envfx.bin: Remastered's EnvironmentFX textures (port_envfx_assets.h).
@@ -351,6 +361,23 @@ std::string ExtraPakName(int index) { return "PortMods" + std::to_string(index +
 
 bool HasNativeTexture(uint32_t id) { return sNativeTextures.count(id) != 0; }
 
+}  // namespace PortMods
+
+bool PortDreadSamus::Replaces(uint32_t bodyCmdl) { return bodyCmdl != 0 && PortMods::sDreadBodies.count(bodyCmdl) != 0; }
+bool PortDreadSamus::ReplacesBall(int suit, bool spider) {
+  return PortMods::sDreadBalls.count(BallModel(suit, spider)) != 0;
+}
+bool PortDreadSamus::ReplacesLowBall(int suit, bool spider) {
+  return PortMods::sDreadLowBalls.count(BallModel(suit, spider)) != 0;
+}
+
+uint32_t PortDreadSamus::Skeleton(uint32_t bodyCmdl) {
+  const uint32_t cinf = DreadCinf(bodyCmdl);
+  return cinf != 0 && Replaces(bodyCmdl) && PortMods::sDreadSkeletons.count(cinf) != 0 ? cinf : 0;
+}
+
+namespace PortMods {
+
 bool BindTexture(const void* owner, uint32_t id) {
   UnbindTexture(owner);
   const auto found = sNativeTextures.find(id);
@@ -441,6 +468,18 @@ std::string RoomEffectsPath(uint32_t mrea) {
   return found != sRoomEffects.end() ? found->second : std::string();
 }
 
+std::string ResourceProvider(uint32_t type, uint32_t id) {
+  const auto found = sResourceProviders.find({type, id});
+  return found != sResourceProviders.end() ? found->second : std::string();
+}
+
+std::string RoomEffectsProvider(uint32_t mrea) {
+  const auto found = sRoomEffectsProviders.find(mrea);
+  return found != sRoomEffectsProviders.end() ? found->second : std::string();
+}
+
+uint64_t ResourceGeneration() { return sResourceGeneration; }
+
 std::string RoomLiquidPath(uint32_t mrea) {
   const auto found = sRoomLiquids.find(mrea);
   return found != sRoomLiquids.end() ? found->second : std::string();
@@ -474,6 +513,9 @@ void FinishReload() {
 }
 
 void Initialize() {
+  ++sResourceGeneration;
+  sResourceProviders.clear();
+  sRoomEffectsProviders.clear();
   sStatus = {};
   sNativeTextures.clear();
   sRoomEnvs.clear();
@@ -489,6 +531,10 @@ void Initialize() {
   sThermalLut.clear();
   sEnvFx.clear();
   sRetailPlacements.clear();
+  sDreadBodies.clear();
+  sDreadBalls.clear();
+  sDreadLowBalls.clear();
+  sDreadSkeletons.clear();
   {
     std::lock_guard<std::mutex> lock(sEffectIdsMutex);
     sEffectIdMapPath.clear();
@@ -532,6 +578,13 @@ void Initialize() {
       if (info.import) {
         const std::string text = port::ReadAllText(stamp);
         info.importStale = ImportStampStale(text, PortRemastered::kImportVersion);
+      }
+      if (info.name == PortDreadSamus::kModName) {
+        std::ifstream dreadStamp(modDir / PortDreadSamus::kStampName);
+        if (ImportStampStale(dreadStamp.is_open() ? port::ReadAllText(dreadStamp) : std::string(),
+                             PortDreadSamus::kVersion)) {
+          Message(info.name + " was imported by an older version; import the Dread Samus models again");
+        }
       }
       if (info.importStale && sStatus.staleImport.empty()) {
         sStatus.staleImport = info.name;
@@ -632,9 +685,14 @@ void Initialize() {
       }
       if (PortRoomEffects::ParseFileName(name, id)) {
         sRoomEffects[id] = PathString(file);
+        sRoomEffectsProviders[id] = PathString(modDir);
         continue;
       }
       if (ParseLooseName(name, type, id)) {
+        if (PortRemasteredStorage::RejectObsoleteBarrierModel(scan[modIndex].builtin, type, id)) {
+          Message(info.name + ": " + relative + " is an obsolete barrier model; using the disc fallback");
+          continue;
+        }
         if (size == 0) {
           Message(info.name + ": " + relative + " is empty; ignored");
           continue;
@@ -644,6 +702,7 @@ void Initialize() {
           continue;
         }
         loose[{type, id}] = {type, id, PathString(file), size, info.name};
+        sResourceProviders[{type, id}] = PathString(modDir);
         looseMod[{type, id}] = modIndex;
         if (type == 0x54585452) { // 'TXTR': an earlier mod's image was made for another texture
           sNativeTextures.erase(id);
@@ -667,6 +726,7 @@ void Initialize() {
     info.textures = int(native.size());
     for (auto& [id, path] : native) {
       sNativeTextures[id] = std::move(path);
+      sResourceProviders[{0x54585452, id}] = PathString(modDir);
     }
   }
 
@@ -711,6 +771,38 @@ void Initialize() {
       }
     }
     PortSuitColours::SetServed(served);
+  }
+
+  // The bodies the Dread Samus import serves, for the game to leave out Prime's cannon on them.
+  {
+    std::string ids;
+    for (const auto& t : PortDreadSamus::kBallTargets) {
+      const auto ownership = PortDreadSamus::ResolveBallOwnership(t.suit, t.spider, [&](uint32_t type, uint32_t id) {
+        const auto it = loose.find({type, id});
+        return it != loose.end() && it->second.mod == PortDreadSamus::kModName;
+      });
+      const uint32_t model = PortDreadSamus::BallModel(t.suit, t.spider);
+      if (ownership.main) sDreadBalls.insert(model);
+      if (ownership.low) sDreadLowBalls.insert(model);
+    }
+    for (const auto& [key, resource] : loose) {
+      if (key.first == 0x434D444C && resource.mod == PortDreadSamus::kModName) { // 'CMDL'
+        if (!PortDreadSamus::IsBody(key.second)) continue;
+        sDreadBodies.insert(key.second);
+        char text[12];
+        std::snprintf(text, sizeof(text), " %08X", key.second);
+        ids += text;
+      }
+    }
+    for (const auto& [key, resource] : loose) {
+      if (key.first == 0x43494E46 && resource.mod == PortDreadSamus::kModName) { // 'CINF'
+        sDreadSkeletons.insert(key.second);
+      }
+    }
+    if (!sDreadBodies.empty()) {
+      PortLog::Write("mods: %s serves %zu Samus body model(s):%s\n", PortDreadSamus::kModName, sDreadBodies.size(),
+                     ids.c_str());
+    }
   }
 
   // Which loose resources each PAK takes. Ids no PAK holds are added to
