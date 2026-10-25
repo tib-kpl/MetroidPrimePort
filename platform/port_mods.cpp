@@ -76,12 +76,15 @@ std::unordered_map<uint32_t, std::string> sHudBars;
 std::set<uint32_t> sDreadBodies;
 std::set<uint32_t> sDreadBalls;
 std::set<uint32_t> sDreadLowBalls;
+std::set<uint32_t> sDreadCannons;  // first-person cannon variants (PortDreadSamus::FirstPersonCannon)
 // The Dread-proportioned CINFs it serves (PortDreadSamus::Skeleton).
 std::set<uint32_t> sDreadSkeletons;
 // thermal.lut: the thermal visor's heat gradient (port_thermal.h).
 std::string sThermalLut;
 // envfx.bin: Remastered's EnvironmentFX textures (port_envfx_assets.h).
 std::string sEnvFx;
+// shell.bin: Remastered's silhouette-shell textures (port_shell_assets.h).
+std::string sShell;
 // retailplacements.bin: the transforms objects draw Remastered's per-object retail models through (port_retail_placement.h).
 std::string sRetailPlacements;
 // effectids.map: the retail effect ids a mod gives a second user its own effect for. Loaded on first use.
@@ -370,6 +373,15 @@ bool PortDreadSamus::ReplacesBall(int suit, bool spider) {
 bool PortDreadSamus::ReplacesLowBall(int suit, bool spider) {
   return PortMods::sDreadLowBalls.count(BallModel(suit, spider)) != 0;
 }
+namespace {
+bool sDreadCannonShown = true;
+}
+void PortDreadSamus::SetFirstPersonCannonShown(bool shown) { sDreadCannonShown = shown; }
+bool PortDreadSamus::FirstPersonCannonShown() { return sDreadCannonShown; }
+bool PortDreadSamus::ReplacesFirstPersonCannon(int suit) {
+  const uint32_t id = FirstPersonCannon(suit);
+  return sDreadCannonShown && id != 0 && PortMods::sDreadCannons.count(id) != 0;
+}
 
 uint32_t PortDreadSamus::Skeleton(uint32_t bodyCmdl) {
   const uint32_t cinf = DreadCinf(bodyCmdl);
@@ -434,6 +446,8 @@ std::string HudBarsPath(uint32_t frame) {
 std::string ThermalLutPath() { return sThermalLut; }
 
 std::string EnvFxPath() { return sEnvFx; }
+
+std::string ShellPath() { return sShell; }
 
 std::string RetailPlacementPath() { return sRetailPlacements; }
 
@@ -530,9 +544,11 @@ void Initialize() {
   sHudBars.clear();
   sThermalLut.clear();
   sEnvFx.clear();
+  sShell.clear();
   sRetailPlacements.clear();
   sDreadBodies.clear();
   sDreadBalls.clear();
+  sDreadCannons.clear();
   sDreadLowBalls.clear();
   sDreadSkeletons.clear();
   {
@@ -667,6 +683,10 @@ void Initialize() {
         sEnvFx = PathString(file);
         continue;
       }
+      if (name == "shell.bin") {
+        sShell = PathString(file);
+        continue;
+      }
       if (name == PortRetailPlacement::kFileName) {
         sRetailPlacements = PathString(file);
         continue;
@@ -784,6 +804,12 @@ void Initialize() {
       const uint32_t model = PortDreadSamus::BallModel(t.suit, t.spider);
       if (ownership.main) sDreadBalls.insert(model);
       if (ownership.low) sDreadLowBalls.insert(model);
+    }
+    for (int suit = 0; suit < 4; ++suit) {
+      const auto it = loose.find({0x434D444Cu, PortDreadSamus::FirstPersonCannon(suit)});  // 'CMDL'
+      if (it != loose.end() && it->second.mod == PortDreadSamus::kModName) {
+        sDreadCannons.insert(it->first.second);
+      }
     }
     for (const auto& [key, resource] : loose) {
       if (key.first == 0x434D444C && resource.mod == PortDreadSamus::kModName) { // 'CMDL'

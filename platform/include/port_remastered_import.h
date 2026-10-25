@@ -95,7 +95,12 @@ namespace ImportStage {
 // 72: 084a8db5 draws as kind 43 (HoloGlass less TCH1/TCH2/DIFC).
 // 73: 0c0b6119 draws as kind 31 (fb2bc671's maths, DIFC for ICNC).
 // 74: every retail fx material draws through its Remastered shader (kShaderFxNoKind gone).
-inline constexpr int kConverter = 74;
+// 75: the three shipped null-model ids retain bounds but emit no render surfaces.
+// 76: Ore Processing EnergyField uses its shipped world-space mask formula.
+// 77: E2644678 (the Ore Processing pillar glass) draws as kind 29 with its CCH4 phase scale and depth cap.
+// 78: 5586D988 route hologram retains its vertex data and CCH/DIFC constants as kind 45.
+// 79: the transparent-flagged EnergyField materials keep kind 44 (no not-layered demotion).
+inline constexpr int kConverter = 79;
 // What a converted texture holds: port_remastered_image/txtr/dds/astc, and Converter's Get and
 // Cube. Each converted texture is kept across imports under its tag and this number, so a
 // kConverter bump re-imports the models without converting their textures again.
@@ -118,7 +123,8 @@ inline constexpr int kTextures = 5;
 //     (the Parasite Queen's jaw); the 12 artifacts each take their own Remastered model
 //     (CHPR FAA9C708's model node N is name-pool character N), Truth/Lifegiver/Chozo/World added;
 //     the elevator platforms 32103B70/F33A6018 take 6FA561D0's model, not a Frigate rubble sheet.
-inline constexpr int kModels = 20;
+// 21: intra-Mines elevator C0A4DF30 uses the shipped E8E0AB8D platform, not a VFX model.
+inline constexpr int kModels = 21;
 // 63: ELPS reads its CNST surface flag; the system tween is 0 only at a 0x1000000 lifetime.
 // 62: NEGT, CRCV, SPEV, ELPS, ROTV, PNCV, KEYF, SLTW, CRLN octaves, KESP, one-stop GRAD, PAP0/9,
 //     ADV9 and IAV0..3 are converted; PLNV counts come from MAXP.
@@ -162,7 +168,8 @@ inline constexpr int kModels = 20;
 // 102: visor rain splash (VFX_VisorRain 0ec41df0, BC978532 paired).
 // 103: the FlickerBat's 0B9E48EB paired with 3b29b0b3 (#visual-inferred: inferred from the
 // look, not proven by any CHPR or other serialized reference).
-inline constexpr int kEffects = 105;   // UnderWaterBubblesWeaponFire
+// 106: a VMSH whose material's shader reads COLOR (perm 016) is tinted by its vertex colour (VMSH flag 4).
+inline constexpr int kEffects = 111;   // exact GPSM primitive dispatch, transformed squares and SIZE
 // 20: two rooms matching one area write only the closer match's files, not the later room's.
 // 21: roomenv version 22, the world master's hints driven by its camera volumes (the table in every roomenv).
 // 22: a master's InventoryActivator fired by the camera going under water drives its hints (kSenderCameraWaterItem).
@@ -174,11 +181,20 @@ inline constexpr int kEffects = 105;   // UnderWaterBubblesWeaponFire
 // 29: a retail model's objects pair with its entities by order (RetailPlacement orient, entity).
 // 30: roomenv version 26, the EnvironmentFX colour intensity (a RelayAutoFire-fired density controller).
 // 34: a retail Effect object drawing a PART its GENP is shared with takes the actor's variables (the lava spit).
-inline constexpr int kRooms = 35;      // atomic Queen barrier controller group in roomfx v4
+// 36: actors with a model of Remastered's own under a retail-style id no retail object names
+//     are drawn, hiding the retail Actors they stand in for (Central Dynamo's grates).
+// 37: flamejet source placement overrides.
+// 38: Ore Processing's co-rotating PlatformMP1 render models.
+// 39: source placements for all matched converted effects.
+// 40: placement lookup includes every converted-effect pairing method.
+// 42: general PlatformMP1 render models and transform bindings.
+// 43: ColorModulate state bit 0x1000 starts on Registered.
+inline constexpr int kRooms = 44;      // exposure hint fluid enum, priority and initial activation
 inline constexpr int kRoomModels = 1;  // the rooms' own models and their levels of detail
 inline constexpr int kText = 1;        // port_remastered_text, and the font (port_remastered_font)
 // 9: envfx.bin, the EnvironmentFX flake textures (port_envfx_file.h).
-inline constexpr int kHud = 9;         // port_remastered_hud, port_remastered_map, envfx.bin
+// 10: shell.bin, the silhouette-shell textures (port_shell_file.h).
+inline constexpr int kHud = 10;        // port_remastered_hud, port_remastered_map, envfx.bin, shell.bin
 inline constexpr int kMovies = 0;      // port_remastered_movie
 inline constexpr int kGallery = 0;     // the gallery pictures (port_gallery)
 }  // namespace ImportStage

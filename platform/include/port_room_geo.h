@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include "port_room_color_modulate.h"
 
 class CActor;
 class CCubeModel;
@@ -20,7 +21,7 @@ class CVector3f;
 // them in place of the area's own world geometry.
 //
 // The file is little endian:
-//   'MPRG', u32 version (1 to 13), u32 instances
+//   'MPRG', u32 version (1 to 15), u32 instances
 //   instance: u32 CMDL id, f32 transform[12] (rows of model -> area)
 //     version 2 adds: u8 layer, u8 active, u16 links,
 //     version 3 (and 4) then: u32 platform, f32 platformStart[3],
@@ -114,7 +115,9 @@ enum : uint32_t { kNoGroup = 0xffffffff };
 // kFollow (with state MaxReached): `sender` is a DamageableTrigger, and the instance is one
 // of the actors retail's trigger shows and fades with itself (SetLinkedObjectAlpha): drawn
 // at the trigger's puddle alpha while it is active, hidden once it goes inactive.
-enum LinkAction : uint8_t { kShow = 1, kHide = 2, kToggle = 3, kFollow = 4 };
+// Version 14: kActorTransform binds model-local `transform` to the complete transform
+// of sender (not a translation-only slave). State and delay are unused.
+enum LinkAction : uint8_t { kShow = 1, kHide = 2, kToggle = 3, kFollow = 4, kActorTransform = 5 };
 
 struct Link {
   uint32_t sender; // retail editor id, layer bits included
@@ -175,6 +178,7 @@ enum NodeKind : uint8_t {
   kCounter = 2,
   // Remastered's Relay: kFire sends Fired (event 0).
   kRelay = 3,
+  kAlphaModulate = 4,
 };
 enum ScriptAction : uint8_t {
   kIncrement = 1,
@@ -188,6 +192,7 @@ enum ScriptAction : uint8_t {
   // `to` is a group: each animated instance of it starts its next clip now (on its last clip,
   // it restarts that one).
   kGroupNextClip = 9,
+  kGroupModulate = 10, // Play/Activate target binding; from an AlphaModulate node
 };
 
 struct ScriptNode {
@@ -197,6 +202,9 @@ struct ScriptNode {
   float centre[3] = {};
   float half[3] = {};
   float axes[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+  // Version 15 AlphaModulate uses the same fixed node payload: max = flags,
+  // centre.xy = alpha A/B, half.xy = duration A->B/B->A; remaining floats unused.
+  AlphaModulateConfig AlphaConfig() const { return {centre[0], centre[1], half[0], half[1], max}; }
 };
 
 // `from` is a node index, or for `retail` a retail editor id (layer bits included) whose

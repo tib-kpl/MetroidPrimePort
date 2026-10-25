@@ -13,6 +13,8 @@
 #include <cstdio>
 #include <fstream>
 #include <iterator>
+#include <filesystem>
+#include <cstdlib>
 
 using namespace PortRemastered;
 using namespace PortRemastered::RoomDetail;
@@ -481,8 +483,21 @@ void TestRoomEffects() {
   REQUIRE_MSG(file.overrides.size() == 1, "one override");
   const PortRoomEffects::Override& over = file.overrides[0];
   CHECK(over.id == 0x041A0015 && over.part == (0xFE000000u | SwapUuid(Guid(103).data())[0]));
+  CHECK(over.hasPlacement && over.pos[0] == 10.f && over.pos[1] == 20.f && over.pos[2] == 30.f);
   REQUIRE(over.vars.size() == 1);
   CHECK(over.vars[0].real == 0.65f && std::equal(over.vars[0].guid.begin(), over.vars[0].guid.end(), Guid(200).begin()));
+
+  // A carried retail fallback above kept its placement. Once io.matched proves
+  // the PART was converted from this GENP, import placement even without variables.
+  io.matched = [](const std::array<uint8_t, 16>& genp) -> std::vector<uint32_t> {
+    return genp == SwapUuid(Guid(101).data()) ? std::vector<uint32_t>{kOwnRetailPart} : std::vector<uint32_t>{};
+  };
+  WriteRoomEffects("room", p.room, area.mrea, area, scripts, io);
+  REQUIRE_MSG(PortRoomEffects::Parse(written.begin()->second, file, error), error.c_str());
+  REQUIRE(file.overrides.size() == 2);
+  CHECK(file.overrides[0].id == 0x041A0014 && file.overrides[0].vars.empty());
+  CHECK(file.overrides[0].hasPlacement && file.overrides[0].pos[0] == 10.f &&
+        file.overrides[0].pos[1] == 20.f && file.overrides[0].pos[2] == 30.f);
 
   // A retail object already in the add-on range: nothing written.
   written.clear();
@@ -1345,9 +1360,172 @@ void TestEnvFxIntensity() {
   }
 }
 
+void TestDynamoModulateGraph() {
+  Fixture f;
+  f.comps = {Plain(kActorMP1),
+             Plain(kColorModulateMP1, {{0, 0x4ee99d94, kActionActivate}}),
+             Plain(kRelay, {{1, kEventRelayFired, 0x144d0f29},
+                            {1, kEventRelayFired, 0x8ed2a8c7}})};
+  Bytes zero, duration;
+  PutFloat(zero, 0.f);
+  PutFloat(duration, 1.2f);
+  f.comps[1].props = Props().Add(kPropModulateColorB, Props().Add(kPropColorRGBA[3], zero).b)
+                               .Add(0x23fc9f0d, duration).Add(0xd8f7b602, zero)
+                               .Add(0x3fff0f45, Bytes{1}).b;
+  Area area;
+  area.mrea = 0x12345678; // no room-specific permission to use the graph
+  const Parsed p(f);
+  const auto result = MatchScripts(p.room, area);
+  REQUIRE(result.group.count(int(f.Entity(0))) == 1);
+  REQUIRE(result.script.nodes.size() == 2);
+  const auto& node = result.script.nodes[0];
+  CHECK(node.kind == PortRoomGeo::kAlphaModulate);
+  const auto c = node.AlphaConfig();
+  CHECK(c.a == 1.f && c.b == 0.f && c.timeA2B == 1.2f && c.timeB2A == 0.f);
+  CHECK(c.flags == (12 | 512));
+  REQUIRE(result.script.edges.size() == 3);
+  CHECK(result.script.edges[0].action == PortRoomGeo::kGroupModulate);
+  CHECK(result.script.edges[1].action == PortRoomGeo::kDecrement);
+  CHECK(result.script.edges[2].action == PortRoomGeo::kIncrement);
+  // A sibling actor driven only by a relay is not a modulation target, even
+  // though a supported modulator lives in the same room.
+  f.comps.push_back(Plain(kActorMP1));
+  f.comps[2].links.push_back({3, kEventRelayFired, kActionActivate});
+  const Parsed unrelated(f);
+  CHECK(MatchScripts(unrelated.room, area).group.count(int(f.Entity(3))) == 0);
+  f.comps[1].props = Props().Add(0xf41e2ca0, Bytes{1}).b;
+  const Parsed autoStart(f);
+  const auto registered = MatchScripts(autoStart.room, area);
+  REQUIRE(registered.script.nodes.size() == 2);
+  CHECK(registered.script.nodes[0].AlphaConfig().flags == (12 | 0x1000));
+  // The importer must not reinterpret a non-alpha mode as this evaluator.
+  f.comps[1].props = Props().AddU32(kPropModulateBlend, kModulateIncandescence).b;
+  const Parsed unsupported(f);
+  CHECK(MatchScripts(unsupported.room, area).script.nodes.empty());
+  // Existing added scenery stays relay-driven when the incandescence
+  // modulator is refused; its glow is still owned by port_remastered_room.cpp.
+  f.comps[0].props = Props().Add(kPropActorAdded, Bytes{1}).b;
+  f.comps[2].links.push_back({0, kEventRelayFired, kActionActivate});
+  const Parsed glow(f);
+  const auto oldPath = MatchScripts(glow.room, area);
+  REQUIRE(oldPath.script.nodes.size() == 1);
+  CHECK(oldPath.script.nodes[0].kind == PortRoomGeo::kRelay);
+  REQUIRE(oldPath.script.edges.size() == 1);
+  CHECK(oldPath.script.edges[0].action == PortRoomGeo::kGroupShow);
+}
+
+void TestPlatformTransformBindings() {
+  Fixture f;
+  f.comps = {RingPlatform(0x11111111, 0x33333333, {}),
+             RingPlatform(0x22222222, 0x33333333, {}),
+             Plain(kRelay, {{0, 0xf51372f2, 0x511ddd00}, {1, 0xf51372f2, 0x511ddd00}})};
+  Area area;
+  area.xf[0][0] = area.xf[1][1] = area.xf[2][2] = 1.;
+  auto object = RetailRingPlatform(0x1234, 0x11111111, {});
+  object.pos = {0, 0, 0};
+  object.hasXf = true;
+  object.scale = {1, 1, 1};
+  area.objects.push_back(object);
+  {
+    const Parsed p(f);
+    const auto scripts = MatchScripts(p.room, area);
+    REQUIRE(scripts.platformTransform.size() == 2);
+    CHECK(scripts.platformTransform.at(int(f.Entity(0)))->id == 0x1234);
+    CHECK(scripts.platformTransform.at(int(f.Entity(1)))->id == 0x1234);
+  }
+  // Co-location alone, a different controller, collision or initial pose must
+  // never bind an independent platform to a neighbour's movement.
+  for (int mutation = 0; mutation < 4; ++mutation) {
+    Fixture changed = f;
+    if (mutation == 0) changed.comps[2].links.clear();
+    if (mutation == 1) changed.comps[2].links[1].action = kActionActivate;
+    if (mutation == 2) changed.comps[1] = RingPlatform(0x22222222, 0x44444444, {});
+    if (mutation == 3) changed.comps[1].scale[0] = 2.f;
+    const Parsed p(changed);
+    const auto scripts = MatchScripts(p.room, area);
+    CHECK(scripts.platformTransform.count(int(changed.Entity(1))) == 0);
+  }
+}
+
+// Optional read-only shipped-data audit; no import output or game execution.
+void AuditModulateRooms() {
+  const char* root = std::getenv("PORT_MODULATE_AUDIT_ROOT");
+  if (!root) return;
+  size_t rooms = 0, affected = 0, nodes = 0, all = 0, autoStart = 0;
+  for (const auto& entry : std::filesystem::recursive_directory_iterator(root)) {
+    if (entry.path().extension() != ".ROOM") continue;
+    std::ifstream in(entry.path(), std::ios::binary);
+    Bytes bytes((std::istreambuf_iterator<char>(in)), {});
+    Room room;
+    std::string error;
+    REQUIRE_MSG(room.Parse(bytes, error), entry.path().string().c_str());
+    ++rooms;
+    for (const auto& c : room.Components()) {
+      if (c.type != kColorModulateMP1) continue;
+      ++all;
+      const auto f = room.Flat(c);
+      const auto p = f.find(0xf41e2ca0);
+      if (p != f.end() && p->second.size == 1 && room.Bytes(p->second)[0]) ++autoStart;
+    }
+    const auto result = MatchScripts(room, Area{});
+    size_t count = 0;
+    for (const auto& node : result.script.nodes) count += node.kind == PortRoomGeo::kAlphaModulate;
+    if (count) {
+      ++affected;
+      nodes += count;
+      std::printf("alpha-audit %s %zu\n", entry.path().string().c_str(), count);
+    }
+  }
+  std::printf("alpha-audit totals rooms=%zu modulators=%zu bit1000=%zu new_rooms=%zu new_nodes=%zu\n",
+              rooms, all, autoStart, affected, nodes);
+}
+
+void AuditPlatformRoom() {
+  const char* roomPath = std::getenv("PORT_PLATFORM_AUDIT_ROOM");
+  const char* retailPath = std::getenv("PORT_PLATFORM_AUDIT_MREA");
+  if (!roomPath || !retailPath) return;
+  const auto read = [](const char* path) {
+    std::ifstream in(path, std::ios::binary);
+    return Bytes(std::istreambuf_iterator<char>(in), {});
+  };
+  auto bytes = read(roomPath);
+  Room room;
+  std::string error;
+  REQUIRE_MSG(room.Parse(bytes, error), error.c_str());
+  Area area;
+  area.xf[0][0] = area.xf[1][1] = area.xf[2][2] = 1.;
+  REQUIRE(ReadScly(read(retailPath), area.objects));
+  if (const char* mlvl = std::getenv("PORT_PLATFORM_AUDIT_MLVL")) {
+    const char* id = std::getenv("PORT_PLATFORM_AUDIT_MREA_ID");
+    REQUIRE(id != nullptr);
+    area.mrea = uint32_t(std::strtoul(id, nullptr, 16));
+    std::vector<std::pair<uint32_t, Mat34>> areas;
+    REQUIRE(ReadMlvl(read(mlvl), areas));
+    for (const auto& entry : areas) if (entry.first == area.mrea) area.xf = entry.second;
+  }
+  const auto scripts = MatchScripts(room, area);
+  size_t own = 0, siblings = 0;
+  for (const auto* c : room.Of(kPlatformComponent)) {
+    const auto binding = scripts.platformTransform.find(c->entity);
+    if (binding == scripts.platformTransform.end()) continue;
+    if (scripts.retail.count(c->entity)) ++own;
+    else {
+      ++siblings;
+      std::printf("platform-audit sibling entity=%d carrier=%08X\n", c->entity, binding->second->id);
+    }
+  }
+  std::printf("platform-audit matched=%zu co-driven=%zu\n", own, siblings);
+}
+
 }  // namespace
 
 int main() {
+  // Shipped enum table at 0x1d16b5c; priority 0x590d6843 is NOT this enum.
+  CHECK(kPropHintMode == 0xa9aef33e && kPropExposureHintPriority == 0x590d6843);
+  CHECK(ExposureHintMode(0x2e32a658) == 0);
+  CHECK(ExposureHintMode(0xe1fee72e) == 1);
+  CHECK(ExposureHintMode(0xabccc097) == 2);
+  CHECK(ExposureHintMode(6) == 0); // unknown enumerant -> default (0x89e9a0)
   TestFluidSenders();
   TestMasterTrigger();
   TestMasterCameraWater();
@@ -1355,6 +1533,10 @@ int main() {
   TestBarrierGroup();
   TestRealBarrierRoom();
   TestEnvFxIntensity();
+  TestDynamoModulateGraph();
+  TestPlatformTransformBindings();
+  AuditModulateRooms();
+  AuditPlatformRoom();
   if (port_test::Failures() == 0) {
     std::printf("port_remastered_room_scripts_tests: ok\n");
   }

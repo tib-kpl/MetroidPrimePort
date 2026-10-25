@@ -17,6 +17,7 @@
 
 #include "Weapons/CWeaponDescription.hpp"
 
+#include "Kyoto/Animation/CCharLayoutInfo.hpp"
 #include "Kyoto/Animation/CSkinnedModel.hpp"
 #include "Kyoto/Animation/CVertexMorphEffect.hpp"
 #include "Kyoto/Audio/CSfxManager.hpp"
@@ -24,6 +25,7 @@
 #include "Kyoto/Graphics/CGraphics.hpp"
 #include "Kyoto/Graphics/CModel.hpp"
 #include "Kyoto/Graphics/CModelFlags.hpp"
+#include "Kyoto/Math/CRelAngle.hpp"
 #include "Kyoto/Math/CloseEnough.hpp"
 #include "Kyoto/Particles/CElementGen.hpp"
 #include "Kyoto/Particles/CGenDescription.hpp"
@@ -31,6 +33,8 @@
 
 #ifdef TARGET_PC
 #include <dolphin/gx/GXExtra.h>
+
+#include "port_dread_samus_mod.h"
 #endif
 
 const char* const CGunWeapon::skMuzzleNames[10] = {
@@ -230,6 +234,14 @@ void CGunWeapon::Update(float dt, CStateManager& mgr) {
     if (x218_28_suitArmLocked) {
       LoadSuitArm(mgr);
     }
+#ifdef TARGET_PC
+    // The Dread cannon switched on or off (setting, mods reload): load the arm again.
+    else if (xb0_suitArmModelData &&
+             mPortDreadCannon !=
+                 PortDreadSamus::ReplacesFirstPersonCannon(NWeaponTypes::get_current_suit(mgr))) {
+      AsyncLoadSuitArm(mgr);
+    }
+#endif
   } else {
     if (x104_gunCharacter.IsLocked()) {
       if (x104_gunCharacter.IsLoaded()) {
@@ -248,7 +260,11 @@ void CGunWeapon::Update(float dt, CStateManager& mgr) {
       if ((x210_loadFlags & 0x1f) == 0x1f) {
         CSkinnedModel& model = x10_solidModelData->PickAnimatedModel(CModelData::kWM_Normal);
         bool flag1 = model.GetModel()->IsLoaded(x20c_shaderIdx);
+#ifdef TARGET_PC
+        bool flag2 = xb0_suitArmModelData->IsLoaded(mPortDreadCannon ? x20c_shaderIdx : 0);
+#else
         bool flag2 = xb0_suitArmModelData->IsLoaded(0);
+#endif
         if (flag1 && flag2) {
           x218_26_loaded = true;
         }
@@ -381,6 +397,9 @@ void CGunWeapon::Draw(const bool drawSuitArm, const CStateManager& mgr, const CT
 
   CTransform4f armXf =
       xf * x10_solidModelData->GetScaledLocatorTransform(rstl::string_l(skElbowLocator));
+#ifdef TARGET_PC
+  const CTransform4f cannonXf = mPortDreadCannon ? PortDreadCannonXf(xf) : xf;
+#endif
 
   if (x1bc_rainSplashGenerator && x1bc_rainSplashGenerator->IsRaining()) {
     CSkinnedModel::SetPointGeneratorFunc(x1bc_rainSplashGenerator, &CGunWeapon::PointGenerator);
@@ -393,12 +412,23 @@ void CGunWeapon::Draw(const bool drawSuitArm, const CStateManager& mgr, const CT
     CColor addColor(static_cast< uchar >(0x40), 0x40, 0x40, 0x40);
     if (x218_29_drawHologram) {
       DrawHologram(mgr, xf, flags);
-    } else {
+    }
+#ifdef TARGET_PC
+    else if (mPortDreadCannon) {
+      CModelFlags useFlags(CModelFlags::kT_Opaque, 1.0f);
+      xb0_suitArmModelData->RenderThermal(cannonXf, mulColor, addColor, useFlags);
+    }
+#endif
+    else {
       CModelFlags useFlags(CModelFlags::kT_Opaque, 1.0f);
       x10_solidModelData->RenderThermal(xf, mulColor, addColor, useFlags);
     }
 
+#ifdef TARGET_PC
+    if (drawSuitArm && xb0_suitArmModelData && !mPortDreadCannon) {
+#else
     if (drawSuitArm && xb0_suitArmModelData) {
+#endif
       CModelFlags useFlags(CModelFlags::kT_Opaque, 1.0f);
       xb0_suitArmModelData->RenderThermal(xf, mulColor, addColor, useFlags);
     }
@@ -406,12 +436,22 @@ void CGunWeapon::Draw(const bool drawSuitArm, const CStateManager& mgr, const CT
     /* Cold Draw */
     if (mgr.GetPlayerState()->GetCurrentVisor() != CPlayerState::kPV_XRay &&
         !x218_29_drawHologram) {
+#ifdef TARGET_PC
+      if (mPortDreadCannon) {
+        // The cannon is drawn whether or not the suit arm is: it is the gun model too.
+        xb0_suitArmModelData->Render(mgr, cannonXf, lights, flags.UseShaderSet(x20c_shaderIdx));
+      } else
+#endif
       x10_solidModelData->Render(mgr, xf, lights, flags.UseShaderSet(x20c_shaderIdx));
     } else {
       DrawHologram(mgr, xf, flags);
     }
 
+#ifdef TARGET_PC
+    if (drawSuitArm && xb0_suitArmModelData && !mPortDreadCannon) {
+#else
     if (drawSuitArm && xb0_suitArmModelData) {
+#endif
       xb0_suitArmModelData->Render(mgr, armXf, lights, flags);
     }
   }
@@ -427,6 +467,15 @@ void CGunWeapon::DrawHologram(const CStateManager& mgr, const CTransform4f& xf,
   if (!x218_26_loaded)
     return;
 
+#ifdef TARGET_PC
+  // The hologram (a beam change, the X-ray visor) is the retail gun's own model: the Dread cannon
+  // stands in for it, unlit like the hologram.
+  if (mPortDreadCannon) {
+    xb0_suitArmModelData->Render(mgr, PortDreadCannonXf(xf), nullptr,
+                                 flags.UseShaderSet(x20c_shaderIdx));
+    return;
+  }
+#endif
   if (x218_29_drawHologram) {
     x60_holoModelData->FlatDraw(CModelData::kWM_Normal, xf, false, flags);
   } else {
@@ -446,6 +495,34 @@ void CGunWeapon::DrawHologram(const CStateManager& mgr, const CTransform4f& xf,
 }
 
 #ifdef TARGET_PC
+// The Dread cannon's model has its muzzle at the origin and its barrel up +Y, the gun's axes. It
+// sits on the gun's live LBEAM locator, less PortDreadMuzzleShift, so it follows the recoil too.
+// Seen from behind, its wide back end hides the beam lights on its sides, so it is rolled 30
+// degrees about the barrel to turn its left light toward the camera.
+CTransform4f CGunWeapon::PortDreadCannonXf(const CTransform4f& xf) const {
+  const CVector3f muzzle =
+      x10_solidModelData->GetScaledLocatorTransform(rstl::string_l(skMuzzleLocator))
+          .GetTranslation();
+  return xf * CTransform4f::Translate(muzzle + PortDreadMuzzleShift()) *
+         CTransform4f::RotateY(CRelAngle::FromDegrees(30.f));
+}
+
+// The Plasma Beam's animations push LBEAM out along the barrel (+Y) past its bind pose, 0.204
+// model units at rest, for its longer gun; the Dread cannon has no such barrel. The shift takes
+// out what lies beyond the bind pose, so the cannon stays where the other beams hold it and keeps
+// only the recoil behind it. CPlayerGun moves its muzzle (shots, muzzle effects) by the same amount.
+CVector3f CGunWeapon::PortDreadMuzzleShift() const {
+  if (!mPortDreadCannon || !x10_solidModelData || !x10_solidModelData->HasAnimation())
+    return CVector3f::Zero();
+  const CAnimData& anim = *x10_solidModelData->GetAnimationData();
+  const CCharLayoutInfo& layout = *anim.GetCharLayoutInfo();
+  const CSegId lbeam = layout.GetSegIdFromString(rstl::string_l(skMuzzleLocator));
+  const float scaleY = x10_solidModelData->GetScale().GetY();
+  const float live = anim.GetLocatorTransform(lbeam, nullptr).GetTranslation().GetY();
+  const float bind = layout.GetReferenceStanceOffset(lbeam).GetY();
+  return live > bind ? CVector3f(0.f, (bind - live) * scaleY, 0.f) : CVector3f::Zero();
+}
+
 // Keeps points with dot(normal, p) >= d (world space) on every draw until turned off. The
 // plane goes to the shaders in GX view space, against the current view matrix.
 static void PortSetWorldClipPlane(const CVector3f& normal, const float d) {
@@ -474,7 +551,8 @@ void CGunWeapon::PortDrawHologramTransition(const CStateManager& mgr, const CTra
   DrawHologram(mgr, xf, CModelFlags::Normal());
   GXSetClipPlane(GX_FALSE, NULL);
 
-  if (!xb0_suitArmModelData)
+  // The Dread cannon (mPortDreadCannon) went with the solid gun, below the plane.
+  if (!xb0_suitArmModelData || mPortDreadCannon)
     return;
   const CTransform4f armXf =
       xf * x10_solidModelData->GetScaledLocatorTransform(rstl::string_l(skElbowLocator));
@@ -649,7 +727,11 @@ void CGunWeapon::Touch(const CStateManager& mgr) {
   if (x10_solidModelData) {
     x10_solidModelData->Touch(mgr, x20c_shaderIdx);
     if (xb0_suitArmModelData)
+#ifdef TARGET_PC
+      xb0_suitArmModelData->Touch(mgr, mPortDreadCannon ? x20c_shaderIdx : 0);
+#else
       xb0_suitArmModelData->Touch(mgr, 0);
+#endif
   }
 }
 
@@ -683,6 +765,9 @@ void CGunWeapon::Unload(CStateManager& mgr) {
   x10_solidModelData = rstl::optional_object_null();
   x60_holoModelData = rstl::optional_object_null();
   xb0_suitArmModelData = rstl::optional_object_null();
+#ifdef TARGET_PC
+  mPortDreadCannon = false;
+#endif
   x100_gunController = nullptr;
   x1bc_rainSplashGenerator = nullptr;
   x1b8_frozenGenerator = nullptr;
@@ -833,6 +918,9 @@ bool CGunWeapon::IsFidgetLoaded() { return x100_gunController->IsFidgetLoaded();
 void CGunWeapon::AsyncLoadSuitArm(CStateManager& mgr) {
   int suit = NWeaponTypes::get_current_suit(mgr);
   xb0_suitArmModelData = rstl::optional_object_null();
+#ifdef TARGET_PC
+  mPortDreadCannon = false;  // the retail gun until LoadSuitArm has the new arm
+#endif
   x13c_armCharacter = gpSimplePool->GetObj(skSuitArmNames[suit]);
   x13c_armCharacter.Lock();
   x218_28_suitArmLocked = true;
@@ -844,7 +932,14 @@ void CGunWeapon::LoadSuitArm(CStateManager& mgr) {
   }
   int suit = NWeaponTypes::get_current_suit(mgr);
   const CAssetId armId = NWeaponTypes::get_asset_id_from_name(skSuitArmNames[suit]);
+#ifdef TARGET_PC
+  mPortDreadCannon = PortDreadSamus::ReplacesFirstPersonCannon(suit);
+  xb0_suitArmModelData =
+      CStaticRes(mPortDreadCannon ? CAssetId(PortDreadSamus::FirstPersonCannon(suit)) : armId,
+                 x4_scale);
+#else
   xb0_suitArmModelData = CStaticRes(armId, x4_scale);
+#endif
   xb0_suitArmModelData->SetSortThermal(true);
   x218_28_suitArmLocked = false;
   x13c_armCharacter.Unlock();

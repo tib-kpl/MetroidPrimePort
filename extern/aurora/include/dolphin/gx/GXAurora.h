@@ -335,7 +335,8 @@ extern "C" {
 #define GX_AURORA_PORT_XRAY 0x006B
 // Port extension: one pass of Remastered's thermal visor post (GXPortThermalPass). Payload: 20 u32 words.
 #define GX_AURORA_PORT_THERMAL 0x006C
-// Port extension: EFB draws go to the RGBA16F linear HDR scene (GXPortSceneHdr). Payload: u8 on.
+// Port extension: EFB draws go to the RGBA16F linear HDR scene (GXPortSceneHdr).
+// Payload: u8 mode, 0 display / 1 scene / 2 pause (reuse colour, clear depth).
 #define GX_AURORA_PORT_SCENE_HDR 0x006E
 // Port extension: the EFB copies that follow are linear scene copies (GXPortCopyScene). Payload: u8 on.
 #define GX_AURORA_PORT_COPY_SCENE 0x006F
@@ -346,6 +347,9 @@ extern "C" {
 // is kept where dot(view-space position, plane.xyz) + plane.w >= 0. Stays in effect until changed.
 // Payload: u8 on, then 4 f32 (the plane in view space).
 #define GX_AURORA_SET_CLIP_PLANE 0x0071
+// Port extension: Remastered's silhouette shell (GXPortShell). Payload: u8 mode (0 end, 1 depth
+// prepass, 2 colour), then for 1 and 2 24 f32 (CCH0..CCH4, then time, depth shift, tex0 sRGB, 0).
+#define GX_AURORA_PORT_SHELL 0x0072
 
 #define GX2_SET_POLYGON_OFFSET 0x1000
 

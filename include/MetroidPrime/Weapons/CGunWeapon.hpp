@@ -169,6 +169,8 @@ public:
   void PortDrawHologramTransition(const CStateManager& mgr, const CTransform4f& xf,
                                   const CVector3f& normal, const CVector3f& point,
                                   const CModelFlags& flags, const CActorLights* lights) const;
+  CTransform4f PortDreadCannonXf(const CTransform4f& xf) const;
+  CVector3f PortDreadMuzzleShift() const;
 #endif
   void ReturnToDefault(CStateManager& mgr);
   bool ComboFireOver() const;
@@ -267,6 +269,10 @@ protected:
   // Remastered's normal-shot muzzle module (CGunWeaponMP1 +0x588, from the Muzzle PART),
   // used in place of muzzle generator 0 when that PART is Remastered.
   CPortEffectSet mPortMuzzleFlash;
+
+  // xb0_suitArmModelData holds the Dread cannon (port_dread_samus_mod.h): it is drawn in place
+  // of the gun model, which it carries along with the arm.
+  bool mPortDreadCannon = false;
 #endif
 };
 CHECK_SIZEOF(CGunWeapon, 0x21c)

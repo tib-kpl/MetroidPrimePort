@@ -14,6 +14,7 @@
 #include <string>
 #include <tuple>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace PortRemastered {
 namespace {
@@ -3517,6 +3518,7 @@ public:
       m_approximated.push_back(std::string("VMAT: shader ") + shaderText + " has no recipe");
       return false;
     }
+    m_vmatShader = mati.shader;
 
     // The node's properties by fourcc.
     // Also takes the found property's lifetime context for the ILPTs written from it.
@@ -4137,6 +4139,7 @@ public:
     AppendBE32(out, HeaderOf(type));
     const auto& retail = PropertiesOf(type);
     const bool part = type == F("PART");
+    bool inverseExposed = false;
     const bool swoosh = type == F("SWHC");
     // An ELC2 (CParticleElectric2) is written as an ELSC stream that starts with the port-only PEL2
     // marker and carries the ELC2 fields; it draws through its VMAT like a swoosh.
@@ -4372,42 +4375,29 @@ public:
     const EffectProperty* mover = nullptr;
     std::vector<uint32_t> portOnly;  // material data, written only with a VMAT
     const bool textured = retail.count(F("TEXR")) != 0;
-    // Remastered draws nothing for a generator with no texture, material or
-    // model (it only carries spawns and lights); retail would draw its
-    // particles as untextured quads (0.1 wide and white without SIZE/COLR).
-    // Such a generator is written with a size of 0, and so is one that draws only
-    // models (retail drew a white quad round each of the Ice charge's shards).
     const auto has = [&](uint32_t fourcc) {
       return std::any_of(node.properties.begin(), node.properties.end(),
                          [&](const EffectProperty& property) { return property.fourcc == fourcc; });
     };
-    // A material whose colour texture (BCLR) is nil binds Remastered's black
-    // texture. These are placeholder MATIs on generators that carry spawns and
-    // lights (PlasmaCharge's root among them), so their quads are taken as
-    // drawing nothing too; model generators keep the black material.
-    const auto nilColour = [&](const EffectProperty& property) {
-      if (!m_io.materialData) {
-        return false;
-      }
-      for (const EffectValue& value : property.value) {
-        if (value.kind != EffectValue::Kind::Guid) {
-          continue;
-        }
-        static constexpr uint8_t kTag[4] = {'B', 'C', 'L', 'R'};
-        const std::vector<uint8_t> data = m_io.materialData(value.guid);
-        const auto tag = std::search(data.begin(), data.end(), std::begin(kTag), std::end(kTag));
-        return tag != data.end() && data.end() - tag >= 20 && std::all_of(tag + 4, tag + 20, [](uint8_t b) { return b == 0; });
-      }
-      return false;
-    };
-    const bool placeholder = part && !has(F("TEXR")) && !has(F("PMDL")) &&
-                             std::any_of(node.properties.begin(), node.properties.end(), [&](const EffectProperty& property) {
-                               return property.fourcc == F("MTIN") && nilColour(property);
-                             });
-    result.placeholder = placeholder;
-    const bool drawsNothing = part && !has(F("TEXR")) && (!has(F("MTIN")) || placeholder) && !has(F("PMDL"));
+    // SetupPrimitiveTypes 0x29069c and FixAndClean 0x2908a4 select geometry,
+    // independently of textures/materials. Primitive 2 is a transformed square:
+    // table 0x1d0b9b4 maps 1/2/3 to render kinds 1/2/0, and Render 0x2b23e8
+    // sends kinds 1 AND 2 to RenderSpriteEntries. Nil BCLR is opaque black.
+    const bool inactivePrimitive = part && (node.primitiveType == 0 || node.primitiveType == 4 ||
+                                           node.primitiveType == 5 ||
+                                           (node.primitiveType == 3 && !has(F("PMDL"))));
+    const bool customMaterial = std::any_of(node.properties.begin(), node.properties.end(), [](const auto& p) {
+      return p.fourcc == F("MTIN") && std::any_of(p.value.begin(), p.value.end(), [](const auto& v) {
+        return v.kind == EffectValue::Kind::Guid && v.guid != EffectGuid{};
+      });
+    });
+    // RenderSpriteEntries 0x2b13a8 requires node+0x140. The ctor 0x28bfc4
+    // loads either nonnil MTIN or the header MTRL; TEXR cannot supply it.
+    // This gates drawing only: active SIZE and child/light evaluation survive.
+    const bool nullMaterial = part && (node.primitiveType == 1 || node.primitiveType == 2) &&
+                              node.baseMaterial == EffectGuid{} && !customMaterial;
+    const bool drawsNothing = inactivePrimitive || nullMaterial;
     result.drawsNothing = drawsNothing;
-    const bool modelsOnly = part && !has(F("TEXR")) && !has(F("MTIN")) && has(F("PMDL"));
     for (const EffectProperty& property : node.properties) {
       uint32_t fourcc = property.fourcc;
       m_lifetimeOffset = LifetimeOffset(part, swoosh, electric, property);
@@ -4415,12 +4405,9 @@ public:
         result.dropped.push_back(EffectFourCCString(fourcc) + ": a swoosh has no per-particle variables");
         continue;
       }
-      if (placeholder && fourcc == F("MTIN")) {
-        result.dropped.push_back("MTIN: its colour texture is nil (the generator draws nothing)");
-        continue;
-      }
-      if ((drawsNothing || modelsOnly) && fourcc == F("SIZE")) {
-        result.dropped.push_back(drawsNothing ? "SIZE: the generator draws nothing" : "SIZE: the generator draws models only");
+      if (inactivePrimitive && fourcc == F("SIZE")) {
+        // Both sprite Fixup and transformed Fixup (0x28ec98) consume SIZE.
+        // Only inactive primitives clear it; do not substitute SIZE=0 to hide draws.
         continue;
       }
       // DFOG 1 sets the description's no-fog bit (CreateGPSM 0x25a560, CreateSWSH 0x2dce88: desc+0x6b
@@ -5013,6 +5000,19 @@ public:
         }
         continue;
       }
+      // VMPC is evaluated after the initial particle values, not an alias for a VEL source.
+      // CreateNewParticles 0x24abd0 calls ApplyVelocity (including its integration op).
+      if (part && fourcc == F("VMPC")) {
+        uint32_t value = 0;
+        if (!SmallInteger(property, value) || value > 1) {
+          result.dropped.push_back("VMPC: not a constant 0 or 1");
+        } else if (value == 1) {
+          AppendBE32(out, F("VMPC"));
+          AppendBE32(out, F("CNST"));
+          AppendBE32(out, 1);
+        }
+        continue;
+      }
       // BLIT (static-state word0 bit 14, 0x4000): CParticleSceneNode::AppendBakedLightingIfRequested
       // 0x2b12a8 appends the room's baked probe texture (BPTX) and BLCM to a lit sprite's draw only with
       // it set. 1 is the port-only PBLT 1; 0 (the default) writes nothing.
@@ -5086,6 +5086,35 @@ public:
         continue;  // consumed as PIR0/POR0/PLIX below
       }
       const auto found = retail.find(fourcc);
+      // VGD/VMD mutate the same coordinate selector only when true (CreateGPSM 0x256b7c).
+      if (part && ((fourcc >= F("VGD1") && fourcc <= F("VGD4")) ||
+                   (fourcc >= F("VMD1") && fourcc <= F("VMD4")))) {
+        uint32_t value = 0;
+        if (!SmallInteger(property, value) || value > 1) {
+          result.dropped.push_back(EffectFourCCString(fourcc) + ": invalid constant");
+          continue;
+        }
+        if (value == 0) continue;
+        if (fourcc >= F("VGD1") && fourcc <= F("VGD4")) {
+          AppendBE32(out, fourcc);
+          AppendBE32(out, F("CNST"));
+          AppendBE32(out, 1);
+          continue;
+        }
+      }
+      // CreateGPSM 0x25acc4 resets IEXP whenever DVVN is read. Preserve stream order.
+      if (part && (fourcc == F("DVVN") || fourcc == F("IEXP"))) {
+        uint32_t value = 0;
+        if (SmallInteger(property, value) && value <= (fourcc == F("DVVN") ? 255u : 1u)) {
+          inverseExposed = fourcc == F("DVVN") ? (value == 3 || value == 4) : value != 0;
+          AppendBE32(out, fourcc);
+          AppendBE32(out, F("CNST"));
+          AppendBE32(out, value);
+        } else {
+          result.dropped.push_back(EffectFourCCString(fourcc) + ": invalid constant");
+        }
+        continue;
+      }
       if (found == retail.end()) {
         result.dropped.push_back(EffectFourCCString(property.fourcc) + ": Remastered only");
         continue;
@@ -5177,11 +5206,12 @@ public:
         out.erase(out.begin() + v->begin, out.begin() + v->end);
       }
     }
-    if (drawsNothing || modelsOnly) {
-      AppendBE32(out, F("SIZE"));
+    if (part && node.primitiveType >= 0 && (node.primitiveType != 1 || nullMaterial)) {
+      AppendBE32(out, F("PPRM"));
       AppendBE32(out, F("CNST"));
-      AppendBE32(out, FloatBits(0.0f));
-    } else if (part && !has(F("SIZE"))) {
+      AppendBE32(out, drawsNothing ? 0u : uint32_t(node.primitiveType));
+    }
+    if (part && node.primitiveType == 1 && !has(F("SIZE"))) {
       // DVVN 1..4 makes a sprite's missing SIZE 1.0 (SSpritePrim::Fixup 0x28e640,
       // GetDefaultParticleSize 0x28e6c8), where retail's default is 0.1.
       uint32_t dvvn = 0;
@@ -5220,6 +5250,9 @@ public:
     const bool vmat = (part || swoosh || electric) && material != nullptr &&
                       Material(*material, node, result, swoosh || electric, electric);
     if (!vmat) {
+      if (part && inverseExposed) {
+        result.dropped.push_back("IEXP: no VMAT");
+      }
       for (const uint32_t fourcc : portOnly) {
         result.dropped.push_back(EffectFourCCString(fourcc) + ": no VMAT");
       }
@@ -5231,7 +5264,18 @@ public:
     }
     if (vmat && pmdl != 0 && !pmdlVariants && m_io.modelMesh) {
       // VMSH: the converted PMDL as one mesh, so the model particle draws through the VMAT.
-      const std::vector<uint8_t> mesh = m_io.modelMesh(pmdl);
+      std::vector<uint8_t> mesh = m_io.modelMesh(pmdl);
+      // VMSH v2 flags (BE word at 12): bit 1 every vertex has a colour; bit 2 the colour tints the draw,
+      // where the material's shader has the instanced-model perm with COLOR (016), as Remastered draws a
+      // coloured mesh: vcol = 2 x COLOR^2.2 x the particle colour, alpha COLOR.a x the particle's. The
+      // Plasma charge starburst's rays fade out by that alpha (0 on the tips).
+      static const std::unordered_set<uint32_t> kColorPerm = {
+          0x0cbeb3de, 0x0cc45d52, 0x0fb73e1b, 0x1a9ef0d8, 0x207abf3f, 0x33b751f2, 0x3db95827, 0x3fd46bb7,
+          0x440fbd96, 0x49a43a10, 0x4e386476, 0x5f2a0715, 0x71dc2465, 0x7d52bd6b, 0x80a47126, 0x90ce7873,
+          0x96e205db, 0x9ea86831, 0xa327502c, 0xb8eed42e, 0xc5cd782b, 0xe4d4c263, 0xfa49ff3c};
+      if (mesh.size() >= 16 && mesh[3] == 2 && (mesh[15] & 2) != 0 && kColorPerm.count(m_vmatShader) != 0) {
+        mesh[15] |= 4;
+      }
       if (!mesh.empty()) {
         AppendBE32(out, F("VMSH"));
         AppendBE32(out, F("CNST"));
@@ -5526,6 +5570,7 @@ private:
   mutable std::vector<SystemItem>* m_spawnSysItems = nullptr;  // set while a KSSM is written
   mutable uint32_t m_sysNextHiddenInt = 10;                   // the next hidden init-only int
   mutable std::vector<std::string> m_approximated;  // for the generator being written
+  mutable uint32_t m_vmatShader = 0;                // the shader of the last VMAT written
   mutable bool m_keeps = false;                     // a KPIN may be a per-particle PKPR
   mutable uint32_t m_keepNext = 0;                  // the next PKPR slot
   mutable uint32_t m_varReads = 0;                  // the particle variables Element() has read
@@ -6134,9 +6179,11 @@ bool SplitRetailEffect(uint32_t type, const uint8_t* data, size_t size, std::vec
     } else if (part && fourcc == F("PSHT")) {
       ok = reader.Element(Type::Int);
     } else if ((part && (fourcc == F("VORN") || fourcc == F("XFMD") ||
-                         fourcc == F("PSHP") || fourcc == F("PHDR") || fourcc == F("PHFO") || fourcc == F("PLIX") || fourcc == F("PGID") || fourcc == F("PBDM") ||
+                         fourcc == F("PPRM") || fourcc == F("PSHP") || fourcc == F("PHDR") || fourcc == F("PHFO") || fourcc == F("PLIX") || fourcc == F("PGID") || fourcc == F("PBDM") ||
                          fourcc == F("PDFG") || fourcc == F("PZTS") || fourcc == F("PIVS") ||
                          fourcc == F("PITP") || fourcc == F("PSHM") || fourcc == F("PISD") || fourcc == F("PBLT") ||
+                         fourcc == F("VMPC") || fourcc == F("DVVN") || fourcc == F("IEXP") ||
+                         (fourcc >= F("VGD1") && fourcc <= F("VGD4")) ||
                          fourcc == F("PMRF") || fourcc == F("PVSD") || fourcc == F("PVSN") ||
                          fourcc == F("PVSM") || fourcc == F("PVDT"))) ||
                (vfx && fourcc == F("PIRN"))) {

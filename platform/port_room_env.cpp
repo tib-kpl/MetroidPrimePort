@@ -2,6 +2,8 @@
 // cube and ambient for a model. See port_room_env.h.
 #include "port_room_env_internal.h"
 
+#include "port_pause_lighting.h"
+
 namespace PortRoomEnv {
 namespace EnvDetail {
 
@@ -370,8 +372,11 @@ float LightGain() {
 }
 
 
-// A probe's GPU cube; null when it is black or the worker has not made it yet.
+// A probe's GPU cube; null when it has none, is black or the worker has not made it yet.
 GpuCube* ProbeCube(Area& area, const Probe& probe) {
+  if (probe.cube == kProbeNoCube) {
+    return nullptr;
+  }
   GpuCube& gpu = area.cubes[probe.cube];
   return gpu.id != 0 ? &gpu : nullptr;
 }
@@ -510,6 +515,10 @@ void BuildTone(float mid, float contrast, float toe, float shoulder, float rows[
 }
 
 bool Tone(float rows[3][4]) {
+  if (PortPauseLighting::active) {
+    BuildTone(0.18f, 0.f, 0.6f, 0.15f, rows);
+    return true;
+  }
   if (!Enabled()) {
     return false;
   }
@@ -605,7 +614,7 @@ void UpdateFrame() {
     const FluidHint& h = file.fluidHints[size_t(fluidPick)];
     eff = {{h.exposure[0], h.exposure[1]}, h.bias, h.sigma, h.staticLerp};
   }
-  const bool hint = eff.exposure[0] != 0.f || eff.exposure[1] != 0.f;
+  const bool hint = fluidPick >= 0 || eff.exposure[0] != 0.f || eff.exposure[1] != 0.f;
   // A hint that registered this frame is type 1: SetValue instead of the Gaussian's easing. The
   // types are cleared after every frame, wherever the view was.
   const bool hintSnap = fluidPick >= 0 && area.hintSnap;
@@ -694,9 +703,20 @@ void UpdateFrame() {
 
 float MeasureExposure() { return sFrame.measuring ? sFrame.exposure : 0.f; }
 
-float FrameExposure() { return sFrame.exposure; }
+float FrameExposure() { return PortPauseLighting::active ? 1.f : sFrame.exposure; }
+
+float ParticleInverseExposure(bool blended) {
+  if (PortPauseLighting::active) return 1.f;
+  if (!sFrame.hasTone || !Enabled() || (blended && sFrame.exposure <= 0.f)) {
+    return 1.f;
+  }
+  // The same frame/tonemap values used by FrameExposure and GlowScale, before material shading.
+  const float inverse = blended ? 1.f / sFrame.exposure : std::exp2(sFrame.shown[5] - 3.f);
+  return std::isfinite(inverse) && inverse > 0.f ? inverse : 1.f;
+}
 
 float GlowScale() {
+  if (PortPauseLighting::active) return 1.f;
   if (sStatic < 0) {
     sStatic = port::EnvFlag("MP_ROOM_ENV_STATIC_EXPOSURE", true) ? 1 : 0;
   }
@@ -790,6 +810,7 @@ bool XRayPass(bool distortion) {
 }
 
 float SkyGain() {
+  if (PortPauseLighting::active) return 1.f;
   if (GlowScale() <= 0.f || sStatic == 0 || !sFrame.hasTone || !Enabled()) {
     return 0.f;
   }
@@ -800,6 +821,7 @@ float SkyGain() {
 }
 
 float GlowGain(bool frameExposed) {
+  if (PortPauseLighting::active) return 1.f;
   // Without tone data Remastered draws through STonemapParams::BuildLinear(3.0) (0x211ab0):
   // exposure 1, so the glow is left as authored (kb topic/post-output.md "No tonemap data").
   constexpr float kFallback = 1.f;
@@ -826,6 +848,7 @@ float ParticleLightGain(bool inverseExposed) {
 }
 
 float UnlitGain(bool frameExposed) {
+  if (PortPauseLighting::active) return 1.f;
   // Outside an exposed room Remastered's static default (exposure 1) applies: nothing to add.
   if (!sFrame.hasTone || !Enabled()) {
     return 1.f;
@@ -1293,7 +1316,6 @@ void RoomLights(const float worldToView[3][4], std::vector<float>& out) {
   }
   // As the sun's (see Sun).
   const float scale = exposure * LightGain() / 3.14159265f;
-  constexpr float kDegrees = 3.14159265f / 180.f;
   ForEachRoomLight([&](const PointLight& l, const LightNow& n) {
     float color[3];
     for (int c = 0; c < 3; ++c) {
@@ -1309,18 +1331,7 @@ void RoomLights(const float worldToView[3][4], std::vector<float>& out) {
     const float b = -near * a;
     float coneScale = 0.f;
     float coneBias = 1.f;
-    if (l.spot) {
-      const float cosIn = std::cos(n.cone[0] * 0.5f * kDegrees);
-      const float cosOut = std::cos(n.cone[1] * 0.5f * kDegrees);
-      const float span = cosIn - cosOut;
-      if (std::fabs(span) > 1e-6f) {
-        coneScale = 1.f / span;
-        coneBias = -cosOut / span;
-      } else {
-        coneScale = 0.f;
-        coneBias = 0.f;
-      }
-    }
+    PortClusteredLights::ConeAttenuation(l.spot, n.cone[0], n.cone[1], coneScale, coneBias);
     float pos[3];
     float axis[3];
     for (int r = 0; r < 3; ++r) {
@@ -2269,11 +2280,10 @@ void Locate(const float pos[3], Located& out) {
   }
   if (bestArea != nullptr) {
     const Probe& probe = bestArea->file.probes[best.probe];
-    const GpuCube& gpu = bestArea->cubes[probe.cube];
-    if (gpu.id != 0) {
+    if (const GpuCube* gpu = ProbeCube(*bestArea, probe)) {
       out.cubeArea = bestArea;
       out.probe = &probe;
-      out.cube = &gpu;
+      out.cube = gpu;
     }
   }
   if (VolumesEnabled() && !sHint && sWorld.has() && !sAreas.empty() && sAreas.begin()->second.file.tiles != nullptr) {
@@ -2337,50 +2347,59 @@ void Locate(const float pos[3], Located& out) {
   }
 }
 
+// Remastered's blend around the camera: every model reflects the same cube, scaled by the
+// blended intensity (a lone probe's cube by its share of it, the rest being black).
+void ComposeBlend(const BlendSource* sources, size_t sourceCount, float gain, float lod, Selection& out) {
+  const Blend& blend = sBlend.blend;
+  const BlendSource* heaviest = &sources[0];
+  uint32_t mips = sources[0].gpu->mipCount;
+  for (size_t i = 0; i < sourceCount; ++i) {
+    heaviest = sources[i].weight > heaviest->weight ? &sources[i] : heaviest;
+    mips = std::min(mips, sources[i].gpu->mipCount);
+  }
+  float share = 1.f;
+  const ProbeBlendState& s = sBlend;
+  if (sourceCount == 1) {
+    out.cube = sources[0].gpu->id;
+    share = sources[0].weight;
+  } else if (s.shown >= 0) {
+    // The last blend drawn, which is this one but for a frame where Aurora could not draw.
+    out.cube = s.dst[s.shown];
+  } else {
+    out.cube = heaviest->gpu->id;
+    mips = heaviest->gpu->mipCount;
+  }
+  const float exposure = ProbeExposure(*heaviest->area);
+  out.params[0] = exposure * blend.intensity * share * gain;
+  out.cubeIntensity = blend.intensity * share;
+  out.params[1] = PortRoomEnvLod::CubeLod(mips, lod);
+  out.params[2] = float(mips > 2 ? mips - 2 : 0);
+  // Each probe's cube may be turned its own way; the blend takes the heaviest one's.
+  std::memcpy(out.worldToCube, heaviest->probe->worldToCube, sizeof(out.worldToCube));
+  if (blend.max > 1e-6f && std::fabs(blend.intensity) >= 1e-5f) {
+    out.occlusionMin = blend.min / blend.intensity;
+    out.occlusionInvMax = 1.f / blend.max;
+  }
+}
+
+// The mip a reflection is read from is the cube's own top one, as Remastered's is; the
+// variable only lowers it (PortRoomEnvLod::CubeLod).
+float ReflectionLod() {
+  static const float lod = port::EnvFloat("MP_ROOM_ENV_LOD", PortRoomEnvLod::kNoCap);
+  return lod;
+}
+
 // The Selection for what Locate found, at the frame's exposure and the settings now.
 bool Compose(const Located& located, Selection& out) {
   const float gain = LightGain();
-  // The mip a reflection is read from is the cube's own top one, as Remastered's is; the
-  // variable only lowers it (PortRoomEnvLod::CubeLod).
-  static const float lod = port::EnvFloat("MP_ROOM_ENV_LOD", PortRoomEnvLod::kNoCap);
+  const float lod = ReflectionLod();
   static const float volumeBias = port::EnvFloat("MP_ROOM_ENV_VOLUME_BIAS", 0.f);
   const float ambient = AmbientScale();
   out = {};
   BlendSource sources[kMaxBlend];
   const size_t sourceCount = ProbeBlend() ? BlendSources(sources) : 0;
   if (sourceCount != 0) {
-    // Remastered's blend around the camera: every model reflects the same cube, scaled by
-    // the blended intensity (a lone probe's cube by its share of it, the rest being black).
-    const Blend& blend = sBlend.blend;
-    const BlendSource* heaviest = &sources[0];
-    uint32_t mips = sources[0].gpu->mipCount;
-    for (size_t i = 0; i < sourceCount; ++i) {
-      heaviest = sources[i].weight > heaviest->weight ? &sources[i] : heaviest;
-      mips = std::min(mips, sources[i].gpu->mipCount);
-    }
-    float share = 1.f;
-    const ProbeBlendState& s = sBlend;
-    if (sourceCount == 1) {
-      out.cube = sources[0].gpu->id;
-      share = sources[0].weight;
-    } else if (s.shown >= 0) {
-      // The last blend drawn, which is this one but for a frame where Aurora could not draw.
-      out.cube = s.dst[s.shown];
-    } else {
-      out.cube = heaviest->gpu->id;
-      mips = heaviest->gpu->mipCount;
-    }
-    const float exposure = ProbeExposure(*heaviest->area);
-    out.params[0] = exposure * blend.intensity * share * gain;
-    out.cubeIntensity = blend.intensity * share;
-    out.params[1] = PortRoomEnvLod::CubeLod(mips, lod);
-    out.params[2] = float(mips > 2 ? mips - 2 : 0);
-    // Each probe's cube may be turned its own way; the blend takes the heaviest one's.
-    std::memcpy(out.worldToCube, heaviest->probe->worldToCube, sizeof(out.worldToCube));
-    if (blend.max > 1e-6f && std::fabs(blend.intensity) >= 1e-5f) {
-      out.occlusionMin = blend.min / blend.intensity;
-      out.occlusionInvMax = 1.f / blend.max;
-    }
+    ComposeBlend(sources, sourceCount, gain, lod, out);
   } else if (located.cube != nullptr) {
     const Probe& probe = *located.probe;
     const GpuCube& gpu = *located.cube;
@@ -2519,6 +2538,26 @@ bool Select(const float origin[3], Selection& out) {
   return AddLightmap(out) || sLastFound;
 }
 
+CameraCube CameraProbe(const float pos[3], Selection& out) {
+  out = {};
+  if (!Enabled()) {
+    return CameraCube::Black;
+  }
+  if (!ProbeBlend()) {
+    Select(pos, out);
+    return out.cube != 0 ? CameraCube::Probe : CameraCube::NoOverride;
+  }
+  const CameraCube state = CameraCubeState(sBlend.blend);
+  if (state == CameraCube::Probe) {
+    BlendSource sources[kMaxBlend];
+    const size_t sourceCount = BlendSources(sources);
+    if (sourceCount != 0) {
+      ComposeBlend(sources, sourceCount, LightGain(), ReflectionLod(), out);
+    }
+  }
+  return state;
+}
+
 bool AmbientAt(const float pos[3], Ambient& out) {
   if (!Enabled() || AmbientScale() <= 0.f) {
     return false;
@@ -2622,7 +2661,10 @@ std::string Info(const float pos[3]) {
     const Pick pick = PickProbe(file, pos, area.layers);
     for (size_t i = 0; i < file.probes.size(); ++i) {
       const Probe& probe = file.probes[i];
-      const GpuCube& cube = area.cubes[probe.cube];
+      const bool hasCube = probe.cube != kProbeNoCube;
+      const float average = hasCube ? area.cubes[probe.cube].average : 0.f;
+      const float peak = hasCube ? area.cubes[probe.cube].peak : 0.f;
+      const bool black = !hasCube || area.cubes[probe.cube].failed;
       // The box's centre solves worldToBox * p = 0.
       const float* const m = probe.worldToBox;
       const float a[9] = {m[0], m[1], m[2], m[4], m[5], m[6], m[8], m[9], m[10]};
@@ -2646,8 +2688,8 @@ std::string Info(const float pos[3]) {
                     i, int(i) == pick.probe ? " (picked)" : "", probe.layer,
                     ProbeOn(probe, area.layers) ? "" : " (off)", centre[0], centre[1], centre[2],
                     fade, probe.cube, probe.scale, probe.padding, probe.priority,
-                    probe.intensityMin, probe.intensityMax, cube.average * probe.scale, cube.peak * probe.scale,
-                    cube.failed ? ", black" : "");
+                    probe.intensityMin, probe.intensityMax, average * probe.scale, peak * probe.scale,
+                    !hasCube ? ", no cube" : black ? ", black" : "");
       out += line;
     }
     for (size_t i = 0; i < file.grids.size(); ++i) {

@@ -46,12 +46,17 @@
 #include <SDL3/SDL_events.h>
 #include <SDL3/SDL_filesystem.h>
 #include <SDL3/SDL_hints.h>
+#include <SDL3/SDL_platform_defines.h>
+#if defined(SDL_PLATFORM_IOS)
+#include "port_ios.h"
+#endif
 #include <SDL3/SDL_iostream.h>
 #include <SDL3/SDL_messagebox.h>
 #include <SDL3/SDL_properties.h>
 #include <SDL3/SDL_timer.h>
 
 #if defined(__ANDROID__)
+#include <SDL3/SDL_system.h>
 #include <android/log.h>
 #include <sys/system_properties.h>
 #endif
@@ -109,6 +114,33 @@ void AndroidLogCallback(AuroraLogLevel level, const char* module, const char* me
     __android_log_write(priority, "aurora", line);
     PortLogFile::Write("aurora", line);
 }
+#else
+// Aurora's default logger is fmt::println, which throws when stderr's write
+// fails (the log copier gone, EPIPE) from inside a noexcept function: the game
+// aborted at shutdown. Same format; a failed write just drops the line.
+void StderrLogCallback(AuroraLogLevel level, const char* module, const char* message, unsigned int len) {
+    const char* name = "unknown";
+    switch (level) {
+    case LOG_DEBUG:
+        name = "debug";
+        break;
+    case LOG_INFO:
+        name = "info";
+        break;
+    case LOG_WARNING:
+        name = "warning";
+        break;
+    case LOG_ERROR:
+        name = "error";
+        break;
+    case LOG_FATAL:
+        name = "fatal";
+        break;
+    default:
+        break;
+    }
+    std::fprintf(stderr, "[%s] [%s] %.*s\n", name, module != nullptr ? module : "", static_cast< int >(len), message);
+}
 #endif
 
 std::string LowerExtension(const std::filesystem::path& path) {
@@ -165,11 +197,15 @@ DiscMatch MatchDiscImage(const std::filesystem::path& path) {
 
 // Looks for a disc image next to the executable (and in its immediate
 // subdirectories) so a copied build is self-contained and starts without
-// asking. For an AppImage that is the folder the .AppImage file is in.
+// asking. For an AppImage that is the folder the .AppImage file is in. On iOS,
+// whose app bundle is signed and read-only, it is the Documents folder the
+// Files app shows, so an image copied there starts without asking.
 std::string FindDiscNextToExecutable() {
 #if defined(__ANDROID__)
     const char* rawBase = SDL_GetBasePath();
     const std::string base = rawBase != nullptr ? rawBase : "";
+#elif defined(SDL_PLATFORM_IOS)
+    const std::string base = PortIos::DocumentsFolder();
 #else
     const std::string base = PortPaths::detail::ExecutableFolder();
 #endif
@@ -522,6 +558,39 @@ std::string CopyDiscFromContentUri(const std::string& uri) {
     std::string target;
     return PortDiscReplace::CopyToUserFolder(uri, &target, nullptr, nullptr, nullptr).empty() ? target : std::string();
 }
+
+// A disc picked after Android destroyed the activity behind the picker: the
+// pick arrives at the next launch, which MetroidPrimeActivity.onActivityResult
+// leaves in pending_disc_uri for us. Without this the next launch asked again,
+// and on a phone that destroys the activity each time the picker covers it the
+// game never started (#203). Remembers the pick like AskForDiscImage does.
+void TakeDiscPickedLastLaunch() {
+    const char* dir = SDL_GetAndroidInternalStoragePath();
+    if (dir == nullptr) {
+        return;
+    }
+    const std::filesystem::path file = std::filesystem::path(dir) / "pending_disc_uri";
+    std::string chosen;
+    {
+        std::ifstream in(file);
+        std::getline(in, chosen);
+    }
+    std::error_code ec;
+    std::filesystem::remove(file, ec);
+    if (chosen.empty()) {
+        return;
+    }
+    PortLog::Write("metroid_prime_port: using the disc image picked before the app was restarted\n");
+    if (std::strncmp(chosen.c_str(), "content://", 10) == 0) {
+        const std::string local = CopyDiscFromContentUri(chosen);
+        if (!local.empty()) {
+            chosen = local;
+        }
+    }
+    PortDebug::SetDiscPath(chosen.c_str());
+    PortDebug::SaveSettingsNow();
+    PortLog::Write("metroid_prime_port: disc image set to %s\n", chosen.c_str());
+}
 #endif  // __ANDROID__
 
 // Asks for the disc image with the platform's file dialog and remembers the
@@ -575,17 +644,20 @@ std::string AskForDiscImage(bool* cancelled = nullptr) {
     SDL_SetPointerProperty(props, SDL_PROP_FILE_DIALOG_WINDOW_POINTER, window);
     SDL_SetStringProperty(props, SDL_PROP_FILE_DIALOG_TITLE_STRING,
                           "Select your Metroid Prime disc image (GameCube, USA v1.00, or PAL: experimental)");
-    SDL_ShowFileDialogWithProperties(
-        SDL_FILEDIALOG_OPENFILE,
-        [](void*, const char* const* files, int) {
-            if (files != nullptr && files[0] != nullptr) {
-                chosen = files[0];
-            }
-            // An empty list is a cancel; a null one is SDL's error.
-            dismissed.store(files != nullptr && files[0] == nullptr);
-            answered.store(true);
-        },
-        nullptr, props);
+    const SDL_DialogFileCallback onAnswer = [](void*, const char* const* files, int) {
+        if (files != nullptr && files[0] != nullptr) {
+            chosen = files[0];
+        }
+        // An empty list is a cancel; a null one is SDL's error.
+        dismissed.store(files != nullptr && files[0] == nullptr);
+        answered.store(true);
+    };
+#if defined(SDL_PLATFORM_IOS)
+    // SDL has no file dialog on iOS.
+    PortIos::ShowDiscPicker(window, onAnswer, nullptr);
+#else
+    SDL_ShowFileDialogWithProperties(SDL_FILEDIALOG_OPENFILE, onAnswer, nullptr, props);
+#endif
     SDL_DestroyProperties(props);
     // Wait for the answer, but not forever: a dialog that never calls back
     // would otherwise hang a scripted or headless run.
@@ -644,7 +716,12 @@ std::string PickDisc() {
         if (!disc.empty() || !cancelled) {
             return disc;
         }
-        if (!AskPickDisc("Metroid Prime: no disc image", std::string("No disc image was picked.\n\n") + SupportedDiscText(),
+        std::string message = std::string("No disc image was picked.\n\n") + SupportedDiscText();
+#if defined(SDL_PLATFORM_IOS)
+        message += "\n\nOr copy the image into On My iPhone (or iPad) > Metroid Prime in the Files app "
+                   "and start the game again.";
+#endif
+        if (!AskPickDisc("Metroid Prime: no disc image", message,
                          "Pick a disc", true)) {
             return {};
         }
@@ -675,21 +752,34 @@ const char* DefaultTexturesPath() {
 }
 
 // The API to ask Aurora for. It is tried first, with Aurora's own order (D3D12,
-// Vulkan, D3D11) as the fallback, so a driver that can't start it still plays.
+// Vulkan, D3D11 on Windows; Vulkan, OpenGL ES on Linux) as the fallback, so a driver
+// that can't start it still plays.
 AuroraBackend DesiredGraphicsBackend() {
-#if defined(_WIN32)
+#if defined(_WIN32) || (defined(__linux__) && !defined(__ANDROID__))
     // The `graphics_backend` setting (F1 > Video > Compatibility, issue #135), read at
     // window creation, so a change needs a restart. Auto keeps asking for nothing in
-    // particular. MP_GRAPHICS_BACKEND=auto|d3d12|vulkan|d3d11 overrides the setting for
-    // one run; an unknown value warns and leaves the saved selection in charge.
+    // particular. MP_GRAPHICS_BACKEND=<one of Choices()' names> overrides the setting
+    // for one run; an unknown value warns and leaves the saved selection in charge.
     // port_graphics_backend.h owns the mapping and the same resolution the Video page
     // shows, so a request cannot be described one way and started another.
+#if !defined(_WIN32)
+    // OpenGL ES is not one of that setting's choices on Linux: it keeps its own toggle
+    // for GPUs whose Vulkan driver draws wrong (issue #7), and wins over the choice.
+    if (port::EnvFlag("MP_OPENGLES", PortDebug::OpenGles())) {
+        return BACKEND_OPENGLES;
+    }
+#endif
     const char* const env = PortGraphicsBackend::EnvRequest();
     const PortGraphicsBackend::Request request = PortGraphicsBackend::Resolve(PortDebug::GraphicsBackend(), env);
     if (request.rejected) {
-        PortLog::Write("port: MP_GRAPHICS_BACKEND=%s is not auto, d3d12, vulkan or d3d11; "
-                       "using graphics_backend=%s\n",
-                       env, PortDebug::GraphicsBackendConfigName(request.backend));
+        // The names this build offers, so the warning can't suggest one it can't start.
+        std::string names;
+        for (const PortDebug::EGraphicsBackend choice : PortGraphicsBackend::Choices()) {
+            names += (names.empty() ? "" : ", ");
+            names += PortDebug::GraphicsBackendConfigName(choice);
+        }
+        PortLog::Write("port: MP_GRAPHICS_BACKEND=%s is not one of %s; using graphics_backend=%s\n",
+                       env, names.c_str(), PortDebug::GraphicsBackendConfigName(request.backend));
     }
     return PortGraphicsBackend::ToAurora(request.backend);
 #else
@@ -843,7 +933,7 @@ int main(int argc, char** argv) {
     // with one installed the arena starts at kRoomGeoMem1MB and a frame's buffers at
     // kRoomGeoFrameBuffers times their size. MP_FRAME_BUFFERS=<n> sets that scale itself.
     const unsigned long kRoomGeoMem1MB = 256;
-#if defined(__ANDROID__)
+#if defined(__ANDROID__) || defined(SDL_PLATFORM_IOS)
     // Every scale step costs about 13 MB in each of the six copies of a frame's
     // buffers; at 12x a tablet's game ran at 1.3 GB and Android killed it for
     // memory. 6x still holds the heaviest room measured (20 MiB of vertices) 1.5x.
@@ -956,6 +1046,9 @@ int main(int argc, char** argv) {
     // The shader caches stay in app storage when the data moves to shared
     // storage: they are disposable, and SQLite is slow on the shared mount.
     const std::string defaultCache = PortPaths::detail::PrivateFolder();
+#elif defined(SDL_PLATFORM_IOS)
+    // Kept out of Documents: the Files app needn't list disposable caches.
+    const std::string defaultCache = PortPaths::detail::WithSeparator(PortPaths::detail::PrefFolder());
 #else
     const std::string& defaultCache = userFolder;
 #endif
@@ -1035,8 +1128,12 @@ int main(int argc, char** argv) {
         .iconWidth = 0,
         .iconHeight = 0,
 #endif
+#if defined(__ANDROID__)
         // Android sets its log callback below.
         .logCallback = nullptr,
+#else
+        .logCallback = StderrLogCallback,
+#endif
         .logLevel = LOG_DEBUG,
         .imGuiInitCallback = nullptr,
         .mem1Size = mem1Size,
@@ -1114,20 +1211,29 @@ int main(int argc, char** argv) {
         }
     }
 #endif
-    // A driver can crash outright while Dawn starts on OpenGL ES (Mesa does), and the
-    // setting would then crash every launch with no way back to the F1 menu. The marker
-    // outlives such a crash, so the next start turns the setting off and uses Vulkan.
-    const std::filesystem::path glesMarker =
-        std::filesystem::path(userFolder.empty() ? "." : userFolder) / "opengles_starting";
-    if (config.desiredBackend == BACKEND_OPENGLES) {
+    // A driver can crash outright while Dawn starts on OpenGL ES or OpenGL (Mesa does),
+    // and the setting would then crash every launch with no way back to the F1 menu. The
+    // marker outlives such a crash, so the next start turns the setting off and uses the
+    // automatic choice. Both markers share this: same folder, same lifecycle.
+    const std::filesystem::path markerDir = std::filesystem::path(userFolder.empty() ? "." : userFolder);
+    const std::filesystem::path glesMarker = markerDir / "opengles_starting";
+    const std::filesystem::path glMarker = markerDir / "opengl_starting";
+    if (config.desiredBackend == BACKEND_OPENGLES || config.desiredBackend == BACKEND_OPENGL) {
+        const bool gles = config.desiredBackend == BACKEND_OPENGLES;
+        const std::filesystem::path& marker = gles ? glesMarker : glMarker;
         std::error_code ec;
-        if (std::filesystem::exists(glesMarker, ec)) {
-            PortLog::Write("port: the last start on OpenGL ES did not finish; turning it off\n");
-            PortDebug::SetOpenGles(false);
+        if (std::filesystem::exists(marker, ec)) {
+            if (gles) {
+                PortLog::Write("port: the last start on OpenGL ES did not finish; turning it off\n");
+                PortDebug::SetOpenGles(false);
+            } else {
+                PortLog::Write("port: the last start on OpenGL did not finish; using Auto\n");
+                PortDebug::SetGraphicsBackend(PortDebug::kGraphicsBackend_Auto);
+            }
             config.desiredBackend = BACKEND_AUTO;
-            std::filesystem::remove(glesMarker, ec);
+            std::filesystem::remove(marker, ec);
         } else {
-            std::ofstream(glesMarker) << "1\n";
+            std::ofstream(marker) << "1\n";
         }
     }
     // A custom Vulkan driver (Turnip) can crash while it starts, just like GL above; the
@@ -1169,9 +1275,9 @@ int main(int argc, char** argv) {
     // decoration plugin, an input method) may call setlocale(LC_ALL, ""), which
     // under a comma-decimal locale would make "1.5" read as 1 and print as "1,5".
     std::setlocale(LC_NUMERIC, "C");
-    if (config.desiredBackend == BACKEND_OPENGLES) {
+    if (config.desiredBackend == BACKEND_OPENGLES || config.desiredBackend == BACKEND_OPENGL) {
         std::error_code ec;
-        std::filesystem::remove(glesMarker, ec);
+        std::filesystem::remove(config.desiredBackend == BACKEND_OPENGLES ? glesMarker : glMarker, ec);
     }
     // Aurora went back to the system driver when Vulkan failed with the custom one.
     if (aurora_vulkan_library_failed() && !PortGpuDriver::Active().empty()) {
@@ -1236,6 +1342,10 @@ int main(int argc, char** argv) {
     // Disc image: an explicit argument or MP_DISC, else the path saved on a
     // previous launch, else a copy beside the executable, else ask for one.
     PortDebug::LoadDiscPath();
+#if defined(__ANDROID__)
+    // Remembered as the disc path, so the lookup below finds it.
+    TakeDiscPickedLastLaunch();
+#endif
     std::string discImage;
     if (const char* resolved = ResolveDiscPath(argc, argv); resolved != nullptr) {
         discImage = resolved;

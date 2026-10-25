@@ -327,6 +327,8 @@ GXBool GXPortThermalPass(const f32 tone[3][4], const f32 v[4], const f32 r[4]);
 // the 8-bit EFB. False (nothing written) if the device has no RGBA16F target or draw-id mode is
 // on; the switch itself is also refused, logged, outside an EFB pass.
 GXBool GXPortSceneHdr(GXBool on);
+// Resume the UI's HDR content target, preserving colour and clearing only depth.
+GXBool GXPortPauseSceneHdr(void);
 // Port extension: GXCopyTex for a copy of the scene that a PBR shader reads as linear light.
 // While the EFB pass draws to the RGBA16F HDR scene the copy is that linear RGBA16F scene, not
 // the display-encoded copy every other GXCopyTex makes; otherwise it is exactly GXCopyTex.
@@ -372,12 +374,24 @@ void GXPortActorShadowCasters(u32 layer, const f32 clip[16]);
 void GXPortActorShadowDecal(u32 layer, const f32 params[64]);
 void GXPortActorShadowEnd(void);
 GXBool GXPortActorShadowRender(void);
+// Remastered's silhouette shell (shader Model_SilhouetteShell; build/mpr/kb
+// topic/model-black-silhouette.md). Between GXPortShell(1 or 2, params) and GXPortShell(0, NULL)
+// triangle draws are the model's shell, pushed out along its normals and pulled back in depth:
+// mode 1 writes only its depth, mode 2 its colour (depth test, no depth write) from the textures
+// GX_TEXMAP0 (strength colour lookup) and GX_TEXMAP1 (indirect) held when mode 1 was set (the
+// model's materials may load others meanwhile) and the frame's scene copy (see
+// aurora::gfx::vfx::capture_scene). `params` is 6 vec4: CCH0..CCH4, then (time in seconds, the
+// depth bias in view units, 1 when GX_TEXMAP0 is sRGB-encoded, the view depth of the model's
+// bounds centre): every depth moves as far as the centre's does when pushed `bias` farther.
+void GXPortShell(u32 mode, const f32* params);
 // The room's Remastered point and spot lights for the rest of the frame, added on every PBR draw
 // (lit, lightmapped or not) as the sun is. Each record is 16 f32: view-space position, A; colour
 // (linear, scaled), B; view-space axis toward the light, cone scale; cone bias, falloff (0 none,
 // 1 linear, 2 squared, 3 smooth), spot (0 point, 1 spot, 2 directional: only the colour and the axis count), 0. The distance falloff runs on
 // t = clamp(dist * A + B, 0, 1), the cone on clamp(dot(L, axis) * scale + bias, 0, 1).
 void GXPortSetRoomLights(const f32* records, u32 count);
+// Game-thread snapshot, at most 64 records, for scoped UI lighting overrides.
+u32 GXPortGetRoomLights(f32 records[64 * 16]);
 
 void GXColor4f32(float r, float g, float b, float a);
 

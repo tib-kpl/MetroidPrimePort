@@ -18,7 +18,7 @@
 #include <imgui_internal.h>
 #include <SDL3/SDL_gamepad.h>
 
-#if defined(__ANDROID__)
+#if defined(PORT_TOUCH_CONTROLS)
 #include "touch_pad.h"
 #endif
 
@@ -283,11 +283,11 @@ void DrawControlsController() {
 }
 
 void DrawControlsTouchGyro() {
-#if defined(__ANDROID__)
+#if defined(PORT_TOUCH_CONTROLS)
   ImGui::SeparatorText("Touch controls");
   // First on the page: the layout is what touch players come here to change.
   if (ImGui::Button("Edit layout")) {
-    // The touch view takes the request and opens its editor over the game.
+    // The touch overlay takes the request and opens its editor once this closes.
     sTouchEditRequested.store(true, std::memory_order_release);
     RequestToggle();
   }
@@ -331,6 +331,7 @@ void DrawControlsTouchGyro() {
   }
   ItemHelp("The left stick appears wherever your thumb lands on the left half of the screen. "
            "The map keeps the fixed stick.");
+#if defined(PORT_TOUCH_CONTROLS) // both views draw the classic and twin-stick layouts
   int touchLayout = sInput.touchClassic ? 1 : sInput.touchTwinStick ? 2 : 0;
   static const char* const kTouchLayouts[] = {"Default", "Classic GameCube", "Twin stick (Remastered)"};
   if (ImGui::Combo("Layout", &touchLayout, kTouchLayouts, 3)) {
@@ -345,6 +346,7 @@ void DrawControlsTouchGyro() {
            "Classic GameCube: adds the C-stick and D-pad.\n"
            "Twin stick (Remastered): a right stick aims; Jump, Fire, Morph, Missile, LT Lock; "
            "D-pad for visors, Y + D-pad for beams.");
+#endif
   ImGui::BeginDisabled(!sInput.touchClassic);
   bool touchAim = sInput.touchAim;
   if (ImGui::Checkbox("Touch aim", &touchAim)) {
@@ -444,8 +446,9 @@ void DrawControlsTouchGyro() {
   ImGui::BeginDisabled(sInput.gyroMode == 0);
   // With pointer aim the gyro moves the pointer at its own speed; the camera
   // sensitivity then only matters if the gyro also turns the camera.
+  // Lock-on free aim's pointer moves at Pointer speed too, with or without pointer aim.
   const bool gyroPointer = PointerAim();
-  if (gyroPointer) {
+  if (gyroPointer || LockOnFreeAim()) {
     float cursorAngle = sInput.gyroCursorAngle;
     if (ImGui::SliderFloat("Pointer speed##gyro", &cursorAngle, PortInput::kGyroCursorAngleMin,
                            PortInput::kGyroCursorAngleMax, "%.0f deg across the screen")) {
@@ -454,6 +457,9 @@ void DrawControlsTouchGyro() {
       MarkDirty();
     }
     ItemHelp("How far the pad turns to sweep the pointer across the screen. Smaller is faster.");
+  }
+  // A lock owns the view, so this only matters under pointer aim.
+  if (gyroPointer) {
     bool cursorCamera = sInput.gyroCursorCamera;
     if (ImGui::Checkbox("Gyro also turns the camera", &cursorCamera)) {
       sInput.gyroCursorCamera = cursorCamera;

@@ -1063,12 +1063,30 @@ auto pbr_func(const ShaderConfig& config, const ShaderInfo& info, std::string& v
   // (the inventory and cinematic ones) reads the missing attribute's default, (0,0,0,1)
   // (inferred; kb topic/gun-beam-glow-no-vtxcolor.md).
   std::string tint, tintAlpha, vclr = config.pbrKind == 9 ? "vec4f(0.0, 0.0, 0.0, 1.0)" : "vec4f(1.0)";
+  if (config.pbrKind == 45) vclr = "vec4f(2.0, 2.0, 2.0, 1.0)";
   if (config.attrs[GX_VA_CLR0].attrType != GX_NONE) {
     vtxOutAttrs += fmt::format("\n    @location({}) pbr_vclr: vec4f,", vtxOutIdx++);
     vtxXfrAttrs += fmt::format("\n    out.pbr_vclr = {};", vtx_attr(config, GX_VA_CLR0));
+    if (config.pbrKind == 45) {
+      // 5586D988 VS000: decode before interpolation, not in the fragment shader.
+      vtxXfrAttrs += fmt::format("\n    out.pbr_vclr = vec4f(2.0 * pow(abs({0}.rgb), vec3f(2.2)), {0}.a);",
+                                vtx_attr(config, GX_VA_CLR0));
+    }
     tint = " * pbr_vc.rgb";
     tintAlpha = " * pbr_vc.a";
     vclr = "in.pbr_vclr";
+    if (config.pbrKind == 29) {
+      // E2644678's VS002 decodes the vertex colour per vertex (kb material/e2644678.md).
+      vtxOutAttrs += fmt::format("\n    @location({}) pbr_v5e: vec4f,", vtxOutIdx++);
+      vtxXfrAttrs += fmt::format("\n    out.pbr_v5e = vec4f(2.0 * pow(abs({0}.rgb), vec3f(2.2)), {0}.a);",
+                                 vtx_attr(config, GX_VA_CLR0));
+    }
+  }
+  if (config.pbrKind == 29) {
+    // And takes the depth factor per vertex: the near plane over the view depth, capped by
+    // vp_c1[0].x (shield row 4 y and z).
+    vtxOutAttrs += fmt::format("\n    @location({}) pbr_vxe: f32,", vtxOutIdx++);
+    vtxXfrAttrs += "\n    out.pbr_vxe = min(abs(ubuf.pbr_shield[4].y / min(mv_pos.z, -1e-3)), ubuf.pbr_shield[4].z);";
   }
   // The baked lightmap's UVs (GXSetPBRLightmapAttr), which populate_pipeline_config sets only when the vertices
   // carry them.
@@ -1956,6 +1974,18 @@ auto pbr_func(const ShaderConfig& config, const ShaderInfo& info, std::string& v
     // blended: the sum is all glow (no exposure factor) times DIFC, and the room behind it,
     // bent by TCH2, comes through pbr_pass.
     if (screen && mapStage[0] != -1 && mapStage[5] != -1 && mapStage[6] != -1) {
+      // The vertex colour and depth factor: E2644678 (shield row 5 y) takes VS002's, per vertex. Only
+      // a kind 29 pipeline has those outputs; any other never takes this branch.
+      const bool holo = config.pbrKind == 29;
+      std::string holoVertex =
+          "let pbr_v5f = vec4f(2.0 * pow(abs(pbr_vraw.rgb), vec3f(2.2)), pbr_vraw.a);\n"
+          "          let pbr_vxf = min(abs(1.0 / min(in.pbr_pos.z, -1e-3)), 1.0);\n"
+          "          let pbr_e264 = ubuf.pbr_shield[5].y > 0.5;";
+      holoVertex += holo ? "\n          let pbr_vx = select(pbr_vxf, in.pbr_vxe, pbr_e264);"
+                         : "\n          let pbr_vx = pbr_vxf;";
+      holoVertex += holo && config.attrs[GX_VA_CLR0].attrType != GX_NONE
+                        ? "\n          let pbr_v5 = select(pbr_v5f, in.pbr_v5e, pbr_e264);"
+                        : "\n          let pbr_v5 = pbr_v5f;";
       liquid += fmt::format(R"""(
       if (pbr_kind > 28.5 && pbr_kind < 29.5) {{
           let pbr_h0 = ubuf.pbr_shield[0];
@@ -1976,8 +2006,7 @@ auto pbr_func(const ShaderConfig& config, const ShaderInfo& info, std::string& v
           let pbr_r = {0}.a;
           let pbr_uvb2 = pbr_uvb + (pbr_i1 - 0.5) * pbr_h0.x + (pbr_h0.z * pbr_t * 0.5 + pbr_ph);
           let pbr_bc = textureSampleGrad(tex{8}, tex{8}_samp, pbr_uvb2, dpdx(pbr_uvb), dpdy(pbr_uvb)).rgb;
-          let pbr_v5 = vec4f(2.0 * pow(abs(pbr_vraw.rgb), vec3f(2.2)), pbr_vraw.a);
-          let pbr_vx = min(abs(1.0 / min(in.pbr_pos.z, -1e-3)), 1.0);
+          {9}
           let pbr_suv = in.pbr_scr.xy / in.pbr_scr.w * vec2f(0.5, -0.5) + 0.5 +
                         (pbr_i2 - 0.5) * (pbr_h3.x * pbr_vx) * vec2f(1.0, -1.0);
           let pbr_sdim = vec2f(textureDimensions(tex7));
@@ -2023,7 +2052,7 @@ auto pbr_func(const ShaderConfig& config, const ShaderInfo& info, std::string& v
                           underlying(config.tevStages[mapStage[5]].texCoordId),
                           underlying(config.tevStages[mapStage[6]].texMapId),
                           underlying(config.tevStages[mapStage[6]].texCoordId),
-                          underlying(config.tevStages[mapStage[0]].texMapId));
+                          underlying(config.tevStages[mapStage[0]].texMapId), holoVertex);
     }
     // Kind 43, Remastered's SimpleGlass (084A8DB5, kb material/084a8db5.md): kind 29 less TCH1, TCH2
     // and DIFC. Map 0 is BCLR (alpha = roughness, raw), map 4 TCH0 an indirect offset bending both
@@ -2208,9 +2237,10 @@ auto pbr_func(const ShaderConfig& config, const ShaderInfo& info, std::string& v
     // Constants: rows 0-3 CCH0..CCH3, rows 4 and 5 world x and y (filled by the game, as the
     // pickup's), row 6 ICMC, row 7 DIFC. The vertex colour is linearised 2 pow(|c|, 2.2): red
     // scales the glow, green is a mask. Only the glow term is at the room's exposure. The
-    // fade and the vertex shader's collapse are not drawn (fade 1).
+    // Kind 18 retains its legacy fade=1. Kind 45 is 5586D988 FS000 (identical fragment),
+    // with VS000 collapse, per-vertex colour decode and CCH3.x*DIFC.a fade.
     liquid += fmt::format(R"""(
-    if (pbr_kind > 17.5 && pbr_kind < 18.5) {{
+    if ((pbr_kind > 17.5 && pbr_kind < 18.5) || pbr_kind == 45.0) {{
         let pbr_yc0 = ubuf.pbr_shield[0];
         let pbr_yc1 = ubuf.pbr_shield[1];
         let pbr_yc2 = ubuf.pbr_shield[2];
@@ -2219,31 +2249,74 @@ auto pbr_func(const ShaderConfig& config, const ShaderInfo& info, std::string& v
         let pbr_yt = ubuf.pbr_param.x;
         let pbr_yw = vec2f(dot(ubuf.pbr_shield[4].xyz, in.pbr_pos) + ubuf.pbr_shield[4].w,
                            dot(ubuf.pbr_shield[5].xyz, in.pbr_pos) + ubuf.pbr_shield[5].w);
-        let pbr_yv = 2.0 * pow(abs(pbr_vraw.rg), vec2f(2.2));
-        let pbr_yper = max(pbr_yc1.z, 1e-4);
+        let pbr_yv = {2};
+        let pbr_yfade = {3};
+        let pbr_yper = {4};
         let pbr_ys = pbr_yt - pbr_yper * floor(pbr_yt / pbr_yper);
         let pbr_yk = pbr_yc1.y + pbr_ys * (1.0 - pbr_yc1.y);
-        let pbr_ysc = select(1e-4, pbr_yc0.x, abs(pbr_yc0.x) > 1e-4);
-        let pbr_yuv = vec2f(pbr_yw.x / pbr_ysc, pbr_yk * (pbr_yw.y * pbr_yc0.x + pbr_yt * pbr_yc0.y - pbr_yc1.w));
+        let pbr_ysc = {5};
+        let pbr_yuv = vec2f(pbr_yw.x * pbr_yfade / pbr_ysc, pbr_yk * (pbr_yw.y * pbr_yc0.x * pbr_yfade + pbr_yt * pbr_yc0.y - pbr_yc1.w));
         let pbr_yb = textureSampleGrad(tex{1}, tex{1}_samp, pbr_yuv, dpdx(pbr_yuv), dpdy(pbr_yuv));
-        let pbr_yj = 0.01 * pbr_yc0.z * pbr_yc0.w * sin(6.2831853 * pbr_yt * pbr_yc1.x);
+        let pbr_yj = 0.01 * pbr_yc0.z * pbr_yc0.w * sin(6.28318548 * pbr_yt * pbr_yc1.x);
         let pbr_ya = pbr_yb.a * select(0.75, 1.0, pbr_yj > 0.0);
         let pbr_ym = pbr_yv.y > 0.01;
         let pbr_yri = max(pbr_yb.rgb, vec3f(0.0)) * pbr_yd.rgb;
         let pbr_yg = pbr_yri * select(pbr_yv.x, 1.0, pbr_ym) * pbr_yc0.z + vec3f(pbr_yj);
-        let pbr_yp = pow(max(abs(pbr_ng.z), 1e-6), pbr_yc3.z);
+        let pbr_yp = pow({6}, pbr_yc3.z);
         let pbr_yrm = pbr_yc3.w + (1.0 - pbr_yc3.w) * (1.0 - pbr_yp * (1.0 - pbr_yv.y));
         var pbr_yx = 1.0;
         if (ubuf.pbr_tone[1].x > 0.0 && ubuf.pbr_tone[0].w > 0.0) {{
             // c3[0].z is the inverse tonemap exposure; the glow is scaled by the exposure below.
             pbr_yx = 1.0 / ubuf.pbr_tone[0].w;
         }}
-        pbr_alpha = clamp(pbr_yrm * select(pbr_ya, pbr_yv.y * pbr_ya * pbr_yc2.w, pbr_ym), 0.0, 1.0);
+        pbr_alpha = clamp(pbr_yrm * pbr_yfade * select(pbr_ya, pbr_yv.y * pbr_ya * pbr_yc2.w, pbr_ym), 0.0, 1.0);
         pbr_lo = vec3f(0.0);
         pbr_glow = pbr_yri + pbr_yx * pbr_yg * (1.0 + pbr_yrm * pbr_yc3.y) + ubuf.pbr_shield[6].rgb;
         pbr_pass = vec3f(0.0);
     }})""",
-                        base, underlying(config.tevStages[mapStage[0]].texMapId));
+                        base, underlying(config.tevStages[mapStage[0]].texMapId),
+                        config.pbrKind == 45 ? "pbr_vraw.rg" : "2.0 * pow(abs(pbr_vraw.rg), vec2f(2.2))",
+                        config.pbrKind == 45 ? "clamp(pbr_yc3.x * pbr_yd.a, 0.0, 1.0)" : "1.0",
+                        config.pbrKind == 45 ? "pbr_yc1.z" : "max(pbr_yc1.z, 1e-4)",
+                        config.pbrKind == 45 ? "pbr_yc0.x" : "select(1e-4, pbr_yc0.x, abs(pbr_yc0.x) > 1e-4)",
+                        config.pbrKind == 45 ? "abs(pbr_ng.z)" : "max(abs(pbr_ng.z), 1e-6)");
+  }
+  // EnergyField 9C867F3C, both shipped fragment permutations. Its VS passes raw
+  // colour/alpha and UV0; rows 4/5 reconstruct Remastered world X/Y.
+  if (mapStage[0] != -1 && mapStage[4] != -1) {
+    liquid += fmt::format(R"""(
+    if (pbr_kind > 43.5 && pbr_kind < 44.5) {{
+        let ef0 = ubuf.pbr_shield[0];
+        let ef1 = ubuf.pbr_shield[1];
+        let efd = ubuf.pbr_shield[7];
+        let eft = ubuf.pbr_param.x;
+        let efw = vec2f(dot(ubuf.pbr_shield[4].xyz, in.pbr_pos) + ubuf.pbr_shield[4].w,
+                       dot(ubuf.pbr_shield[5].xyz, in.pbr_pos) + ubuf.pbr_shield[5].w);
+        let efuv = (efw - vec2f(1.0 - efd.a)) * ef0.y;
+        let efscroll = eft * vec2f(2.25, 0.150000006);
+        let efr = textureSampleGrad(tex{0}, tex{0}_samp, efuv - efscroll, dpdx(efuv), dpdy(efuv)).r;
+        let efg = textureSampleGrad(tex{0}, tex{0}_samp, efuv + efscroll, dpdx(efuv), dpdy(efuv)).g;
+        let efstripeuv = tex{2}_uv - vec2f(0.0, eft);
+        let efs = textureSampleGrad(tex{1}, tex{1}_samp, efstripeuv, dpdx(efstripeuv), dpdy(efstripeuv)).r;
+        let efv = pbr_vraw;
+        let efrim = 1.0 - pow(abs(pbr_ng.z), ef0.x);
+        let efthreshold = max(min(efrim * efrim - (1.0 - efd.a), ef0.w), ef0.z);
+        let efmask = select(0.0, 1.0, efr > 1.0 - efv.a) + select(0.0, 1.0, efg > 1.0 - efthreshold);
+        let efbase = efv.a * efv.rgb;
+        let efstripe = efv.a * ceil(efv.a - 0.5) * ef1.w;
+        var efinverse = 1.0;
+        if (ubuf.pbr_tone[1].x > 0.0 && ubuf.pbr_tone[0].w > 0.0) {{
+            efinverse = 1.0 / ubuf.pbr_tone[0].w;
+        }}
+        pbr_lo = vec3f(0.0);
+        pbr_glow = efd.a * efd.rgb * (efbase * ef1.x + efinverse *
+                   clamp(efmask * efbase * ef1.y + efstripe * efs * efv.rgb * efd.a, vec3f(0.0), vec3f(1.0)));
+        pbr_alpha = max(efmask, ef1.z);
+        pbr_pass = vec3f(0.0);
+    }})""",
+        underlying(config.tevStages[mapStage[0]].texMapId),
+        underlying(config.tevStages[mapStage[4]].texMapId),
+        underlying(config.tevStages[mapStage[4]].texCoordId));
   }
   // Kind 19, Remastered's lit sphere-map shader 98F0556D (permutation 002_0): L is the ambient
   // plus the lights' N.L; rgb = REFV x REFS(0.5 + 0.5 n.xy) x luminance(L) + DIFT x DIFC x L / pi
@@ -3121,6 +3194,14 @@ R"""(      // Encoded as Remastered's sRGB swapchain does it: the exact piecewis
          "          pbr_keep = pbr_sdst * (vec3f(1.0) - pbr_vfw);");
     kind("pbr_pass = pbr_sfb * pbr_c4.x * pbr_vraw.rgb;",
          "pbr_pass = pbr_sfb * pbr_c4.x * pbr_vraw.rgb;\n          pbr_vfon = false;");
+    // Neither EnergyField permutation consumes the froxel fog terms.
+    kind("pbr_alpha = max(efmask, ef1.z);",
+         "pbr_alpha = max(efmask, ef1.z);\n          pbr_vfon = false;");
+    if (config.pbrKind == 45) {
+      // 5586D988 FS000..003 have no froxel inputs or fog sample.
+      kind("pbr_glow = pbr_yri + pbr_yx * pbr_yg * (1.0 + pbr_yrm * pbr_yc3.y) + ubuf.pbr_shield[6].rgb;",
+           "pbr_glow = pbr_yri + pbr_yx * pbr_yg * (1.0 + pbr_yrm * pbr_yc3.y) + ubuf.pbr_shield[6].rgb;\n          pbr_vfon = false;");
+    }
     kind("pbr_pass = pbr_sscene * pbr_h3.z * pbr_df.rgb * pbr_df.a;",
          "pbr_pass = pbr_sscene * pbr_h3.z * pbr_df.rgb * pbr_df.a;\n"
          "          pbr_vfw = vec3f(pbr_alpha);\n          pbr_vfk = true;");
@@ -3474,6 +3555,20 @@ std::string build_shader_source(const ShaderConfig& config) noexcept {
   }
   if (config.lineMode == 0) {
     std::string windPos = vtx_attr(config, GX_VA_POS);
+    if (config.pbrKind == 45) {
+      // 5586D988 VS000 c1[0].x: NVN control+0x700 points to stage+0x500,
+      // binary32 0x3dcccccd. Import conjugates source X/Z scaling by its affine
+      // transform: layer-height.xyz is source Y, the next three scalars its dual.
+      vtxXfrAttrsPre += fmt::format(R"(
+    let holo_fade = clamp(ubuf.pbr_shield[3].x * ubuf.pbr_shield[7].w, 0.0, 1.0);
+    let holo_apex = ubuf.pbr_shield[2].xyz;
+    let holo_selected = select({0}, holo_apex, {1}.g >= 0.1);
+    let holo_y = dot(vec3f(ubuf.pbr_layer_height.w, ubuf.pbr_param.yz), holo_selected);
+    let holo_origin = vec3f(ubuf.pbr_param.w, ubuf.pbr_layer.z, ubuf.pbr_shield[6].w);
+    let holo_pos = holo_fade * holo_selected + (1.0 - holo_fade) * (holo_origin + ubuf.pbr_layer_height.xyz * holo_y);
+)", windPos, config.attrs[GX_VA_CLR0].attrType != GX_NONE ? vtx_attr(config, GX_VA_CLR0) : "vec4f(1.0)");
+      windPos = "holo_pos";
+    }
     if (hasWind) {
       vtxXfrAttrsPre += windCode(windPos, vtx_attr(config, GX_VA_CLR0));
       windPos = "wind_pos";
@@ -3524,6 +3619,28 @@ std::string build_shader_source(const ShaderConfig& config) noexcept {
     vtxOutAttrs += fmt::format("\n    @location({}) dc_pos: vec3f,", vtxOutIdx++);
     vtxXfrAttrsPre += "\n    out.dc_pos = mv_pos;"
                       "\n    out.pos = vec4f(mv_pos + vec3f(0.0, 0.0, 0.015), 1.0) * ubuf.proj;";
+  }
+  if (config.shell != 0 && config.lineMode == 0) {
+    // GX_AURORA_PORT_SHELL, Model_SilhouetteShell's vertex stage: the model pushed out along its
+    // normalised model-space normal by a breathing amount that grows with the view distance, then
+    // every depth shifted by the constant CScopedGraphicsDepthBias gives: k, the depth change
+    // from moving the bounds centre (view depth shell[5].w) shell[5].y units farther, through
+    // this projection whatever its depth convention (z += k w). Both passes run this same code,
+    // so the colour pass meets the prepass's depth exactly (pos is @invariant).
+    vtxXfrAttrsPre += fmt::format(
+        "\n    let sh_t = clamp((length(mv_pos) - ubuf.shell[4].x) / (ubuf.shell[4].y - ubuf.shell[4].x), 0.0, 1.0);"
+        "\n    let sh_a = ubuf.shell[0].x * ubuf.shell[0].y * (1.0 + sin(ubuf.shell[5].x * 6.0) * ubuf.shell[4].w);"
+        "\n    let sh_e = sh_a * (1.0 + sh_t * (ubuf.shell[4].z - 1.0));"
+        "\n    let sh_n = {0};"
+        "\n    let sh_dir = select(sh_n, normalize(sh_n), dot(sh_n, sh_n) > 1e-10);"
+        "\n    let sh_pos = mv_pos + vec4f(sh_dir * sh_e, 0.0) * ubuf.postex_mtx[in_pnmtxidx];"
+        "\n    out.pos = vec4f(sh_pos, 1.0) * ubuf.proj;"
+        "\n    let sh_c0 = vec4f(0.0, 0.0, -ubuf.shell[5].w, 1.0) * ubuf.proj;"
+        "\n    let sh_c1 = vec4f(0.0, 0.0, -(ubuf.shell[5].w + ubuf.shell[5].y), 1.0) * ubuf.proj;"
+        "\n    if (ubuf.shell[5].w > 0.0) {{"
+        "\n        out.pos.z += (sh_c1.z / sh_c1.w - sh_c0.z / sh_c0.w) * out.pos.w;"
+        "\n    }}",
+        vtx_attr(config, GX_VA_NRM));
   }
   if (config.clipPlane && config.lineMode == 0) {
     // GX_AURORA_SET_CLIP_PLANE: the signed distance to the plane, interpolated; the fragment stage
@@ -4330,6 +4447,16 @@ fn vf_apply_hdr(c: vec4f, fog: vec4f, w: f32) -> vec4f {
   if (info.usesClipPlane) {
     uniBufAttrs += "\n    clip_plane: vec4f,";
   }
+  if (info.usesShell) {
+    uniBufAttrs += "\n    shell: array<vec4f, 7>,\n    shell_tone: array<vec4f, 3>,";
+  }
+  if (info.shellScene) {
+    texBindings += fmt::format("\n@group(2) @binding({})\n"
+                               "var shell_scene: texture_2d<f32>;\n"
+                               "@group(2) @binding({})\n"
+                               "var shell_scene_samp: sampler;",
+                               GX_TEXMAP2 * 2, GX_TEXMAP2 * 2 + 1);
+  }
   if (info.usesPTTexMtx.any()) {
     uniBufAttrs += fmt::format("\n    postmtx: array<mat3x4f, {}>,", MaxPTTexMtx);
   }
@@ -4462,7 +4589,7 @@ fn vf_apply_hdr(c: vec4f, fog: vec4f, w: f32) -> vec4f {
       fragmentFn += fmt::format("\n    if ({}) {{ discard; }}", discard.expr);
     }
   }
-  if (config.sceneHdr && !pbrEmitted && !hdrConverted) {
+  if (config.sceneHdr && !pbrEmitted && !hdrConverted && config.shell == 0) {
     // Retail TEV (and SDF) colour is display sRGB: decoded and taken back through the room's tone
     // curve. SRCALPHA/ONE weights display RGB first; blends where the source scales the destination
     // (multiply, add-dest-colour) take it as a linear factor; other blends keep the original inverse.
@@ -4881,6 +5008,41 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {{{6}{5}
     shaderSource.replace(at, tail.size(),
                          "    return vec4f(f32(imm.serial & 255u), f32((imm.serial >> 8u) & 255u), "
                          "f32((imm.serial >> 16u) & 255u), 255.0) / 255.0;\n}");
+  }
+  if (config.shell == 2 && config.lineMode == 0) {
+    // Model_SilhouetteShell's colour (kb topic/model-black-silhouette.md): TCH1 (map 1, scrolled in
+    // screen space) offsets the scene copy (lod 1) and TCH0 (map 0, decoded when sRGB), and
+    //   rgb = scene * g * (1 + w1) + (scene + g * invExposure) * (1 + w2), w1 = f CCH3.y - f, w2 = f CCH1.w - f
+    // with f = clamp(1 - pow(|1 - |n.v||, CCH2.z) - CCH2.w) = 1 for every shell the game uses (CCH2.w = -1).
+    // The copy here holds exposed light (scene x exposure), so g * invExposure becomes g. Outside the
+    // HDR scene (the pause screen's doll) the frame and its copy are display-encoded through the tone
+    // curve the PBR models used (shell_tone = pbrTone): the copy goes back through the curve's
+    // inverse and the result through the curve, as Remastered shades the doll in linear light.
+    const bool shellLdr = !config.sceneHdr;
+    constexpr std::string_view tail = "    return prev;\n}";
+    const size_t at = shaderSource.rfind(tail);
+    assert(at != std::string::npos);
+    shaderSource.replace(at, tail.size(), fmt::format(R"WGSL(    let sh_s = in.pos.xy * ubuf.shell[6].xy;
+    let sh_time = ubuf.shell[5].x;
+    let sh_ind = textureSample(tex1, tex1_samp, sh_s * ubuf.shell[3].x + ubuf.shell[1].xy + sh_time * ubuf.shell[2].x).xy;
+    let sh_d = (sh_ind - 0.5) * 2.0 * ubuf.shell[1].z;
+    let sh_scene = {};
+    var sh_g = textureSample(tex0, tex0_samp, sh_s + 2.0 * sh_d - sh_time * ubuf.shell[2].y).rgb;
+    if (ubuf.shell[5].z > 0.5) {{
+        sh_g = srgb_dec(sh_g);
+    }}
+    sh_g *= ubuf.shell[0].w;
+    let sh_rgb = sh_scene * sh_g * ubuf.shell[3].y + (sh_scene + sh_g) * ubuf.shell[1].w;
+    return vec4f({}, ubuf.shell[0].z);
+}})WGSL",
+        shellLdr ? "hdr_exposed(textureSampleLevel(shell_scene, shell_scene_samp, sh_s + sh_d, 1.0).rgb, "
+                   "ubuf.shell_tone[0], ubuf.shell_tone[1], ubuf.shell_tone[2])"
+                 : "textureSampleLevel(shell_scene, shell_scene_samp, sh_s + sh_d, 1.0).rgb",
+        shellLdr ? "hdr_post_tone(sh_rgb, ubuf.shell_tone[0], ubuf.shell_tone[1], ubuf.shell_tone[2])" : "sh_rgb"));
+    if (shellLdr) {
+      shaderSource += gfx::hdr::ToneWgsl;
+      shaderSource += gfx::hdr::PostToneWgsl;
+    }
   }
   if (config.actorDecal != 0 && config.lineMode == 0) {
     // The decal colour: 1 - (1 - vis) * opacity * (1 - sat(w))^2, vis one bilinear compare tap of the caster's

@@ -19,6 +19,7 @@
 #include "port_room_liquid.h"
 #include "port_savestate.h"
 #include "port_scene_copy.h"
+#include "port_shell.h"
 #include "port_skip_cutscenes.h"
 #include "port_viewmodel.h"
 #include "port_world_holders.h"
@@ -60,6 +61,7 @@
 #include "MetroidPrime/HUD/CSamusHud.hpp"
 #include "MetroidPrime/Player/CGameState.hpp"
 #include "MetroidPrime/Player/CPlayer.hpp"
+#include "MetroidPrime/Player/CGrappleArm.hpp"
 #include "MetroidPrime/Player/CPlayerGun.hpp"
 #include "MetroidPrime/Weapons/CPowerBomb.hpp"
 #include "MetroidPrime/Player/CPlayerState.hpp"
@@ -3365,6 +3367,7 @@ void CStateManager::DrawWorld() const {
   // A zoomed pass (sharp scan window) draws before the frame's own: the frame's captures and
   // the gun belong to that one.
   const bool portZoomed = sPortViewZoom != 1.f;
+  PortShell::Clear();
   const bool portSceneHdrRequested = sPortSceneHdrRequest;
   sPortSceneHdrRequest = false;
   if (!portZoomed)
@@ -3697,6 +3700,9 @@ void CStateManager::DrawWorld() const {
     gpRender->DrawSortedGeometry(area.GetId().Value(), mask, targetMask);
     PortRoomGeo::sReplacingArea = false;
   }
+  // Remastered's silhouette shells (the Phazon Suit's aura) over the sorted geometry, reading the
+  // opaque copy (port_shell.h).
+  PortShell::Flush();
 #endif
 
 #ifdef TARGET_PC
@@ -3838,6 +3844,17 @@ void CStateManager::DrawWorld() const {
       x84c_player->RenderGun(*this, x870_cameraManager->GetGlobalCameraTranslation(*this));
     }
 #ifdef TARGET_PC
+    // The third-person body has no cannon pass, but its grapple beam leaves its hand
+    // (CGrappleArm::UpdateGrappleBeam), drawn as CPlayer::RenderGun draws it.
+    else if (PortThirdPerson::Active() && !x870_cameraManager->IsInCinematicCamera()) {
+      const CGrappleArm& arm = x84c_player->GetPlayerGun()->GetGrappleArm();
+      if (arm.GetActive() && arm.GetAnimState() != CGrappleArm::kAS_Done) {
+        CPortPipelineContextScope globalPipelines(AURORA_PIPELINE_CONTEXT_GLOBAL);
+        arm.RenderGrappleBeam(*this, x870_cameraManager->GetGlobalCameraTranslation(*this));
+      }
+    }
+#endif
+#ifdef TARGET_PC
     if (gunFov) {
       CGraphics::SetProjectionState(gunProj);
     }
@@ -3874,7 +3891,16 @@ void CStateManager::DrawWorld() const {
 #ifdef TARGET_PC
   CPortPipelineContextScope globalPipelines(AURORA_PIPELINE_CONTEXT_GLOBAL);
 #endif
-  RenderCamerasAndAreaLights();
+#ifdef TARGET_PC
+  // Remastered 0xc6273c submits camera filters at priority 2; 0xf9fa6c draws
+  // priorities 0..4 after UberPost. Keep the cameras here, defer the filters.
+  if (portSceneHdrRequested) {
+    x870_cameraManager->Render(*this);
+  } else
+#endif
+  {
+    RenderCamerasAndAreaLights();
+  }
   ResetViewAfterDraw(backupViewport, backupViewMatrix);
   DrawE3DeathEffect();
   DrawAdditionalFilters();
@@ -3933,6 +3959,10 @@ void CStateManager::DrawE3DeathEffect() const {
 
 void CStateManager::RenderCamerasAndAreaLights() const {
   x870_cameraManager->Render(*this);
+  DrawCameraFilters();
+}
+
+void CStateManager::DrawCameraFilters() const {
   for (int i = 0; i < kCFS_Max; ++i) {
     xb84_camFilterPasses[i].Draw();
   }

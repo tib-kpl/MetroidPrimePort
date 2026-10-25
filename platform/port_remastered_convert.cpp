@@ -570,6 +570,19 @@ struct Converter::State {
 };
 
 void Converter::State::Convert(const Model& model, const ConvertOptions& opt) {
+  // NModelDataMP1::is_null_model_id (0xfa4830), called before creating the
+  // static render proxy (0xfa56c0). These are collision/bounds placeholders,
+  // not an invisible shader family. Match the source, including when imported
+  // under a generated room-model id; never suppress its separate X-ray model.
+  std::string sourceId;
+  for (char c : opt.source) {
+    if (c != '-') {
+      sourceId.push_back(c >= 'A' && c <= 'F' ? char(c + ('a' - 'A')) : c);
+    }
+  }
+  const bool nullModel = sourceId == "100000000000f000f00000003801de98" ||
+                         sourceId == "100000000000f000f000000012dbb060" ||
+                         sourceId == "100000000000f000f00000001c0b0bef";
   Retail retail;
   if (opt.standalone) {
     // What retail's own opaque lit world materials carry (measured over every
@@ -604,6 +617,10 @@ void Converter::State::Convert(const Model& model, const ConvertOptions& opt) {
       throw Fail{"retail model " + Hex8(opt.retail) + " is not on the disc"};
     }
     retail.Parse();
+    if (opt.materialSets > retail.nmat && !retail.sets.empty()) {
+      retail.sets.resize(opt.materialSets, retail.sets[0]);
+      retail.nmat = opt.materialSets;
+    }
   }
 
   const double (*M)[3] = opt.orient;
@@ -622,6 +639,27 @@ void Converter::State::Convert(const Model& model, const ConvertOptions& opt) {
     // The wind a material sways with: its index into the model's WIND sets (0xFF none). Only the plain lit
     // foliage (kind 0) of a standalone model, whose vertices can carry the weight in their colour alpha.
     RemMaterial& rem = mats.back();
+    if (rem.kind == 45) {
+      // 5586D988 VS000 scales source X/Z about the source origin and preserves Y.
+      // Conjugate that operation by the actual import transform, including fitted
+      // actor transforms; a hardcoded R2G apex would only work for room geometry.
+      const double apex[3] = {rem.shieldRows[8], rem.shieldRows[9], rem.shieldRows[10]};
+      double alongOffset = 0.0;
+      for (int r = 0; r < 3; ++r) alongOffset += NM[r][1] * opt.offset[r];
+      double origin[3];
+      for (int r = 0; r < 3; ++r) {
+        rem.shieldRows[8 + r] = opt.offset[r];
+        for (int c = 0; c < 3; ++c) rem.shieldRows[8 + r] += M[r][c] * apex[c];
+        rem.layerHeight[r] = M[r][1];
+        origin[r] = opt.offset[r] - M[r][1] * alongOffset;
+      }
+      rem.layerHeight[3] = NM[0][1];
+      rem.kindParam[1] = NM[1][1];
+      rem.kindParam[2] = NM[2][1];
+      rem.kindParam[3] = origin[0];
+      rem.kindStrength = origin[1];
+      rem.shieldRows[27] = origin[2];
+    }
     const size_t at = mats.size() - 1;
     if (opt.standalone && rem.kind == 0 && !rem.unlit && !rem.colorUnlit && !rem.blended && !rem.layered &&
         std::find(std::begin(kShaderWindFoliage), std::end(kShaderWindFoliage), rem.shader) !=
@@ -1401,7 +1439,7 @@ void Converter::State::Convert(const Model& model, const ConvertOptions& opt) {
     const char* const baseAlpha =
         rem.cutout ? (exactCut ? "cut" : "punch")
         : rem.mask || rem.layered || rem.height > 0.0 || frostShell || inventory || rem.shader == kShaderVfxBase ||
-                rem.shader == kShaderVfxBase2 || (rem.kind >= 16 && rem.kind <= 18)
+                rem.shader == kShaderVfxBase2 || (rem.kind >= 16 && rem.kind <= 18) || rem.kind == 45
             ? (!frostShell && rem.maskSquared ? "mask2" : "mask")
         : rem.blended ? "blend"
                       : "";
@@ -1521,6 +1559,23 @@ void Converter::State::Convert(const Model& model, const ConvertOptions& opt) {
         uint32_t idx[kMacroMaps];
         for (int k = 0; k < nmaps; ++k) {
           idx[k] = texIndex(si, tids[k]);
+        }
+        // This set's swapped maps (ConvertOptions::setTextures), the same map otherwise.
+        if (si < opt.setTextures.size() && !opt.setTextures[si].empty()) {
+          for (int k = 0; k < nmaps; ++k) {
+            const int m = k == kLayeredMaps ? int(kNormal) : k % kMaps;
+            const MapRef& ref = both[k];
+            const auto swap = ref.has ? opt.setTextures[si].find(ref.id) : opt.setTextures[si].end();
+            if (swap == opt.setTextures[si].end()) {
+              continue;
+            }
+            MapRef swapped[kMacroMaps];
+            std::copy(both, both + kMacroMaps, swapped);
+            swapped[k].id = swap->second;
+            swapped[k].src = opt.texturePrefix + IdToString(swap->second) + opt.textureSuffix;
+            idx[k] = texIndex(si, *Get(std::string("pbr:") + kMapName[m], swapped + (k - m),
+                                       m == kBase ? baseAlpha : "", opt));
+          }
         }
         AnuvCounts scratch;  // counted once, not once per material set
         setBlobs[si].push_back(PbrMaterial(pm, vtx, idx, group, coords, rem, wrap, cube, authored, entry,
@@ -2117,6 +2172,15 @@ void Converter::State::Convert(const Model& model, const ConvertOptions& opt) {
   Pad(secUV);
 
   std::vector<Blob> secs;
+  if (nullModel) {
+    // Retain bounds and vertex data for actor/collision queries, but no draw
+    // surfaces in any material set, mirroring the absent Remastered proxy.
+    surfs.clear();
+    if (opt.vmsh != nullptr) {
+      opt.vmsh->clear();
+    }
+    Log("  null model: no render proxy (" + opt.source + ")");
+  }
   for (size_t si = 0; si < retail.nmat; ++si) {
     Blob b;
     P32(b, uint32_t(setTex[si].size()));

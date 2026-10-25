@@ -18,6 +18,8 @@
 #include "port_discord.h"
 #include "port_freecam.h"
 #include "port_third_person.h"
+#include "port_third_person_body.h"
+#include "port_dread_samus_mod.h"
 #include "port_gci.h"
 #include "port_photo.h"
 #include "port_pointer.h"
@@ -1964,12 +1966,32 @@ void CmdCollDump() {
 
 // thirdperson [on|off] [distance <m>] [shoulder <m>] [height <m>]
 void CmdThirdPerson() {
-  static const char* const usage = "usage: thirdperson [on|off] [distance <m>] [shoulder <m>] [height <m>]";
+  static const char* const usage =
+      "usage: thirdperson [on|off] [distance <m>] [shoulder <m>] [height <m>] [clips] [feet] "
+      "[clip <name>|off [phase [yaw]]]";
   for (size_t i = 1; i < sCmd.args.size(); ++i) {
     const std::string arg = Lower(sCmd.args[i]);
     float number = 0.f;
     if (arg == "on" || arg == "off") {
       PortThirdPerson::SetEnabled(arg == "on");
+    } else if (arg == "feet") {
+      sCmd.out += PortThirdPersonBody::DescribeFeet();
+      return Finish();
+    } else if (arg == "clips") {
+      sCmd.out += PortThirdPersonBody::DescribeClips();
+      return Finish();
+    } else if (arg == "clip" && i + 1 < sCmd.args.size()) {
+      const std::string name = sCmd.args[++i];
+      float yaw = 0.f;
+      if (i + 1 < sCmd.args.size() && ParseFloat(sCmd.args[i + 1], number)) {
+        ++i;
+        if (i + 1 < sCmd.args.size() && ParseFloat(sCmd.args[i + 1], yaw)) {
+          ++i;
+        }
+      }
+      if (!PortThirdPersonBody::PinClip(Lower(name) == "off" ? nullptr : name.c_str(), number, yaw)) {
+        return Finish("no such clip (or the body is not built)");
+      }
     } else if ((arg == "distance" || arg == "shoulder" || arg == "height") && i + 1 < sCmd.args.size() &&
                ParseFloat(sCmd.args[i + 1], number)) {
       ++i;
@@ -2110,6 +2132,16 @@ bool ParseButtons(const std::string& spec, PADStatus& pad) {
       const s8 axis = static_cast< s8 >(std::clamp(v, -127.f, 127.f));
       (b[0] == 's' ? (b[1] == 'x' ? pad.stickX : pad.stickY)
                    : (b[1] == 'x' ? pad.substickX : pad.substickY)) = axis;
+      start = end + 1;
+      continue;
+    }
+    // lt:<n>, rt:<n> hold an analog trigger's travel (0..255) without its click.
+    if (b.size() > 3 && b[1] == 't' && b[2] == ':' && (b[0] == 'l' || b[0] == 'r')) {
+      float v;
+      if (!ParseFloat(b.substr(3), v)) {
+        return false;
+      }
+      (b[0] == 'l' ? pad.triggerLeft : pad.triggerRight) = static_cast< u8 >(std::clamp(v, 0.f, 255.f));
       start = end + 1;
       continue;
     }
@@ -2296,6 +2328,93 @@ void CmdPointer() {
   Finish();
 }
 
+// Pushes one SDL finger event at window pixel x,y, as a touch screen would: the touch overlay's
+// event filter sees it as it is pushed. Tests the touch overlay on a desktop build.
+bool PushFinger(Uint32 type, SDL_FingerID id, float x, float y) {
+  int count = 0;
+  SDL_Window** windows = SDL_GetWindows(&count);
+  SDL_Window* window = windows != nullptr && count > 0 ? windows[0] : nullptr;
+  SDL_free(windows);
+  int w = 0;
+  int h = 0;
+  if (window == nullptr || !SDL_GetWindowSizeInPixels(window, &w, &h) || w <= 0 || h <= 0) {
+    return false;
+  }
+  // A pushed finger skips SDL_SendTouch, which on a device first sends the touch-mouse the
+  // ImGui windows (the editor's picker, F1) read: send it here the same way.
+  int ww = 0;
+  int wh = 0;
+  SDL_GetWindowSize(window, &ww, &wh);
+  const float mx = x / float(w) * float(ww);
+  const float my = y / float(h) * float(wh);
+  SDL_Event m{};
+  m.motion.type = SDL_EVENT_MOUSE_MOTION;
+  m.motion.timestamp = SDL_GetTicksNS();
+  m.motion.windowID = SDL_GetWindowID(window);
+  m.motion.which = SDL_TOUCH_MOUSEID;
+  m.motion.x = mx;
+  m.motion.y = my;
+  SDL_PushEvent(&m);
+  if (type != SDL_EVENT_FINGER_MOTION) {
+    m = {};
+    m.button.type = type == SDL_EVENT_FINGER_DOWN ? SDL_EVENT_MOUSE_BUTTON_DOWN : SDL_EVENT_MOUSE_BUTTON_UP;
+    m.button.timestamp = SDL_GetTicksNS();
+    m.button.windowID = SDL_GetWindowID(window);
+    m.button.which = SDL_TOUCH_MOUSEID;
+    m.button.button = SDL_BUTTON_LEFT;
+    m.button.down = type == SDL_EVENT_FINGER_DOWN;
+    m.button.clicks = 1;
+    m.button.x = mx;
+    m.button.y = my;
+    SDL_PushEvent(&m);
+  }
+  SDL_Event e{};
+  e.type = type;
+  e.tfinger.timestamp = SDL_GetTicksNS();
+  e.tfinger.touchID = 1;
+  e.tfinger.fingerID = id;
+  e.tfinger.x = x / float(w);
+  e.tfinger.y = y / float(h);
+  e.tfinger.pressure = type == SDL_EVENT_FINGER_UP ? 0.f : 1.f;
+  e.tfinger.windowID = SDL_GetWindowID(window);
+  SDL_PushEvent(&e);
+  return true;
+}
+
+void CmdFinger() {
+  const auto& a = sCmd.args;
+  const auto num = [&](size_t i) { return static_cast< float >(std::atof(a[i].c_str())); };
+  const char* usage =
+      "usage: finger down|move|up <id> <x> <y> | tap <x> <y> | drag <x0> <y0> <x1> <y1> [steps]";
+  if (a.size() == 5 && (a[1] == "down" || a[1] == "move" || a[1] == "up")) {
+    const Uint32 type = a[1] == "down" ? SDL_EVENT_FINGER_DOWN
+                        : a[1] == "move" ? SDL_EVENT_FINGER_MOTION
+                                         : SDL_EVENT_FINGER_UP;
+    if (!PushFinger(type, SDL_FingerID(std::atoll(a[2].c_str())), num(3), num(4))) {
+      return Finish("no window");
+    }
+  } else if (a.size() == 4 && a[1] == "tap") {
+    if (!PushFinger(SDL_EVENT_FINGER_DOWN, 1, num(2), num(3)) ||
+        !PushFinger(SDL_EVENT_FINGER_UP, 1, num(2), num(3))) {
+      return Finish("no window");
+    }
+  } else if ((a.size() == 6 || a.size() == 7) && a[1] == "drag") {
+    const int steps = a.size() == 7 ? std::max(1, std::atoi(a[6].c_str())) : 10;
+    const float x0 = num(2), y0 = num(3), x1 = num(4), y1 = num(5);
+    if (!PushFinger(SDL_EVENT_FINGER_DOWN, 1, x0, y0)) {
+      return Finish("no window");
+    }
+    for (int i = 1; i <= steps; ++i) {
+      const float t = float(i) / float(steps);
+      PushFinger(SDL_EVENT_FINGER_MOTION, 1, x0 + (x1 - x0) * t, y0 + (y1 - y0) * t);
+    }
+    PushFinger(SDL_EVENT_FINGER_UP, 1, x1, y1);
+  } else {
+    return Finish(usage);
+  }
+  Finish();
+}
+
 void CmdWindow() {
   int count = 0;
   SDL_Window** windows = SDL_GetWindows(&count);
@@ -2476,6 +2595,17 @@ void CmdHelmetVisorFx() {
   } else {
     PortDebug::SetHideVisorEffects(value == "0");
   }
+  Finish();
+}
+
+void CmdDreadCannon() {
+  const std::string value = sCmd.args.size() > 1 ? sCmd.args[1] : "";
+  if (value == "0" || value == "1") {
+    PortDreadSamus::SetFirstPersonCannonShown(value == "1");
+  } else if (!value.empty()) {
+    return Finish("usage: dreadcannon [0|1]");
+  }
+  Out(PortDreadSamus::FirstPersonCannonShown() ? "dreadcannon 1" : "dreadcannon 0");
   Finish();
 }
 
@@ -2779,6 +2909,12 @@ void CmdMinimap() {
 void CmdMapTap() {
   PortDebug::RequestMapTap();
   Out("maptap queued");
+  Finish();
+}
+
+void CmdTouchEdit() {
+  PortDebug::RequestTouchEdit();
+  Out("touchedit requested");
   Finish();
 }
 
@@ -3150,6 +3286,14 @@ void CmdRoomLiquid() {
   // The water the camera is in: retail's underwater fog colour against Remastered's filter.
   const CStateManager* const mgr = PortDebug::StateManager();
   const CCameraManager* const cameras = mgr != nullptr ? mgr->GetCameraManager() : nullptr;
+  if (mgr != nullptr) {
+    Out("camera fluid counter %d", cameras != nullptr ? cameras->GetFluidCounter() : 0);
+    for (int i = 0; i < CStateManager::kCFS_Max; ++i) {
+      char state[256];
+      mgr->GetCameraFilterPass(CStateManager::ECameraFilterStage(i)).PortDescribe(state, sizeof(state));
+      Out("  camera filter %d: %s", i, state);
+    }
+  }
   if (cameras != nullptr && cameras->GetFluidCounter() != 0) {
     if (const CScriptWater* water = TCastToConstPtr< CScriptWater >(mgr->GetObjectById(cameras->GetFluidId()))) {
       const CColor& retail = water->GetUnderwaterFogColor();
@@ -3796,7 +3940,8 @@ const CommandSpec kCommands[] = {
      "language [en|EUFR|...]     the text language, changed while the game runs"},
     {"press", CmdPress, nullptr,
      "press <a+b+...> [frames]   hold pad buttons (a b x y z l r start up down left right;\n"
-     "                           sx:<n> sy:<n> cx:<n> cy:<n> also hold a stick axis;\n"
+     "                           sx:<n> sy:<n> cx:<n> cy:<n> also hold a stick axis,\n"
+     "                           lt:<n> rt:<n> a trigger's travel without its click;\n"
      "                           frames 0 = keep holding until the next press/stick)"},
     {"stick", CmdPress, nullptr,
      "stick <x> <y> [frames]     hold the main stick (-127..127); cstick for the C stick"},
@@ -3877,6 +4022,11 @@ const CommandSpec kCommands[] = {
     {"minimap", CmdMinimap, nullptr,
      "minimap  the HUD minimap's screen rect (x0 y0 x1 y1, 0..1), or invalid"},
     {"maptap", CmdMapTap, nullptr, "maptap   a touch-overlay minimap tap: one Z press, opens the map"},
+    {"touchedit", CmdTouchEdit, nullptr,
+     "touchedit  opens the touch layout editor, as F1 > Controls > Edit layout"},
+    {"finger", CmdFinger, nullptr,
+     "finger down|move|up <id> <x> <y> | tap <x> <y> | drag <x0> <y0> <x1> <y1> [steps]  SDL touch "
+     "events at window pixels"},
     {"touchaim", CmdTouchAim, nullptr,
      "touchaim <dx> <dy> [hold s]   touch aim travel in dp (right/down +), the finger counts as down for hold seconds"},
     {"maprotate", CmdMapRotate, nullptr,
@@ -3889,7 +4039,7 @@ const CommandSpec kCommands[] = {
      "freecam [on|off|freeze on|off|player on|off|speed <n>|pos <x> <y> <z>|look <yaw> <pitch>]\n"
      "                           fly the view away from the player (HUD hidden; freeze holds the game still)"},
     {"thirdperson", CmdThirdPerson, nullptr,
-     "thirdperson [on|off] [distance <m>] [shoulder <m>] [height <m>]\n"
+     "thirdperson [on|off] [distance <m>] [shoulder <m>] [height <m>] [clips] [feet] [clip <name>|off [phase [yaw]]]\n"
      "                           third-person gameplay camera (also third_person* settings)"},
     {"photo", nullptr, CmdPhoto,
      "photo [on|off|capture [1|2|4]|fov <n>|roll <n>|samus on|off|panel on|off|super 1|2|4|speed <n>]\n"
@@ -3932,6 +4082,8 @@ const CommandSpec kCommands[] = {
     {"helmet", CmdHelmetVisorFx, nullptr,
      "helmet <0|1>, visorfx <0|1> show (1) or hide (0) the helmet and visor effects"},
     {"visorfx", CmdHelmetVisorFx, nullptr, ""},
+    {"dreadcannon", CmdDreadCannon, nullptr,
+     "dreadcannon [0|1]   the Dread arm cannon in first person (dread_first_person_cannon); prints it"},
     {"interp", CmdInterp, nullptr,
      "interp [actor|pose|particle|all <0|1>]   frame interpolation settings (F1 Video > Frame rate)"},
     {"present", CmdPresent, nullptr,

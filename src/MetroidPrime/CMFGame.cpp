@@ -381,6 +381,15 @@ void CMFGame::Draw() const {
         }
         // The frame is measured at the opaque/sorted boundary (CStateManager::DrawWorld).
         GXPortPostProcessScene(bloom, threshold, tints, tone, gradeA, gradeB, gradeWeight, 0.f);
+        // Remastered RenderAfterPostFX (0xf9fa6c): priority-2 camera filters
+        // (0xc6273c), including the underwater multiply, follow tone/grade.
+        // These GX filters replace the perspective with an ortho projection.
+        // Their old DrawWorld call was followed by ResetViewAfterDraw; retain
+        // that boundary before targeting/visor draws (including scan zoom).
+        const CViewport filterViewport = CGraphics::GetViewport();
+        const CTransform4f filterView = CGraphics::GetViewMatrix();
+        mStateManager->DrawCameraFilters();
+        mStateManager->ResetViewAfterDraw(filterViewport, filterView);
       }
     };
     const auto drawWorld = [this]() {

@@ -239,6 +239,14 @@ private:
   // keeps the entities that placed one in m_retailEntities, for WriteGeometry to leave out.
   void PairRetailModels(const RoomData& r, const Area& area);
   std::set<int> m_retailEntities;
+  // Entities carrying a model under a retail-style id (10000000-...-XXXXXXXX) that no retail
+  // object of the area names: Remastered's own models standing in for retail objects (Central
+  // Dynamo's floor grates). WriteGeometry draws them, though they lack kPropActorAdded.
+  std::set<int> m_syntheticEntities;
+  // The retail ids the room's entities carry (models it keeps), and where its entities stand
+  // (GC world space): what WriteGeometry checks before hiding a retail object.
+  std::set<uint32_t> m_roomRetailIds;
+  std::vector<Vec3> m_entityPositions;
   // The room's static geometry (its ModCon components), as "<MREA id>.roomgeo".
   void WriteGeometry(const RoomData& r, uint32_t mrea, const Area& area);
   // The room's liquid surfaces (its water and lava render volumes), as "<MREA id>.roomliquid".
@@ -452,13 +460,10 @@ void Writer::Tonemap(const RoomData& r, float out[5]) const {
   }
 }
 
-// The range of exposure values the room's auto exposure is held to, the bias it adds, the
-// sigma it eases by and where in the range the static exposure sits, or 0, 0, 0, 32, 0.5
-// for a room without auto exposure. A room can have several hints: the plain
-// one for the whole room is wanted, not those with a mode (they are for a state of the
-// room, such as a cutscene) or a volume of their own. Hints with mode 1 or 2 (active while
-// the camera is inside a fluid / once it has left one) go to `fluid` with their mode. A value the hint leaves out is
-// SLdrAutoExposureHint's default.
+// Version 27 stores all exposure hints in the registration list, including plain
+// mode 0 hints. The legacy header is left at the no-hint default. Priority and
+// fluid visibility are independent fields (SLdrAutoExposureHint::Load 0x538b54).
+// No transform/volume ranking occurs in UpdateTonemapping 0xaffb18.
 //
 // The two hints a CAutoExposureHintMP1 swaps between (role 1 for the one its 0x9ea1739d link
 // reaches, 2 for its 0x4ff221ac link; which is the normal view and which the thermal one is
@@ -468,7 +473,6 @@ void Writer::Exposure(const RoomData& r, float out[5], std::vector<PortRoomEnv::
   out[0] = out[1] = out[2] = 0.f;
   out[3] = 32.f;
   out[4] = 0.5f;
-  int best = 0;
   std::map<const Component*, std::pair<uint8_t, uint8_t>> paired;  // hint -> role, pair
   {
     const auto& comps = r.room.Components();
@@ -496,7 +500,7 @@ void Writer::Exposure(const RoomData& r, float out[5], std::vector<PortRoomEnv::
           const auto hf = r.room.Flat(*hint);
           const auto mi = hf.find(kPropHintMode);
           modes += " " + std::to_string(mi != hf.end() && mi->second.size >= 4
-                                            ? int(ReadLE32(r.room.Bytes(mi->second)))
+                                            ? int(ExposureHintMode(ReadLE32(r.room.Bytes(mi->second))))
                                             : 0);
         }
       }
@@ -521,38 +525,32 @@ void Writer::Exposure(const RoomData& r, float out[5], std::vector<PortRoomEnv::
     if (!std::isfinite(range[0]) || !std::isfinite(range[1]) || range[1] < range[0]) {
       continue;
     }
-    Vec3 pos, rot, scale;
-    const bool whole = !r.room.Xform(*c, pos, rot, scale) ||
-                       (std::fabs(scale[0] - 1.0) < 1e-3 && std::fabs(scale[1] - 1.0) < 1e-3 &&
-                        std::fabs(scale[2] - 1.0) < 1e-3);
     const auto modeIt = f.find(kPropHintMode);
-    const int mode = modeIt != f.end() && modeIt->second.size >= 4 ? int(ReadLE32(r.room.Bytes(modeIt->second))) : 0;
+    const uint8_t mode = modeIt != f.end() && modeIt->second.size >= 4
+                             ? ExposureHintMode(ReadLE32(r.room.Bytes(modeIt->second)))
+                             : 0;
     const auto pairIt = paired.find(c);
-    if (mode == 1 || mode == 2 || pairIt != paired.end()) {
-      if (fluid != nullptr) {
-        PortRoomEnv::FluidHint h;
-        h.mode = uint8_t(std::clamp(mode, 0, 255));
-        if (pairIt != paired.end()) {
-          h.role = pairIt->second.first;
-          h.pair = pairIt->second.second;
-        }
-        h.exposure[0] = range[0];
-        h.exposure[1] = range[1];
-        h.bias = std::isfinite(bias) ? bias : 0.f;
-        h.sigma = sigma >= 0.f && sigma < 10000.f ? sigma : 32.f;
-        h.staticLerp = lerp >= 0.f && lerp <= 1.f ? lerp : 0.5f;
-        fluid->push_back(h);
+    // All hints participate in the same priority-ordered registration list. The
+    // old importer mistook priority (0x590d6843) for a fluid mode and picked one
+    // plain hint by transform scale, neither of which the shipped loader does.
+    if (fluid != nullptr) {
+      PortRoomEnv::FluidHint h;
+      h.mode = mode;
+      h.on = r.room.Active(*c);
+      const auto priority = f.find(kPropExposureHintPriority);
+      if (priority != f.end() && priority->second.size >= 4) {
+        h.priority = int32_t(ReadLE32(r.room.Bytes(priority->second)));
       }
-      continue;
-    }
-    const int rank = modeIt != f.end() ? 1 : whole ? 3 : 2;
-    if (rank > best) {
-      best = rank;
-      out[0] = range[0];
-      out[1] = range[1];
-      out[2] = std::isfinite(bias) ? bias : 0.f;
-      out[3] = sigma >= 0.f && sigma < 10000.f ? sigma : 32.f;
-      out[4] = lerp >= 0.f && lerp <= 1.f ? lerp : 0.5f;
+      if (pairIt != paired.end()) {
+        h.role = pairIt->second.first;
+        h.pair = pairIt->second.second;
+      }
+      h.exposure[0] = range[0];
+      h.exposure[1] = range[1];
+      h.bias = std::isfinite(bias) ? bias : 0.f;
+      h.sigma = sigma >= 0.f && sigma < 10000.f ? sigma : 32.f;
+      h.staticLerp = lerp >= 0.f && lerp <= 1.f ? lerp : 0.5f;
+      fluid->push_back(h);
     }
   }
 }
@@ -1728,6 +1726,8 @@ bool ReadMcon(const std::vector<uint8_t>& d, Mcon& out) {
   return false;
 }
 
+static void EditorBasis(const Vec3& rot, const Vec3& scale, double out[3][3]);
+
 void Writer::WriteGeometry(const RoomData& r, uint32_t mrea, const Area& area) {
   if (!m_io.model || (m_io.wantsGeometry && !m_io.wantsGeometry(r.name))) {
     return;
@@ -2285,8 +2285,8 @@ void Writer::WriteGeometry(const RoomData& r, uint32_t mrea, const Area& area) {
         " retail objects hidden");
     return made != 0;
   };
-  // Whether a static model's bounds hold its origin, give or take half a metre.
-  auto aroundOrigin = [&](const uint8_t* id) {
+  // A static model's bounds in its own (Remastered) axes; false when it does not read.
+  auto modelBounds = [&](const uint8_t* id, Vec3& lo, Vec3& hi) {
     std::vector<uint8_t> data;
     PortRemastered::Model cmdl;
     std::string error;
@@ -2294,7 +2294,8 @@ void Writer::WriteGeometry(const RoomData& r, uint32_t mrea, const Area& area) {
         !PortRemastered::ParseModel(data.data(), data.size(), cmdl, error)) {
       return false;
     }
-    Vec3 lo{HUGE_VAL, HUGE_VAL, HUGE_VAL}, hi{-HUGE_VAL, -HUGE_VAL, -HUGE_VAL};
+    lo = Vec3{HUGE_VAL, HUGE_VAL, HUGE_VAL};
+    hi = Vec3{-HUGE_VAL, -HUGE_VAL, -HUGE_VAL};
     for (const PortRemastered::ModelVertexBuffer& vb : cmdl.vertexBuffers) {
       for (size_t v = 0; v + 2 < vb.positions.size(); v += 3) {
         for (size_t k = 0; k < 3; ++k) {
@@ -2302,6 +2303,14 @@ void Writer::WriteGeometry(const RoomData& r, uint32_t mrea, const Area& area) {
           hi[k] = std::max(hi[k], double(vb.positions[v + k]));
         }
       }
+    }
+    return lo[0] <= hi[0];
+  };
+  // Whether a static model's bounds hold its origin, give or take half a metre.
+  auto aroundOrigin = [&](const uint8_t* id) {
+    Vec3 lo, hi;
+    if (!modelBounds(id, lo, hi)) {
+      return false;
     }
     for (size_t k = 0; k < 3; ++k) {
       if (!(lo[k] <= 0.5 && hi[k] >= -0.5)) {
@@ -2345,16 +2354,30 @@ void Writer::WriteGeometry(const RoomData& r, uint32_t mrea, const Area& area) {
     return true;
   };
   size_t posed = 0, drivenActors = 0;
-  for (const Component* c : r.room.Of(kActorMP1)) {
+  // The synthetic-model actors written (m_syntheticEntities): their instance and the world
+  // box (GC axes) their model covers, for the retail objects they stand in for.
+  struct Standin {
+    uint32_t instance;
+    Vec3 pos, lo, hi;
+  };
+  std::vector<Standin> standins;
+  std::vector<const Component*> renderActors = r.room.Of(kActorMP1);
+  const auto renderPlatforms = r.room.Of(kPlatformComponent);
+  renderActors.insert(renderActors.end(), renderPlatforms.begin(), renderPlatforms.end());
+  for (const Component* c : renderActors) {
+    const bool isPlatform = c->type == kPlatformComponent;
     const auto f = r.room.Flat(*c);
-    const auto prop = f.find(kPropActorModel);
+    const auto prop = f.find(isPlatform ? kPropPlatformModel : kPropActorModel);
     const bool hasModel = prop != f.end() && prop->second.size == 16;
     Span chprProp, nameProp;
-    const bool hasAnim = !hasModel && r.room.Nested(*c, {kPropActorAnim, kPropAnimCharacter}, chprProp) &&
-                         chprProp.size == 16 && r.room.Nested(*c, {kPropActorAnim, kPropAnimName}, nameProp) &&
+    const uint32_t animProperty = isPlatform ? kPropPlatformAnim : kPropActorAnim;
+    const bool hasAnim = !hasModel && r.room.Nested(*c, {animProperty, kPropAnimCharacter}, chprProp) &&
+                         chprProp.size == 16 && r.room.Nested(*c, {animProperty, kPropAnimName}, nameProp) &&
                          nameProp.size == 8;
     Vec3 pos, rot, scale;
-    if (f.find(kPropActorAdded) == f.end() || (!hasModel && !hasAnim) || !r.room.Xform(*c, pos, rot, scale)) {
+    const bool synthetic = hasModel && m_syntheticEntities.count(c->entity) != 0;
+    if ((!isPlatform && f.find(kPropActorAdded) == f.end() && !synthetic) || (!hasModel && !hasAnim) ||
+        !r.room.Xform(*c, pos, rot, scale)) {
       continue;
     }
     const bool active = r.room.Active(*c);
@@ -2421,7 +2444,7 @@ void Writer::WriteGeometry(const RoomData& r, uint32_t mrea, const Area& area) {
     // Frigate hangar's landing cutscene, shown by retail's links, would stand whole on the
     // dock. One whose model lies off its origin is room geometry placed at the origin (the
     // Frigate reactor's fallen pieces), and stays.
-    if (hasModel && !active && MaxAbs(pos, Vec3{}) < 0.01 && aroundOrigin(r.room.Bytes(prop->second))) {
+    if (!isPlatform && hasModel && !active && MaxAbs(pos, Vec3{}) < 0.01 && aroundOrigin(r.room.Bytes(prop->second))) {
       ++posed;
       continue;
     }
@@ -2433,7 +2456,7 @@ void Writer::WriteGeometry(const RoomData& r, uint32_t mrea, const Area& area) {
         id != nullptr && std::memcmp(id, kRetailIdPrefix, 12) == 0) {
       const Vec3 w = Apply(area.xf, MulR2G(pos));
       const bool standing = std::any_of(area.objects.begin(), area.objects.end(), [&](const ScriptObject& o) {
-        return o.type == kRetailActor && o.hasPos && MaxAbs(o.pos, w) < kRetailActorNear &&
+        return o.type == (isPlatform ? kRetailPlatform : kRetailActor) && o.hasPos && MaxAbs(o.pos, w) < kRetailActorNear &&
                std::search(o.props.begin(), o.props.end(), id + 12, id + 16) != o.props.end();
       });
       if (standing || m_retailEntities.count(c->entity) != 0) {
@@ -2456,6 +2479,26 @@ void Writer::WriteGeometry(const RoomData& r, uint32_t mrea, const Area& area) {
     PortRoomGeo::Instance& inst = instances.emplace_back();
     inst.model = known->second;
     place(inst, pos, rot, scale);
+    if (Vec3 lo, hi; synthetic && modelBounds(r.room.Bytes(prop->second), lo, hi)) {
+      Standin& s = standins.emplace_back();
+      s.instance = uint32_t(instances.size() - 1);
+      s.pos = Apply(area.xf, MulR2G(pos));
+      s.lo = Vec3{HUGE_VAL, HUGE_VAL, HUGE_VAL};
+      s.hi = Vec3{-HUGE_VAL, -HUGE_VAL, -HUGE_VAL};
+      for (int corner = 0; corner < 8; ++corner) {
+        const Vec3 v = MulR2G(Vec3{(corner & 1) ? hi[0] : lo[0], (corner & 2) ? hi[1] : lo[1], (corner & 4) ? hi[2] : lo[2]});
+        Vec3 local;
+        for (size_t row = 0; row < 3; ++row) {
+          local[row] = inst.transform[4 * row] * v[0] + inst.transform[4 * row + 1] * v[1] +
+                       inst.transform[4 * row + 2] * v[2] + inst.transform[4 * row + 3];
+        }
+        const Vec3 w = Apply(area.xf, local);
+        for (size_t k = 0; k < 3; ++k) {
+          s.lo[k] = std::min(s.lo[k], w[k]);
+          s.hi[k] = std::max(s.hi[k], w[k]);
+        }
+      }
+    }
     if (anim != nullptr) {
       // The bone's pose in GC axes: the axis change is a rotation, so a quaternion's
       // vector part and a translation change the same way a position does.
@@ -2474,6 +2517,37 @@ void Writer::WriteGeometry(const RoomData& r, uint32_t mrea, const Area& area) {
       ++animated;
     }
     script(inst, c->entity, active);
+    if (isPlatform) {
+      const auto bound = scripts.platformTransform.find(c->entity);
+      if (bound != scripts.platformTransform.end() && bound->second->hasXf) {
+        const ScriptObject& carrier = *bound->second;
+        // Model scale is separate from the retail actor's rigid transform.
+        // local = inverse(retail initial rigid) * area * placed model.
+        double rotation[3][3];
+        EditorBasis(carrier.rot, Vec3{1, 1, 1}, rotation);
+        float local[12]{};
+        for (int row = 0; row < 3; ++row) {
+          for (int col = 0; col < 4; ++col) {
+            double v = 0;
+            for (int k = 0; k < 3; ++k) {
+              double world = col == 3 ? area.xf[k][3] - carrier.pos[k] : 0.;
+              for (int j = 0; j < 3; ++j) world += area.xf[k][j] * inst.transform[j * 4 + col];
+              v += rotation[k][row] * world;
+            }
+            local[row * 4 + col] = float(v);
+          }
+        }
+        std::copy(local, local + 12, inst.transform);
+        inst.links.push_back({carrier.id, 0, PortRoomGeo::kActorTransform});
+        // A directly matched model replaces the retail platform's visual;
+        // a co-driven sibling supplements it and must not hide the carrier.
+        const auto own = scripts.retail.find(c->entity);
+        if (own != scripts.retail.end() && &area.objects[own->second] == &carrier) {
+          scripts.script.hidden.push_back({carrier.id & 0x3ffffffu, uint32_t(instances.size() - 1)});
+        }
+        ++riding;
+      }
+    }
     if (driven) {
       inst.drivers.push_back(driver);
       ++drivenActors;
@@ -2499,6 +2573,49 @@ void Writer::WriteGeometry(const RoomData& r, uint32_t mrea, const Area& area) {
       ++riding;
     }
     ++actors;
+  }
+  // The retail Actors the synthetic-model actors stand in for, hidden while those are drawn:
+  // one standing where such an actor does, and one Remastered dropped whose origin its model
+  // covers (Central Dynamo's three grates under the wider centre one). Neither may draw a model
+  // the room keeps under its retail id, nor (the dropped one) stand where any entity does.
+  size_t standinHidden = 0;
+  if (!standins.empty()) {
+    for (const ScriptObject& o : area.objects) {
+      if (o.type != kRetailActor || !o.hasPos ||
+          std::any_of(m_roomRetailIds.begin(), m_roomRetailIds.end(), [&](uint32_t id) {
+            const uint8_t be[4] = {uint8_t(id >> 24), uint8_t(id >> 16), uint8_t(id >> 8), uint8_t(id)};
+            return std::search(o.props.begin(), o.props.end(), be, be + 4) != o.props.end();
+          })) {
+        continue;
+      }
+      const Standin* by = nullptr;
+      for (const Standin& s : standins) {
+        if (MaxAbs(s.pos, o.pos) < kRetailActorNear) {
+          by = &s;
+          break;
+        }
+      }
+      if (by == nullptr && std::none_of(m_entityPositions.begin(), m_entityPositions.end(), [&](const Vec3& p) {
+            return MaxAbs(p, o.pos) < kRetailActorNear;
+          })) {
+        for (const Standin& s : standins) {
+          if (o.pos[0] >= s.lo[0] - kStandinMargin && o.pos[0] <= s.hi[0] + kStandinMargin &&
+              o.pos[1] >= s.lo[1] - kStandinMargin && o.pos[1] <= s.hi[1] + kStandinMargin &&
+              o.pos[2] >= s.lo[2] - kStandinMargin && o.pos[2] <= s.hi[2] + kStandinMargin) {
+            by = &s;
+            break;
+          }
+        }
+      }
+      if (by != nullptr) {
+        scripts.script.hidden.push_back({o.id & 0x3FFFFFFu, by->instance});
+        ++standinHidden;
+      }
+    }
+  }
+  if (!m_syntheticEntities.empty()) {
+    Log("  " + r.name + ": " + std::to_string(standins.size()) + " of " + std::to_string(m_syntheticEntities.size()) +
+        " Remastered stand-in actors drawn, " + std::to_string(standinHidden) + " retail actors hidden");
   }
   // The room's skies, drawn in place of the world's: retail has one per world, Remastered
   // one per room, each turned and scaled to suit it (and two in the Frigate's hangar, one
@@ -2844,6 +2961,9 @@ static void EditorBasis(const Vec3& rot, const Vec3& scale, double out[3][3]) {
 // inverse transform times the entity's (orient) and applied to the entity's position (offset).
 void Writer::PairRetailModels(const RoomData& r, const Area& area) {
   m_retailEntities.clear();
+  m_syntheticEntities.clear();
+  m_roomRetailIds.clear();
+  m_entityPositions.clear();
   if (!m_io.retailModel) {
     return;
   }
@@ -2856,10 +2976,15 @@ void Writer::PairRetailModels(const RoomData& r, const Area& area) {
     Vec3 pos;            // in GC world space
   };
   std::map<uint32_t, std::pair<Id16, std::vector<Placed>>> byRetail;
+  std::vector<int> seenEntities;
   for (const Component& c : r.room.Components()) {
     Vec3 pos, rot, scale;
     if (c.entity < 0 || c.raw.size < 16 || !r.room.Xform(c, pos, rot, scale)) {
       continue;
+    }
+    if (std::find(seenEntities.begin(), seenEntities.end(), c.entity) == seenEntities.end()) {
+      seenEntities.push_back(c.entity);
+      m_entityPositions.push_back(Apply(area.xf, MulR2G(pos)));
     }
     const uint8_t* b = r.room.Bytes(c.raw);
     for (size_t at = 0; at + 16 <= c.raw.size; ++at) {
@@ -2900,6 +3025,13 @@ void Writer::PairRetailModels(const RoomData& r, const Area& area) {
         named.push_back(&o);
       }
     }
+    if (named.empty()) {
+      for (const Placed& p : placed) {
+        m_syntheticEntities.insert(p.entity);
+      }
+      continue;
+    }
+    m_roomRetailIds.insert(retail);
     for (size_t n = 0; n < named.size(); ++n) {
       const ScriptObject& o = *named[n];
       RetailPlacement out;
@@ -3095,7 +3227,7 @@ std::string Writer::WriteRoom(const RoomData& r, const std::map<std::string, Pla
   }
 
   std::vector<uint8_t> out = {'M', 'P', 'E', 'V'};
-  AppendLE32(out, 26);
+  AppendLE32(out, 27);
   float tone[5];
   std::copy(tonemap, tonemap + 5, tone);
   Tonemap(r, tone);
@@ -3381,12 +3513,13 @@ std::string Writer::WriteRoom(const RoomData& r, const std::map<std::string, Pla
     out.push_back(h.mode);
     out.push_back(h.role);
     out.push_back(h.pair);
-    out.push_back(0);
+    out.push_back(h.on ? 1 : 0);
     AppendLEFloat(out, h.exposure[0]);
     AppendLEFloat(out, h.exposure[1]);
     AppendLEFloat(out, h.bias);
     AppendLEFloat(out, h.sigma);
     AppendLEFloat(out, h.staticLerp);
+    AppendLE32(out, uint32_t(h.priority));
   }
   AppendLE32(out, uint32_t(worldVolumes.size()));
   for (const PortRoomEnv::WorldVolume& v : worldVolumes) {
