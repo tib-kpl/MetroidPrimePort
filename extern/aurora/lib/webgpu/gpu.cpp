@@ -838,6 +838,11 @@ const TextureWithSampler& resample_present_source(const wgpu::CommandEncoder& en
   const auto& source = present_source();
   const uint32_t width = viewport_extent(viewport.width);
   const uint32_t height = viewport_extent(viewport.height);
+  // At the window's size both samplers return each texel as it is and nothing is sharpened,
+  // so the present blit reads the frame itself.
+  if (source.size.width == width && source.size.height == height) {
+    return source;
+  }
   if (!g_resampledFrameBuffer.view || g_resampledFrameBuffer.size.width != width ||
       g_resampledFrameBuffer.size.height != height || g_resampledFrameBuffer.format != source.format) {
     g_resampledFrameBuffer = create_render_texture(width, height, false);
@@ -1379,13 +1384,17 @@ static bool initialize_once(AuroraBackend auroraBackend, bool allowCpu) {
     addToggles("driver workaround off", g_config.dawnDisableToggles, false, true);
     addToggles("MP_DAWN_ENABLE", std::getenv("MP_DAWN_ENABLE"), true, false);
     addToggles("MP_DAWN_DISABLE", std::getenv("MP_DAWN_DISABLE"), false, false);
-    // GL is only the fallback for drivers that draw wrong on Vulkan, so it runs without
-    // Dawn's blob cache: cached program binaries crashed Mesa in glProgramBinary.
+    // GL runs without Dawn's blob cache where Mesa drives it: cached program binaries crashed
+    // Mesa in glProgramBinary. Windows desktop GL (vendor drivers) keeps it, or every launch
+    // recompiles every pipeline (about 40 ms each there).
+#if _WIN32
+    const bool glWithoutCache = g_backendType == wgpu::BackendType::OpenGLES;
+#else
+    const bool glWithoutCache =
+        g_backendType == wgpu::BackendType::OpenGLES || g_backendType == wgpu::BackendType::OpenGL;
+#endif
     wgpu::DawnTogglesDescriptor togglesDescriptor(wgpu::DawnTogglesDescriptor::Init{
-        .nextInChain = g_backendType == wgpu::BackendType::OpenGLES ||
-                               g_backendType == wgpu::BackendType::OpenGL
-                           ? nullptr
-                           : &cacheDescriptor,
+        .nextInChain = glWithoutCache ? nullptr : &cacheDescriptor,
         .enabledToggleCount = enableToggles.size(),
         .enabledToggles = enableToggles.data(),
         .disabledToggleCount = disableToggles.size(),

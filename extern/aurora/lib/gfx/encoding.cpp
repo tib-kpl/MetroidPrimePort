@@ -1,4 +1,5 @@
 #include "encoding.hpp"
+#include "overdraw.hpp"
 
 #include "frame.hpp"
 
@@ -242,17 +243,23 @@ void render(wgpu::CommandEncoder& cmd, FramePacket& frame, RenderPass& passInfo,
   }
   const auto label = passInfo.label.empty() ? fmt::format("Render pass {}", passIndex)
                                             : fmt::format("{} {}", passInfo.label, passIndex);
+  // Timed per pass index, so gputimes splits a frame's EFB passes (not by size: dynamic
+  // resolution would intern a name per size).
+  const auto profName = fmt::format("EFB pass {}", passIndex);
   const wgpu::RenderPassDescriptor renderPassDescriptor{
       .label = label.c_str(),
       .colorAttachmentCount = passInfo.colorAttachmentCount,
       .colorAttachments = attachments.data(),
       .depthStencilAttachment = depthStencilAttachmentPtr,
-      .timestampWrites = webgpu::gpu_prof::pass_writes(passIndex == 0 ? "EFB pass (first)" : "EFB pass (later)"),
+      .occlusionQuerySet = overdraw::pass_begin(passIndex, passInfo.colorAttachments[SceneColorAttachmentIndex].size,
+                                                passInfo.msaaSamples),
+      .timestampWrites = webgpu::gpu_prof::pass_writes(profName),
   };
 
   auto pass = cmd.BeginRenderPass(&renderPassDescriptor);
   render_pass(pass, frame, passInfo);
   pass.End();
+  overdraw::pass_end();
 
   if (passInfo.captureDepthSnapshot) {
     depth_peek::encode_frame_snapshot(cmd, passInfo.copySourceDepthView,

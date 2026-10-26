@@ -58,6 +58,12 @@ void DrawRemasteredWarning() {
 
 // The PAL disc's languages for a USA one (port_pal_languages.h).
 void DrawPalLanguages() {
+  if (PortDisc::IsTrilogy(PortDisc::Current())) {
+    ImGui::TextDisabled("Trilogy disc: support is experimental.");
+    ItemHelp("The port runs the USA 1.00 code on the Trilogy disc's Metroid Prime data, which "
+             "already has its languages.");
+    return;
+  }
   if (PortDisc::Current() == PortDisc::Version::Pal) {
     ImGui::TextDisabled("PAL disc: support is experimental.");
     ItemHelp("The port runs the USA 1.00 code on the PAL disc's data. Checked on every room, but "
@@ -356,6 +362,13 @@ void DrawRemasteredDebug() {
     ImGui::SetItemTooltip("Recommended: off. Not saved. Needs \"Draw nearest first\".\nDraws grass "
                           "and leaves for depth first, then shades only what stays visible.\n"
                           "Looks the same; slower on the phones tried so far.");
+    bool opaquePrepass = PortRoomGeo::OpaquePrepass();
+    if (ImGui::Checkbox("Depth pre-pass for all room models", &opaquePrepass)) {
+      PortRoomGeo::SetOpaquePrepass(opaquePrepass);
+    }
+    ImGui::SetItemTooltip("Recommended: on, off on phones (the default). Not saved.\nDraws every room "
+                          "model for depth first, then shades only what stays visible.\n"
+                          "Looks the same; faster on desktop GPUs short of shading power.");
     static constexpr const char* kCostTests[] = {"Off", "Flat", "No lights", "No ambient volume",
                                                  "No reflections", "No normal maps", "No ORM/emissive maps",
                                                  "Maps only", "Maps without anisotropy",

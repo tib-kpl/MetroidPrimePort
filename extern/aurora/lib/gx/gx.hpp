@@ -446,6 +446,8 @@ struct GXState {
   Vec4<float> pbrModelDiffuse{1.f, 1.f, 1.f, 1.f};
   Vec4<float> pbrModelIncan{0.f, 0.f, 0.f, 1.f};
   Vec4<float> pbrModelCoverage{1.f, 0.f, 0.f, 0.f};
+  // GX_AURORA_SET_PBR_THERMAL: x, y, blended (1 / 0), w 1 while on (all zero when off)
+  Vec4<float> pbrThermal{};
   std::array<Vec4<float>, 8> pbrShield{}; // GX_AURORA_SET_PBR_SHIELD: CCH0..6, then AUVI xyz + DIFC.w
   // GX_AURORA_SET_PBR_LIGHT_HDR, per light: colour (rgb, falloff + 1; w 0 = off), then
   // (view position, r0), then (r1, -, -, -).
@@ -630,7 +632,7 @@ struct ShaderConfig {
   u8 sceneHdr : 1 = false;
   u8 pbr = 0; // GX_AURORA_SET_PBR
   u8 sdf = 0; // GX_AURORA_SET_SDF
-  u8 depthOnly = 0; // pass 1 of GX_AURORA_PORT_DEPTH_PREPASS: the colour is not written
+  u8 depthOnly = 0; // pass 1 of GX_AURORA_PORT_DEPTH_PREPASS: the colour is not written (2: pass 3's alpha mark)
   u8 pbrKind = 0; // with pbr, the special surface kind (pbrLayer.y), a constant in the shader
   // GXState::volFog: how the draw fogs itself (VolFog*), chosen from its blend.
   u8 volFog = 0;
@@ -647,7 +649,14 @@ struct ShaderConfig {
   // GX_AURORA_PORT_SHELL on a triangle draw: Remastered's silhouette shell, 1 its depth prepass, 2
   // its colour (the shell_* uniforms, the scene copy on texture slot 2). Bits of the same byte.
   u8 shell : 2 = 0;
-  u8 padding0 : 4 = 0;
+  // With pbr, the mode's cut bit (512, pbr_backlight.w): only a cutout's shader has the cut
+  // discards (a discard forces late depth on every pixel of the draw).
+  u8 pbrCut : 1 = 0;
+  // GX_AURORA_SET_PBR_THERMAL on a PBR draw into the HDR scene: the pbr_thermal uniform and
+  // Model_ThermalOverride's grey in place of the shading. A bit of the same byte, so a config with
+  // it off keeps its bytes and cache keys.
+  u8 pbrThermal : 1 = 0;
+  u8 padding0 : 2 = 0;
   // GX_AURORA_PORT_ACTOR_SHADOW decal: the draw is a receiver redrawn as Remastered's actor shadow
   // decal (multiplies the frame by the shadow, shadowUniform holds its view-space planes). The old
   // padding byte, so other configs keep their bytes and cache keys.
@@ -704,11 +713,17 @@ struct ShaderInfo {
   bool usesHdrTone : 1 = false;   // sceneHdr without pbr: hdr_tone (pbrTone) and hdr_tev_blend
   bool usesClipPlane : 1 = false; // ShaderConfig::clipPlane: the clip_plane uniform
   bool usesShell : 1 = false;
+  bool usesPbrThermal : 1 = false; // ShaderConfig::pbrThermal: the pbr_thermal uniform
   bool shellScene : 1 = false; // the shell's colour pass: texture slot 2 holds the scene copy     // ShaderConfig::shell: the shell uniforms; colour: the scene copy on slot 2
 };
 struct BindGroupRanges {
   std::array<gfx::Range, MaxIndexAttr> vaRanges{};
 };
+// GX_AURORA_PORT_DEPTH_PREPASS: whether the current draw can go in the depth-only pass and then
+// shade where the depth is equal. It must replace every pixel it passes (depth tested LEQUAL and
+// written; colour and alpha written without a blend), so the frame is what one depth-tested pass
+// of the same draws gives: the last of the nearest draws at a pixel wins either way.
+bool depth_prepass_eligible(u8 lineMode) noexcept;
 void populate_pipeline_config(PipelineConfig& config, GXPrimitive primitive, GXVtxFmt fmt) noexcept;
 // aurora_set_per_pixel_lighting; any thread.
 void set_per_pixel_lighting(bool enabled) noexcept;
@@ -745,6 +760,10 @@ std::string build_shader_source(const ShaderConfig& config) noexcept;
 // source (build_shader_source's) writing its alpha as mode has it.
 // False (source unchanged) when it has no fs_main return to rewrite: the draw must then use DstAlphaMode::None.
 bool apply_dst_alpha_mode(std::string& source, DstAlphaMode mode) noexcept;
+// The PBR mode's cut bit (512) of GXState::pbrBacklight.w, as the shader decodes it.
+inline bool pbr_cut_mode(const Vec4<float>& backlight) noexcept {
+  return backlight.w() > 0.f && (static_cast<u32>(backlight.w()) & 512u) != 0;
+}
 // Whether the config's shader has the alpha-tested sun shadow caster (shadowPass 2: vs_shadow_cut, fs_shadow).
 bool shader_has_cut_caster(const ShaderConfig& config) noexcept;
 // dstAlphaMode falls back to None when the shader can't be rewritten for it; build the pipeline with that.

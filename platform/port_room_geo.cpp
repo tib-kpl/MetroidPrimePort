@@ -4,6 +4,7 @@
 #include "port_strings.h"
 #include "port_bytes.h"
 #include "port_room_geo.h"
+#include "port_room_geometry_handedness.h"
 #include "port_maya_spline.h"
 #include "port_room_sky.h"
 
@@ -11,6 +12,7 @@
 #include "port_log.h"
 #include "port_mods.h"
 #include "port_room_env.h"
+#include "port_visor_mesh.h"
 
 #include "Kyoto/Alloc/CMemory.hpp"
 #include "Kyoto/CResFactory.hpp"
@@ -235,6 +237,9 @@ struct Area {
   std::vector< Model > models;
   std::vector< Placed > items;
   std::vector< const Placed* > sorted; // this frame's, with blended surfaces still to draw
+  // This frame's drawn models and where (DrawThermalHot): an item's transform, a cluster's
+  // identity.
+  std::vector< std::pair< const CModel*, const CTransform4f* > > hot;
   // The items grouped by model, the order Draw goes in: a model's instances one after another
   // keep its pipelines and textures bound, which is most of the cost of a draw on a phone.
   std::vector< size_t > drawOrder;
@@ -280,6 +285,11 @@ float sMinPixels = -1.f; // < 0 until MinPixels reads MP_ROOM_GEO_MIN_PX
 bool sMergedDraws = true;
 bool sFrontToBack = true;
 bool sDepthPrepass = false;
+#ifdef __ANDROID__
+bool sOpaquePrepass = false;
+#else
+bool sOpaquePrepass = true;
+#endif
 bool sOffscreenCasters = true;
 // Out-of-view models drawn caster-only, summed over the frame's areas (the last whole frame's in
 // sLastCasterCount), for the console.
@@ -507,28 +517,23 @@ std::vector< uint8_t > MergeCmdl(const std::vector< uint8_t >& source, const CCu
     const Surface& surface = surfaces[s];
     std::vector< uint8_t >& out = lists[s];
     for (size_t copy = 0; copy < copies; ++copy) {
+      const bool mirrored = PortRoomGeometryHandedness::Mirrored(*places[copy]);
+      const PortRoomGeometryHandedness::PrimitiveLayout layout{
+          surface.stride, surface.normalAt,
+          size_t(surface.bases[0]) + copy * positionCount,
+          size_t(surface.bases[1]) + copy * normalCount};
       for (size_t i = 0; i < listSize;) {
         if (list[i] == 0) {
           ++i;
           continue;
         }
         const size_t count = size_t(list[i + 1] << 8 | list[i + 2]);
-        out.insert(out.end(), list + i, list + i + 3);
-        i += 3;
-        for (size_t v = 0; v < count; ++v, i += surface.stride) {
-          const size_t start = out.size();
-          out.insert(out.end(), list + i, list + i + surface.stride);
-          const auto move = [&](size_t at, uint32_t base, size_t perCopy) {
-            const uint32_t index = base + (uint32_t(out[start + at]) << 8 | out[start + at + 1]) + uint32_t(copy * perCopy);
-            out[start + at] = uint8_t(index >> 8);
-            out[start + at + 1] = uint8_t(index);
-            return index < 0x10000;
-          };
-          if (!move(0, surface.bases[0], positionCount) ||
-              (surface.normalAt != SIZE_MAX && !move(surface.normalAt, surface.bases[1], normalCount))) {
-            return {};
-          }
+        const uint8_t opcode = list[i];
+        const std::span<const uint8_t> vertices(list + i + 3, count * surface.stride);
+        if (!PortRoomGeometryHandedness::AppendPrimitive(opcode, count, vertices, layout, mirrored, out)) {
+          return {}; // unsupported primitive or layout: retain the individual draw path
         }
+        i += 3 + count * surface.stride;
       }
     }
     out.resize(aligned(out.size()), 0);
@@ -1423,6 +1428,7 @@ void DrawShadowReceivers(const float lo[3], const float hi[3]) {
         b.GetZ() < lo[2] || a.GetZ() > hi[2]) {
       continue;
     }
+    const PortRoomGeometryHandedness::CullScope cull(PortRoomGeometryHandedness::Mirrored(*r.xf));
     gpRender->SetModelMatrix(*r.xf);
     r.model->DrawUnsortedParts(CModelFlags::Normal());
   }
@@ -1439,6 +1445,7 @@ bool Draw(const CStateManager& mgr, const CGameArea& gameArea, const CFrustumPla
   }
   Area& area = found->second;
   area.sorted.clear();
+  area.hot.clear();
   if (!area.placed) {
     for (Placed& item : area.items) {
       item.xf = gameArea.GetTM() * item.xf;
@@ -1776,7 +1783,11 @@ bool Draw(const CStateManager& mgr, const CGameArea& gameArea, const CFrustumPla
       return a.cutout != b.cutout ? b.cutout : a.distanceSq < b.distanceSq;
     });
   }
+  for (const Visible& draw : visible) {
+    area.hot.emplace_back(draw.model, draw.xf);
+  }
   const auto drawOne = [&](const Visible& draw) {
+    const PortRoomGeometryHandedness::CullScope cull(PortRoomGeometryHandedness::Mirrored(*draw.xf));
     if (bakes(draw.lightmap)) {
       const CVector3f centre = draw.bounds->GetCenterPoint();
       const float at[3] = {centre.GetX(), centre.GetY(), centre.GetZ()};
@@ -1801,16 +1812,20 @@ bool Draw(const CStateManager& mgr, const CGameArea& gameArea, const CFrustumPla
     }
   };
   // With the sort, the cut-outs come last, after every opaque model: they go twice, depth only
-  // and then shaded where the depth is equal, so the grass hidden behind grass isn't shaded.
-  const auto firstCutout = sFrontToBack && sDepthPrepass
-                               ? std::find_if(visible.begin(), visible.end(), [](const Visible& v) { return v.cutout; })
-                               : visible.end();
-  std::for_each(visible.begin(), firstCutout, drawOne);
-  if (firstCutout != visible.end()) {
+  // and then shaded where the depth is equal, so the grass hidden behind grass isn't shaded. The
+  // opaque pre-pass does the same with every model.
+  auto firstPrepass = visible.end();
+  if (sOpaquePrepass) {
+    firstPrepass = visible.begin();
+  } else if (sFrontToBack && sDepthPrepass) {
+    firstPrepass = std::find_if(visible.begin(), visible.end(), [](const Visible& v) { return v.cutout; });
+  }
+  std::for_each(visible.begin(), firstPrepass, drawOne);
+  if (firstPrepass != visible.end()) {
     GXPortSetDepthPrepass(1);
-    std::for_each(firstCutout, visible.end(), drawOne);
+    std::for_each(firstPrepass, visible.end(), drawOne);
     GXPortSetDepthPrepass(2);
-    std::for_each(firstCutout, visible.end(), drawOne);
+    std::for_each(firstPrepass, visible.end(), drawOne);
     GXPortSetDepthPrepass(0);
   }
   if (sCasterFrame != CGraphics::GetFrameCounter()) {
@@ -1830,6 +1845,29 @@ bool Draw(const CStateManager& mgr, const CGameArea& gameArea, const CFrustumPla
     PortRoomEnv::ClearVolumeHint();
   }
   return GetMode() == Mode::Replace;
+}
+
+void DrawThermalHot(const CStateManager&, const CGameArea& gameArea, const CFrustumPlanes&) {
+  const auto found = Areas().find(gameArea.GetAreaAssetId());
+  if (found == Areas().end()) {
+    return;
+  }
+  // Remastered's hot pass (RenderPrimaryPass, 0xfb11f0): the meshes with bit 19 and without
+  // 22, unsorted and depth-sorted, through the thermal override at the world's global
+  // (1.0, 0.2509804), taken as they are (no actor data to scale them).
+  CCubeModel::PortSetThermalPass(PortVisorMesh::kTP_Hot);
+  CCubeModel::PortSetThermalOverrideConstants(1.f, 0.2509804f);
+  CGraphics::DisableAllLights();
+  for (const auto& [model, xf] : found->second.hot) {
+    const CCubeModel* const cube = model->GetCubeModel();
+    if (cube == nullptr || !cube->TryLockTextures()) {
+      continue;
+    }
+    gpRender->SetModelMatrix(*xf);
+    cube->PortDrawThermalOverride(nullptr, nullptr, CModelFlags::Normal(), kSS_All);
+  }
+  CCubeModel::PortClearThermalOverride();
+  CCubeModel::PortSetThermalPass(PortVisorMesh::kTP_None);
 }
 
 void AddSorted(const CGameArea& gameArea) {
@@ -1870,6 +1908,7 @@ void DrawSorted(const void* drawable) {
     PortRoomEnv::SetVolumeHint(item.volume, at);
     PortRoomEnv::SetLightmapHint(item.lightmap);
   }
+  const PortRoomGeometryHandedness::CullScope cull(PortRoomGeometryHandedness::Mirrored(item.xf));
   gpRender->SetModelMatrix(item.xf);
   item.lights->ActivateLights();
   const CModelData& data =
@@ -2559,6 +2598,10 @@ bool FrontToBack() { return sFrontToBack; }
 void SetDepthPrepass(bool on) { sDepthPrepass = on; }
 
 bool DepthPrepass() { return sDepthPrepass; }
+
+void SetOpaquePrepass(bool on) { sOpaquePrepass = on; }
+
+bool OpaquePrepass() { return sOpaquePrepass; }
 
 void SetMode(Mode mode) {
   sMode = int(mode);

@@ -504,6 +504,14 @@ static u8 vol_fog_mode(bool depthOnly) noexcept {
   return VolFogNone;
 }
 
+bool depth_prepass_eligible(u8 lineMode) noexcept {
+  const auto& st = g_gxState;
+  const bool opaque = st.blendMode == GX_BM_NONE ||
+                      (st.blendMode == GX_BM_BLEND && st.blendFacSrc == GX_BL_ONE && st.blendFacDst == GX_BL_ZERO);
+  return lineMode == 0 && st.depthCompare && st.depthUpdate && st.depthFunc == GX_LEQUAL && st.colorUpdate &&
+         (st.alphaUpdate || !efb_has_alpha(st.pixelFmt)) && opaque && st.shell == 0 && !st.actorDecal;
+}
+
 void populate_pipeline_config(PipelineConfig& config, GXPrimitive primitive, GXVtxFmt fmt) noexcept {
   ZoneScoped;
 
@@ -517,12 +525,14 @@ void populate_pipeline_config(PipelineConfig& config, GXPrimitive primitive, GXV
   config.shaderConfig.pbr = g_gxState.pbr;
   if (g_gxState.pbr != 0) {
     config.shaderConfig.pbrKind = static_cast<u8>(std::clamp(std::lround(g_gxState.pbrLayer.y()), 0L, 255L));
+    config.shaderConfig.pbrCut = pbr_cut_mode(g_gxState.pbrBacklight);
     // The lightmap's UV attribute, when the bound vertex format has it (and the device a slot for the lightmap).
     const u8 lightmapAttr = g_gxState.pbrLightmapAttr;
     if (webgpu::g_lightmapBinding && lightmapAttr >= GX_VA_TEX0 && lightmapAttr <= GX_VA_TEX7 &&
         g_gxState.vtxDesc[lightmapAttr] != GX_NONE) {
       config.shaderConfig.pbrLightmapAttr = lightmapAttr;
     }
+    config.shaderConfig.pbrThermal = config.shaderConfig.sceneHdr && g_gxState.pbrThermal.w() > 0.5f;
   }
   if (bind_pos_active()) {
     config.shaderConfig.pbrBindPos = true;
@@ -613,11 +623,13 @@ void populate_pipeline_config(PipelineConfig& config, GXPrimitive primitive, GXV
   const auto [polygonOffset, polygonOffsetScale] = polygon_offset_for_cull_mode(cullMode);
   // GX_AURORA_PORT_DEPTH_PREPASS: pass 1 writes only the depth, pass 2 shades where it is equal.
   // Both keep the vertex stage and the polygon offset, so their depths match exactly (the
-  // position is @invariant).
-  const bool writesDepth = g_gxState.depthCompare && g_gxState.depthUpdate;
-  const bool depthOnly = g_gxState.depthPrepass == 1;
-  const bool depthEqual = g_gxState.depthPrepass == 2 && writesDepth;
-  config.shaderConfig.depthOnly = depthOnly;
+  // position is @invariant). Only depth_prepass_eligible draws take part: the others are left out
+  // of pass 1 (push_gx_draw) and draw unchanged in pass 2.
+  const bool depthOnly = g_gxState.depthPrepass == 1 || g_gxState.depthPrepass == 3;
+  // Pass 3's mark: only in an EFB without alpha, where nothing reads it.
+  const bool depthMark = g_gxState.depthPrepass == 3 && !efb_has_alpha(g_gxState.pixelFmt);
+  const bool depthEqual = g_gxState.depthPrepass == 2 && depth_prepass_eligible(config.shaderConfig.lineMode);
+  config.shaderConfig.depthOnly = depthMark ? 2 : depthOnly ? 1 : 0;
   // The "drawid" view: flat colours that must reach the frame as they are, so no fog and no blend (a
   // depth-only pass stays one).
   const bool drawId = g_gxState.drawIdMode && !depthOnly;
@@ -635,6 +647,8 @@ void populate_pipeline_config(PipelineConfig& config, GXPrimitive primitive, GXV
     sc.actorDecal = 1;
     sc.pbr = 0;
     sc.pbrKind = 0;
+    sc.pbrCut = 0;
+    sc.pbrThermal = 0;
     sc.pbrBindPos = false;
     sc.pbrBindLe = false;
     sc.pbrLightmapAttr = GX_VA_NULL;
@@ -665,6 +679,8 @@ void populate_pipeline_config(PipelineConfig& config, GXPrimitive primitive, GXV
     sc.actorDecal = 0;
     sc.pbr = 0;
     sc.pbrKind = 0;
+    sc.pbrCut = 0;
+    sc.pbrThermal = 0;
     sc.pbrBindPos = false;
     sc.pbrBindLe = false;
     sc.pbrLightmapAttr = GX_VA_NULL;
@@ -731,7 +747,10 @@ void populate_pipeline_config(PipelineConfig& config, GXPrimitive primitive, GXV
     config.depthCompare = true;
     config.depthUpdate = true;
   }
-  config.alphaUpdate = hasAlpha && g_gxState.alphaUpdate && !depthOnly && shell != 1;
+  config.alphaUpdate = (hasAlpha && g_gxState.alphaUpdate && !depthOnly && shell != 1) || depthMark;
+  if (depthMark) {
+    config.blendMode = GX_BM_NONE;
+  }
   config.colorUpdate = g_gxState.colorUpdate && !depthOnly && shell != 1;
   static_assert(sizeof(PipelineConfig) == sizeof(ShaderConfig) + 13 * sizeof(uint32_t) + 4 * sizeof(bool),
                 "a new PipelineConfig field must be written above");

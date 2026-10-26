@@ -517,6 +517,12 @@ void GXPortSetDepthPrepass(u8 pass) {
   GX_WRITE_U8(pass);
 }
 
+static std::atomic< u32 > sPerformance{0};
+
+void GXPortSetPerformance(u32 flags) { sPerformance.store(flags & GX_PORT_PERF_ALL, std::memory_order_relaxed); }
+
+u32 GXPortGetPerformance(void) { return sPerformance.load(std::memory_order_relaxed); }
+
 void GXSetDrawTag(u32 asset, u32 model, u32 material) {
   GX_WRITE_AURORA(GX_AURORA_SET_DRAW_TAG);
   GX_WRITE_U32(asset);
@@ -864,6 +870,25 @@ void GXSetPBRModelModulation(const f32 diffuse[4], const f32 incan[4], f32 cover
     GX_WRITE_F32(v);
   }
   GX_WRITE_F32(now.coverage);
+}
+
+void GXSetPBRThermal(GXBool on, f32 x, f32 y, GXBool blended) {
+  struct Write {
+    f32 x;
+    f32 y;
+    f32 blended;
+    u32 on;
+  };
+  static LastPBRWrite<Write> sLast;
+  const Write now = on ? Write{x, y, blended ? 1.f : 0.f, 1u} : Write{0.f, 0.f, 0.f, 0u};
+  if (sLast.repeats(now)) {
+    return;
+  }
+  GX_WRITE_AURORA(GX_AURORA_SET_PBR_THERMAL);
+  GX_WRITE_F32(now.x);
+  GX_WRITE_F32(now.y);
+  GX_WRITE_F32(now.blended);
+  GX_WRITE_U32(now.on);
 }
 
 void GXSetPBRBacklight(const f32 plane[4], const f32 backDir[3], f32 back, f32 top, f32 bindScale, f32 bindOffset) {

@@ -273,6 +273,9 @@ void Prefetch(uint32_t mrea);
 // Draws the area's room geometry. True when it stands in for the area's own, which is
 // when the area has a file, the mode says so and every model of it has loaded.
 bool Draw(const CStateManager& mgr, const CGameArea& area, const CFrustumPlanes& frustum);
+// The thermal visor's hot world for an area Draw drew this frame (in the HDR scene): the
+// bit-19 meshes of what it drew, through the thermal override.
+void DrawThermalHot(const CStateManager& mgr, const CGameArea& area, const CFrustumPlanes& frustum);
 // Queues the blended surfaces of what Draw drew for the area this frame in the renderer's
 // sorted pass; the renderer hands each back to DrawSorted through the state manager's
 // drawable callback, as type kDrawableType.
@@ -377,6 +380,12 @@ uint32_t OffscreenCasterCount();
 // (an A/B check; not saved).
 void SetDepthPrepass(bool on);
 bool DepthPrepass();
+// Draws every room model (opaque and cut-out) once for depth only, then shaded
+// where the depth is equal, so hidden surfaces aren't shaded. Looks the same. On by default except
+// on Android, whose tiled GPUs already skip hidden opaque pixels and pay for the second vertex pass
+// (not saved).
+void SetOpaquePrepass(bool on);
+bool OpaquePrepass();
 // Scales the distances where an instance switches to a coarser level of detail (the
 // import's lods.bin): 1 is Remastered's own, 2 keeps the full model twice as far, 0 never
 // switches (MP_ROOM_GEO_LOD, the console's `roomgeo lod`). Merged copies keep the full one.

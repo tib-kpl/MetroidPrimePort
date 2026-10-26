@@ -1215,7 +1215,10 @@ auto pbr_func(const ShaderConfig& config, const ShaderInfo& info, std::string& v
                            tintAlpha, discard.expr);
     }
   }
-  if (mapStage[4] == -1 && config.pbrKind == 24) {
+  // Only a cutout's config (pbrCut) has the cut tests: elsewhere pbr_cut is false and the discard
+  // would only force late depth. Without the marker the config has no cut caster either.
+  const bool cutTests = config.pbrCut && mapStage[4] == -1;
+  if (cutTests && config.pbrKind == 24) {
     // The decal cutouts (kind 24: e538b757, 42fe2ed0): t = clamp((A - 0.5 + c) / 2c), cut where t²(3 - 2t) < 0.25,
     // with c = CCH0.x = 0.5 on all of them, so t = A. A is the alpha map's red (42fe2ed0's TCH0, map 3), else
     // the base alpha squared; no vertex alpha.
@@ -1226,7 +1229,7 @@ auto pbr_func(const ShaderConfig& config, const ShaderInfo& info, std::string& v
       }}
       //@CUT_END)""",
                          mapStage[3] != -1 ? fmt::format("sampled{}.r", mapStage[3]) : "prev.a * prev.a"s);
-  } else if (mapStage[4] == -1) {
+  } else if (cutTests) {
     // Remastered's cutout (mode 512): the filtered base alpha squared against 0.25. The
     // DepthOnly caster (93e0c484, 0b2e072b) multiplies by c3[0].w = DIFC.w = 1 and has no
     // vertex colour, so the caster test (up to the marker) has no vertex alpha. The colour
@@ -3219,6 +3222,38 @@ R"""(      // Encoded as Remastered's sRGB swapchain does it: the exact piecewis
          "let pbr_xw = select(pbr_xbase, vec3f(1.0), pbr_kind > 29.5) * pbr_xv3.w;\n"
          "          pbr_keep = pbr_xw * pbr_xscene;\n"
          "          pbr_vfw = vec3f(1.0) - pbr_xw;\n          pbr_vfk = true;");
+    if (config.pbrThermal && !layered) {
+      // The thermal visor's hot pass (GXSetPBRThermal): Remastered draws a mesh whose shader has no
+      // thermal technique with 02c254b6 Model_ThermalOverride (kb topic/thermal-model-render.md),
+      // which binds the mesh's own BCLR (no DIFC) and rebuilds the normal from its normal map:
+      //   g = (clamp(luma(BCLR), 0, 1) * 3.75 + 0.25) * |N.V| * c.x + c.y, unlit, unfogged.
+      // Its normal is its own, not the lit one: the map's xy decode at a quarter of the tilt
+      // (x * 0.498046875 - 0.25, 048_0 temp_52/53), N = T x + (Ng cross T) w y + Ng z is not
+      // normalised (pbr_t / pbr_b scaled back to unit T and (Ng cross T) w; a mesh the port gave no
+      // tangent stream takes the derivative frame, as its lit normal does), and without a map N is
+      // the vertex normal. The full tilt put dark specks on
+      // every silhouette, where |N.V| is small.
+      // Alpha: 1 on the opaque and alpha-test perms (the cut above has discarded), else base.a^2 *
+      // vertex alpha. c is (0.4 a, 0.4 b + 0.6) times the inverse exposure, which the HDR scene's
+      // exposure cancels, so it comes without it.
+      std::string thmN = "      let thm_n = pbr_ngs;\n";
+      if (!normalXy.empty()) {
+        thmN = fmt::format("      let thm_ts = {} * 0.498046875 - 0.25;\n"
+                           "      let thm_tn = vec3f(thm_ts, sqrt(1.0 - clamp(dot(thm_ts, thm_ts), 0.0, 1.0)));\n"
+                           "      let thm_s = select(0.0, inverseSqrt(pbr_tlen), pbr_tlen > 1e-24);\n"
+                           "      let thm_n = select(pbr_ngs, pbr_t * (thm_s * thm_tn.x) - pbr_b * (thm_s * thm_tn.y) +\n"
+                           "                                  pbr_ngs * thm_tn.z, pbr_tlen > 1e-24);\n",
+                           normalXy);
+      }
+      put("prev = vec4f(pbr_lin + pbr_pass + pbr_keep, pbr_alpha);",
+          fmt::format("prev = vec4f(pbr_lin + pbr_pass + pbr_keep, pbr_alpha);\n{1}"
+                      "      let thm_l = clamp(dot(max({0}.rgb, vec3f(0.0)), vec3f(0.2126, 0.7152, 0.0722)), 0.0, 1.0);\n"
+                      "      let thm_g = (thm_l * 3.75 + 0.25) * abs(dot(thm_n, pbr_v)) * ubuf.pbr_thermal.x +\n"
+                      "                  ubuf.pbr_thermal.y;\n"
+                      "      prev = vec4f(vec3f(thm_g),\n"
+                      "                   select(1.0, {0}.a * {0}.a * pbr_vraw.a, ubuf.pbr_thermal.z > 0.5 && !pbr_cut));",
+                      base, thmN));
+    }
   }
   return source;
 }
@@ -4266,6 +4301,7 @@ std::string build_shader_source(const ShaderConfig& config) noexcept {
   // take on the in-scatter; additive ones are only dimmed.
   bool pbrVolFog = false;
   bool pbrEmitted = false; // pbr_func wrote prev: in the HDR scene it is exposed light already
+  bool pbrThermalEmitted = false; // pbr_func wrote Model_ThermalOverride's grey (GXSetPBRThermal)
   std::string volFogSample;
   const auto volFogWeight = [&](std::string_view alpha) -> std::string {
     switch (config.volFog) {
@@ -4351,6 +4387,9 @@ fn vf_apply_hdr(c: vec4f, fog: vec4f, w: f32) -> vec4f {
     uniBufAttrs += "\n    pbr_model_diffuse: vec4f,";
     uniBufAttrs += "\n    pbr_model_incan: vec4f,";
     uniBufAttrs += "\n    pbr_model_coverage: vec4f,";
+    if (config.pbrThermal) {
+      uniBufAttrs += "\n    pbr_thermal: vec4f,";
+    }
     auto pbr = pbr_func(config, info, vtxOutAttrs, vtxXfrAttrs, vtxOutIdx, vidxAttr);
     // An unlit surface (baked room light: pbr_func drops its light loop) has no room light to
     // shadow, but takes the sun's own colour.
@@ -4453,6 +4492,7 @@ fn vf_apply_hdr(c: vec4f, fog: vec4f, w: f32) -> vec4f {
     }
     if (!pbr.empty()) {
       pbrEmitted = true;
+      pbrThermalEmitted = pbr.find("let thm_g") != std::string::npos;
       fragmentFn += pbr;
       texBindings += fmt::format("\n@group(2) @binding({})\n"
                                  "var pbr_cube: texture_cube<f32>;\n"
@@ -4560,7 +4600,9 @@ fn vf_apply_hdr(c: vec4f, fog: vec4f, w: f32) -> vec4f {
           "\n    var fogZ = exp2(-8.0 * fogF * fogF);";
       break;
     }
-    if (config.sceneHdr && pbrEmitted) {
+    if (pbrThermalEmitted) {
+      // Model_ThermalOverride has no fog.
+    } else if (config.sceneHdr && pbrEmitted) {
       // The PBR light is exposed linear here: the display fog colour goes back through the curve
       // (an approximation of fogging before the tone; the display-domain mix is not reproduced).
       fragmentFn += fmt::format(
@@ -4650,7 +4692,7 @@ fn vf_apply_hdr(c: vec4f, fog: vec4f, w: f32) -> vec4f {
   if (config.depthOnly != 0) {
     // Depth pre-pass: nothing is written but the depth, so the compiler can drop all the
     // shading that the alpha compare doesn't read.
-    fragmentFn += "\n    prev = vec4f(0.0);";
+    fragmentFn += config.depthOnly == 2 ? "\n    prev = vec4f(0.0, 0.0, 0.0, -1.0);" : "\n    prev = vec4f(0.0);";
   }
   if constexpr (EnableNormalVisualization) {
     fragmentFn += "\n    prev = vec4f(in.nrm, prev.a);";
@@ -5185,11 +5227,12 @@ void read_shader_env(ShaderDebug& dbg) {
 std::string describe_config(u64 hash, const ShaderConfig& c) {
   std::string out = fmt::format(
       "// hash {:016x}\n"
-      "// pbr {} ({}) pbrKind {} sdf {} depthOnly {} volFog {} drawId {}\n"
+      "// pbr {} ({}) pbrKind {} pbrCut {} sdf {} depthOnly {} volFog {} drawId {}\n"
       "// fogType {} fogRange {} lineMode {} vtxStride {}\n"
       "// tevStages {} indStages {} alphaCompare {}/{}/{}/{}/{}\n"
       "// (the PBR debug view is a uniform, not part of the config)\n",
-      hash, c.pbr, c.pbr == 0 ? "off" : c.pbr == 1 ? "full" : "cost test", c.pbrKind, c.sdf, c.depthOnly, c.volFog,
+      hash, c.pbr, c.pbr == 0 ? "off" : c.pbr == 1 ? "full" : "cost test", c.pbrKind, static_cast<u32>(c.pbrCut),
+      c.sdf, c.depthOnly, c.volFog,
       static_cast<u32>(c.drawId), c.fogType, static_cast<u32>(c.fogRangeEnabled), static_cast<u32>(c.lineMode),
       c.vtxStride, c.tevStageCount, c.numIndStages, static_cast<u32>(c.alphaCompare.comp0), c.alphaCompare.ref0,
       static_cast<u32>(c.alphaCompare.op), static_cast<u32>(c.alphaCompare.comp1), c.alphaCompare.ref1);

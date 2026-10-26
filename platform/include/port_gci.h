@@ -79,11 +79,15 @@ Report MigrateLegacyPal(const std::filesystem::path& folder);
 // The same, reading the file first.
 Report ImportFile(const std::filesystem::path& source, const std::filesystem::path& folder,
                   const std::filesystem::path& scratch);
-// Imports every Metroid Prime file from another GCI folder (a Dolphin card).
+// Imports the Metroid Prime save from another GCI folder (a Dolphin card),
+// converted to the disc's release if it is another one's.
 Report ImportFolder(const std::filesystem::path& source, const std::filesystem::path& folder);
 
-// Metroid Prime's .gci files in a GCI folder, sorted by disk name.
+// The disc's .gci files in a GCI folder, sorted by disk name.
 std::vector<std::filesystem::path> GameFiles(const std::filesystem::path& folder);
+// What ImportFolder takes from a folder: the disc's own files if there are
+// any, else one other release's (a Trilogy disc imports GameCube saves).
+std::vector<std::filesystem::path> ImportableFiles(const std::filesystem::path& folder);
 
 // What an export writes: the card's own files as they are (the disc's native
 // format), or the newest save converted to the other GameCube release.
@@ -145,6 +149,21 @@ std::filesystem::path SharedCardBase(std::string* why = nullptr);
 std::string CardTargetDirectory(const std::string& apDirectory);
 // Dolphin's Trilogy save.bin (USA, else PAL), or empty when it has none.
 std::filesystem::path FindDolphinTrilogy();
+// Sharing on a Trilogy disc: the emulator keeps Trilogy's saves in a Wii
+// save.bin, not a GCI folder, so nothing is mounted (SharedCardBase is empty);
+// the port keeps its own card and mirrors it with that save.bin instead. The
+// emulator's save.bin for the running disc's region, or empty when not sharing
+// on a Trilogy disc or the emulator has none.
+std::filesystem::path TrilogyShareBin();
+// Mirrors card folder and save.bin: a newer card goes out (ExportTrilogy), and
+// with `pull` a newer save.bin comes in (marked for remount). The replaced side
+// is kept (save.bin.bak, _replaced); afterwards both have the same time, which
+// means in step. True when the card changed.
+bool SyncTrilogy(const std::filesystem::path& folder, const std::filesystem::path& saveBin, bool pull);
+// SyncTrilogy on the mounted card and TrilogyShareBin, at most twice a second;
+// nothing when that is empty. Pull only in the front end: in game the card
+// never changes.
+bool SyncTrilogyShare(bool pull);
 
 // The mounted card's GCI folder, or empty when the card is a raw image or
 // there is none.

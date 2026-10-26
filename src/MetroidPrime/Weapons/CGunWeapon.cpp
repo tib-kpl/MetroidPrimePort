@@ -23,6 +23,7 @@
 #include "Kyoto/Audio/CSfxManager.hpp"
 #include "Kyoto/CDependencyGroup.hpp"
 #include "Kyoto/Graphics/CGraphics.hpp"
+#include "Kyoto/Graphics/CCubeModel.hpp"
 #include "Kyoto/Graphics/CModel.hpp"
 #include "Kyoto/Graphics/CModelFlags.hpp"
 #include "Kyoto/Math/CRelAngle.hpp"
@@ -410,6 +411,10 @@ void CGunWeapon::Draw(const bool drawSuitArm, const CStateManager& mgr, const CT
     float a = flags.GetColorRef().GetAlpha();
     const CColor mulColor(a, a, a, a);
     CColor addColor(static_cast< uchar >(0x40), 0x40, 0x40, 0x40);
+#ifdef TARGET_PC
+    // Remastered's hot gun takes the thermal override with a = 1, b = 0.
+    CCubeModel::PortSetThermalOverride(1.f, 0.f);
+#endif
     if (x218_29_drawHologram) {
       DrawHologram(mgr, xf, flags);
     }
@@ -432,6 +437,9 @@ void CGunWeapon::Draw(const bool drawSuitArm, const CStateManager& mgr, const CT
       CModelFlags useFlags(CModelFlags::kT_Opaque, 1.0f);
       xb0_suitArmModelData->RenderThermal(xf, mulColor, addColor, useFlags);
     }
+#ifdef TARGET_PC
+    CCubeModel::PortClearThermalOverride();
+#endif
   } else {
     /* Cold Draw */
     if (mgr.GetPlayerState()->GetCurrentVisor() != CPlayerState::kPV_XRay &&
@@ -461,6 +469,26 @@ void CGunWeapon::Draw(const bool drawSuitArm, const CStateManager& mgr, const CT
     x1bc_rainSplashGenerator->Draw(xf);
   }
 }
+
+#ifdef TARGET_PC
+void CGunWeapon::PortDrawDepth(const bool drawSuitArm, const CStateManager& mgr,
+                               const CTransform4f& xf) const {
+  // Draw's cold path without the rain splashes, which a second skinning would emit again.
+  if (!x218_26_loaded || x218_29_drawHologram)
+    return;
+  const CModelFlags flags = CModelFlags::Normal().UseShaderSet(x20c_shaderIdx);
+  if (mPortDreadCannon) {
+    xb0_suitArmModelData->Render(mgr, PortDreadCannonXf(xf), nullptr, flags);
+    return;
+  }
+  x10_solidModelData->Render(mgr, xf, nullptr, flags);
+  if (drawSuitArm && xb0_suitArmModelData) {
+    xb0_suitArmModelData->Render(
+        mgr, xf * x10_solidModelData->GetScaledLocatorTransform(rstl::string_l(skElbowLocator)),
+        nullptr, CModelFlags::Normal());
+  }
+}
+#endif
 
 void CGunWeapon::DrawHologram(const CStateManager& mgr, const CTransform4f& xf,
                               const CModelFlags& flags) const {
@@ -559,9 +587,15 @@ void CGunWeapon::PortDrawHologramTransition(const CStateManager& mgr, const CTra
   if (mgr.GetThermalDrawFlag() == kTD_Hot && x200_beamId != CPlayerState::kBI_Ice) {
     const float a = flags.GetColorRef().GetAlpha();
     CModelFlags useFlags(CModelFlags::kT_Opaque, 1.0f);
+#ifdef TARGET_PC
+    CCubeModel::PortSetThermalOverride(1.f, 0.f);
+#endif
     xb0_suitArmModelData->RenderThermal(xf, CColor(a, a, a, a),
                                         CColor(static_cast< uchar >(0x40), 0x40, 0x40, 0x40),
                                         useFlags);
+#ifdef TARGET_PC
+    CCubeModel::PortClearThermalOverride();
+#endif
   } else {
     xb0_suitArmModelData->Render(mgr, armXf, lights, flags);
   }

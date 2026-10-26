@@ -258,9 +258,19 @@ f32 sPortKindValue = 0.f;
 bool sPortSky = false;
 f32 sPortSkyGain[3];
 f32 sPortChargeShell = 0.f;
+// The hot pass's thermal override (PortSetThermalOverride): its x and y.
+struct SPortThermalOverride {
+  bool on;
+  f32 x;
+  f32 y;
+};
+SPortThermalOverride sPortThermalOverride = {false, 0.f, 0.f};
 f32 sPortIceShellIint = 10.f;
 f32 sPortDisintegration = 0.f;
 int sPortActiveVisor = 0;
+int sPortThermalPass = PortVisorMesh::kTP_None;
+unsigned sPortThermalSkipped = 0;
+unsigned sPortThermalHotDropped = 0;
 unsigned sPortVisorSkipped = 0;
 unsigned sPortShadowSkipped = 0;
 
@@ -271,6 +281,13 @@ struct SPortVisorGuard {
   bool restore = false;
   bool Skip(const CCubeSurface& surface) {
     const uint word = surface.PortVisorWord();
+    if (PortVisorMesh::SkipsThermal(word, sPortThermalPass)) {
+      // Counted for the cold pass only: the hot pass skips nearly every surface by design.
+      if (sPortThermalPass == PortVisorMesh::kTP_Cold) {
+        ++sPortThermalSkipped;
+      }
+      return true;
+    }
     if (word == 0) {
       return false;
     }
@@ -302,11 +319,20 @@ struct SPortVisorGuard {
 
 void CCubeModel::PortSetActiveVisor(const int visor) { sPortActiveVisor = visor; }
 
+void CCubeModel::PortSetThermalPass(const int pass) { sPortThermalPass = pass; }
+
 void CCubeModel::PortTakeVisorSkipCounts(unsigned& visor, unsigned& shadow) {
   visor = sPortVisorSkipped;
   shadow = sPortShadowSkipped;
   sPortVisorSkipped = 0;
   sPortShadowSkipped = 0;
+}
+
+void CCubeModel::PortTakeThermalSkipCounts(unsigned& cold, unsigned& hotDropped) {
+  cold = sPortThermalSkipped;
+  hotDropped = sPortThermalHotDropped;
+  sPortThermalSkipped = 0;
+  sPortThermalHotDropped = 0;
 }
 
 void CCubeModel::PortSetChargeShell(const f32 amount) { sPortChargeShell = amount; }
@@ -715,6 +741,11 @@ struct SPortGlassCopy {
   bool mips; // copied with a mip chain (kind 23 samples blurred levels; the others read level 0)
 };
 SPortGlassCopy sPortGlassCopy = {false, 0, 0, 0, 0, 0, 0, false};
+// Performance mode (GX_PORT_PERF_GLASS_HALF_RATE): the glass's copy goes to a buffer of its own,
+// so nothing else overwrites it, and is taken again only every second frame; between, the glass
+// refracts the frame before's scene.
+SPortGlassCopy sPortGlassPerfCopy = {false, 0, 0, 0, 0, 0, 0, false};
+u8 sPortGlassPerfDest;
 // The pause visor's pass CSamusDoll set (CCubeModel::PortInventoryScope), while it is set.
 bool sPortInventoryActive = false;
 CCubeModel::PortInventoryPass sPortInventoryPass = {false, {1.f, 1.f, 1.f, 1.f}, 0.f, 1.f};
@@ -785,7 +816,8 @@ void CCubeModel::DrawSurface(const CCubeSurface& surface, const CModelFlags& mod
                         (portKind > 7.5f && portKind < 8.5f) ||
                         (portKind == 45.f && (trans == CModelFlags::kT_One || trans == CModelFlags::kT_Blend ||
                                               trans == CModelFlags::kT_Additive));
-  const bool tintable = pbrOutside && tintKind && !CCubeRenderer::That()->GetThermal();
+  const bool tintable = pbrOutside && tintKind &&
+                        (!CCubeRenderer::That()->GetThermal() || CCubeMaterial::sPortPBRThermal == CCubeMaterial::kPT_Scene);
   const bool tintOpaque =
       tintable && (trans == CModelFlags::kT_One || trans == CModelFlags::kT_Two || trans == CModelFlags::kT_Three);
   const bool pbrBlend = (pbrOutside && trans == CModelFlags::kT_Blend && tintWhite) ||
@@ -1063,14 +1095,19 @@ void CCubeModel::DrawSurface(const CCubeSurface& surface, const CModelFlags& mod
         CCubeMaterial::PortScreenCopyUsed()) {
       int portLeft, portTop, portWidth, portHeight;
       CGraphics::GetViewport(portLeft, portTop, portWidth, portHeight);
-      SPortGlassCopy& copy = sPortGlassCopy;
+      const bool visorGlass = kind > 35.5f && kind < 36.5f;
+      const bool halfRate = !visorGlass && (GXPortGetPerformance() & GX_PORT_PERF_GLASS_HALF_RATE) != 0;
+      SPortGlassCopy& copy = halfRate ? sPortGlassPerfCopy : sPortGlassCopy;
+      void* const copyDest = halfRate ? static_cast< void* >(&sPortGlassPerfDest) : CGraphics::GetDolphinSpareBuffer();
       const bool wantMips = (kind > 22.5f && kind < 23.5f) || (kind > 28.5f && kind < 30.5f) || (kind > 42.5f && kind < 43.5f);
+      const int frame = CGraphics::GetFrameCounter();
+      const bool sameView = copy.valid && copy.left == portLeft && copy.top == portTop && copy.width == portWidth &&
+                            copy.height == portHeight && (copy.mips || !wantMips);
       // The visor's glass (36) keeps the scene by its pass's weight, so each pass sees what is
       // there now, the other visor layer's last draw included: it copies every time.
-      const bool current = !(kind > 35.5f && kind < 36.5f) && copy.valid && copy.serial == GXPortCopySerial() &&
-                           copy.frame == CGraphics::GetFrameCounter() && copy.left == portLeft &&
-                           copy.top == portTop && copy.width == portWidth && copy.height == portHeight &&
-                           (copy.mips || !wantMips);
+      const bool current =
+          halfRate ? sameView && u32(frame - copy.frame) < 2u
+                   : !visorGlass && sameView && copy.serial == GXPortCopySerial() && copy.frame == frame;
       if (!current) {
         GXSetTexCopySrc(static_cast< u16 >(portLeft), static_cast< u16 >(portTop), static_cast< u16 >(portWidth),
                         static_cast< u16 >(portHeight));
@@ -1078,12 +1115,12 @@ void CCubeModel::DrawSurface(const CCubeSurface& surface, const CModelFlags& mod
                          wantMips ? GX_TRUE : GX_FALSE);
         const bool useVideoFilter = CGraphics::GetUseVideoFilter();
         CGraphics::SetUseVideoFilter(false);
-        GXPortCopyScene(CGraphics::GetDolphinSpareBuffer(), GX_FALSE);
+        GXPortCopyScene(copyDest, GX_FALSE);
         CGraphics::SetUseVideoFilter(useVideoFilter);
         GXPixModeSync();
         copy.valid = true;
         copy.serial = GXPortCopySerial();
-        copy.frame = CGraphics::GetFrameCounter();
+        copy.frame = frame;
         copy.left = portLeft;
         copy.top = portTop;
         copy.width = portWidth;
@@ -1091,12 +1128,12 @@ void CCubeModel::DrawSurface(const CCubeSurface& surface, const CModelFlags& mod
         copy.mips = wantMips;
       }
       // Map 7 is shared, so it is bound again either way.
-      CGraphics::LoadDolphinSpareTexture(portWidth, portHeight, GX_TF_RGB565, nullptr,
+      CGraphics::LoadDolphinSpareTexture(portWidth, portHeight, GX_TF_RGB565, halfRate ? copyDest : nullptr,
                                          CGraphics::kSpareBufferTexMapID);
       if (wantMips) {
         // The shader picks the level (textureSampleLevel); the sampler must allow them all.
         GXTexObj mipObj;
-        GXInitTexObj(&mipObj, CGraphics::GetDolphinSpareBuffer(), static_cast< u16 >(portWidth),
+        GXInitTexObj(&mipObj, copyDest, static_cast< u16 >(portWidth),
                      static_cast< u16 >(portHeight), GX_TF_RGB565, GX_CLAMP, GX_CLAMP, GX_TRUE);
         GXInitTexObjLOD(&mipObj, GX_LIN_MIP_LIN, GX_LINEAR, 0.f, 16.f, 0.f, GX_DISABLE, GX_DISABLE,
                         GX_ANISO_1);
@@ -1132,6 +1169,13 @@ void CCubeModel::DrawSurface(const CCubeSurface& surface, const CModelFlags& mod
     }
     GXSetPBR(GX_TRUE);
     ++CCubeMaterial::sPortPBRDraws;
+  }
+  if (CCubeMaterial::sPortPBRThermal == CCubeMaterial::kPT_Override && pbr) {
+    // Alpha: 1 unless the material blends (and does not alpha test), as 02c254b6 reads it.
+    const bool blended = (material.GetCompressedBlend() >> 16) != GX_BL_ZERO &&
+                         !material.IsFlagSet(kStateFlag_AlphaTest);
+    GXSetPBRThermal(GX_TRUE, sPortThermalOverride.x, sPortThermalOverride.y,
+                    blended ? GX_TRUE : GX_FALSE);
   }
   if (CCubeMaterial::sPortPBRThermal == CCubeMaterial::kPT_Additive) {
     // As CFluidPlaneCPU::RenderSetup in the thermal visor's hot pass (a TEV fallback too).
@@ -1365,7 +1409,7 @@ void CCubeModel::DrawFlat(const float* positions, const float* normals,
          surface = surface.GetNextSurface()) {
 #ifdef TARGET_PC
       SPortVisorGuard visorGuard;
-      if (visorGuard.Skip(surface)) {
+      if (visorGuard.Skip(surface) || (sPortThermalSplit && PortThermalOverrideSurface(surface))) {
         continue;
       }
 #endif
@@ -1380,7 +1424,7 @@ void CCubeModel::DrawFlat(const float* positions, const float* normals,
          surface = surface.GetNextSurface()) {
 #ifdef TARGET_PC
       SPortVisorGuard visorGuard;
-      if (visorGuard.Skip(surface)) {
+      if (visorGuard.Skip(surface) || (sPortThermalSplit && PortThermalOverrideSurface(surface))) {
         continue;
       }
 #endif
@@ -1390,6 +1434,103 @@ void CCubeModel::DrawFlat(const float* positions, const float* normals,
     }
   }
 }
+
+#ifdef TARGET_PC
+bool CCubeModel::sPortThermalSplit = false;
+
+void CCubeModel::PortSetThermalOverride(const float a, const float b) {
+  sPortThermalOverride.on = true;
+  sPortThermalOverride.x = 0.4f * a;
+  sPortThermalOverride.y = 0.4f * b + 0.6f;
+}
+
+void CCubeModel::PortSetThermalOverrideConstants(const float x, const float y) {
+  sPortThermalOverride.on = true;
+  sPortThermalOverride.x = x;
+  sPortThermalOverride.y = y;
+}
+
+void CCubeModel::PortClearThermalOverride() { sPortThermalOverride.on = false; }
+
+void CCubeModel::PortGetThermalOverride(bool& on, float& x, float& y) {
+  on = sPortThermalOverride.on;
+  x = sPortThermalOverride.x;
+  y = sPortThermalOverride.y;
+}
+
+void CCubeModel::PortRestoreThermalOverride(const bool on, const float x, const float y) {
+  sPortThermalOverride.on = on;
+  sPortThermalOverride.x = x;
+  sPortThermalOverride.y = y;
+}
+
+void CCubeModel::PortDrawThermalHotNode(const CModelFlags& flags, const ESurfaceSelection which) const {
+  if (!TryLockTextures()) {
+    return;
+  }
+  const SPortThermalOverride outer = sPortThermalOverride;
+  const int outerPass = sPortThermalPass;
+  sPortThermalPass = PortVisorMesh::kTP_Hot;
+  PortSetThermalOverrideConstants(1.f, 0.2509804f);
+  PortDrawThermalOverride(nullptr, nullptr, flags, which);
+  sPortThermalOverride = outer;
+  sPortThermalPass = outerPass;
+}
+
+bool CCubeModel::PortThermalOverrideActive() {
+  return sPortThermalOverride.on && CCubeMaterial::sPortSceneHdr && CCubeRenderer::That()->GetThermal();
+}
+
+bool CCubeModel::PortThermalOverrideSurface(const CCubeSurface& surface) const {
+  const CCubeMaterial material = GetMaterialByIndex(surface.GetMaterialIndex());
+  // Layered materials (more than four maps) draw their layers past it; a retail-material
+  // model has no PBR record and keeps the retail hot pass.
+  if (!material.IsFlagSet(kStateFlag_PortPBR) || material.GetTextureCount() > 4) {
+    return false;
+  }
+  f32 values[19];
+  PortReadPBRMaterial(static_cast< int >(surface.GetMaterialIndex()), values, nullptr, nullptr, nullptr);
+  const int kind = int(values[13] + 0.5f);
+  // Kinds 6, 21, 32 and 35 and the unlit colour mode (8) keep the retail draw in Remastered too.
+  return kind != 6 && kind != 21 && kind != 32 && kind != 35 && (int(values[7] + 0.5f) & 8) == 0;
+}
+
+void CCubeModel::PortDrawThermalOverride(const float* positions, const float* normals,
+                                         const CModelFlags& flags, ESurfaceSelection which) const {
+  // The material's own stages, blend and depth replace the thermal ones; the cached
+  // material state is the thermal cut's before and the override's after.
+  CCubeMaterial::KillCachedViewDepState();
+  CCubeMaterial::ResetCachedMaterials();
+  if (positions != nullptr) {
+    SetSkinningArraysCurrent(positions, normals);
+  } else {
+    SetArraysCurrent();
+  }
+  const CModelFlags opaque(CModelFlags::kT_Opaque, static_cast< uchar >(flags.GetShaderSet()),
+                           static_cast< CModelFlags::EFlags >(flags.GetOtherFlags()), CColor::White());
+  const CCubeMaterial::EPortPBRThermal outerThermal = CCubeMaterial::sPortPBRThermal;
+  CCubeMaterial::sPortPBRThermal = CCubeMaterial::kPT_Override;
+  for (int pass = 0; pass < 2; ++pass) {
+    if ((pass == 0 && which == kSS_Sorted) || (pass == 1 && which == kSS_Unsorted)) {
+      continue;
+    }
+    for (CCubeSurface surface = pass == 0 ? x38_firstUnsorted : x3c_firstSorted; surface.IsValid();
+         surface = surface.GetNextSurface()) {
+      if (PortThermalOverrideSurface(surface)) {
+        DrawSurface(surface, opaque);
+      } else if (sPortThermalPass == PortVisorMesh::kTP_Hot &&
+                 !PortVisorMesh::SkipsThermal(surface.PortVisorWord(), PortVisorMesh::kTP_Hot)) {
+        // The hot world is the override alone: a bit-19 surface whose material doesn't take
+        // it is counted (visor-mesh log) and not drawn.
+        ++sPortThermalHotDropped;
+      }
+    }
+  }
+  CCubeMaterial::sPortPBRThermal = outerThermal;
+  GXSetPBRThermal(GX_FALSE, 0.f, 0.f, GX_FALSE);
+  CCubeMaterial::ResetCachedMaterials();
+}
+#endif
 
 void CCubeModel::Draw(const CModelFlags& flags) const {
   CCubeMaterial::KillCachedViewDepState();

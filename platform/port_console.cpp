@@ -3158,8 +3158,18 @@ void CmdRoomGeo() {
     } else if (arg == "prepass" && sCmd.args.size() > 2 &&
                (Lower(sCmd.args[2]) == "on" || Lower(sCmd.args[2]) == "off")) {
       PortRoomGeo::SetDepthPrepass(Lower(sCmd.args[2]) == "on");
+    } else if (arg == "opaqueprepass" && sCmd.args.size() > 2 &&
+               (Lower(sCmd.args[2]) == "on" || Lower(sCmd.args[2]) == "off")) {
+      PortRoomGeo::SetOpaquePrepass(Lower(sCmd.args[2]) == "on");
     } else if (arg == "costtest" && sCmd.args.size() > 2) {
       GXSetPBRCostTest(u32(std::atoi(sCmd.args[2].c_str())));
+    } else if (arg == "perf") {
+      if (sCmd.args.size() > 2) {
+        GXPortSetPerformance(u32(std::strtoul(sCmd.args[2].c_str(), nullptr, 0)));
+      }
+      Out("performance shortcuts: 0x%x (glass 0x1, measure 0x2, fog 0x4, gun 0x8; 0 exact)",
+          unsigned(GXPortGetPerformance()));
+      return Finish();
     } else if (arg == "script") {
       const std::string info = PortRoomGeo::ScriptInfo();
       OutLines(info.empty() ? std::string("no area has a script") : info);
@@ -3967,10 +3977,13 @@ const CommandSpec kCommands[] = {
      "roomgeo lod <scale>       scale the distances where models switch to coarser levels; 0 never switches\n"
      "roomgeo sort on|off       draw opaque room models nearest first (default on)\n"
      "roomgeo prepass on|off    depth-only pass first for cut-out room models (default off)\n"
+     "roomgeo opaqueprepass on|off  depth-only pass first for all room models (default on, off on Android)\n"
      "roomgeo casters on|off    out-of-view room models cast the sun's shadow (default on)"},
     {"shadow", CmdShadow, nullptr,
      "shadow [casters on|off]   the sun's shadow map last frame: direction, colour, box, casters, and the room's suns"},
     {"roomgeo", nullptr, nullptr,
+     "roomgeo perf [mask]       performance-mode shortcuts (bits: 1 glass every 2nd frame, 2 quarter-size measure, 4 blended fog;\n"
+     "                          0 exact); no mask prints them\n"
      "roomgeo costtest <n>      PBR shading cost test: 0 off, 1 flat, 2 no lights, 3 no volume, 4 no cube, 5 no normal maps, 6 no ORM/emissive, 7 maps only, 8 no aniso, 9 no aniso or mip blend, 10 no post-processing, 11 no screen copies"},
     {"gpuselftest", CmdGpuSelfTest, nullptr,
      "gpuselftest               render known patterns offscreen, compare the readback, log PASS/FAIL per case"},
