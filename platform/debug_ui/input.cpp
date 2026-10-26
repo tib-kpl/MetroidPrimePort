@@ -8,6 +8,7 @@
 #include "port_gyro_motion.h"
 #include "port_photo.h"
 #include "port_pointer.h"
+#include "port_radial.h"
 #include "port_log.h"
 #include "port_paths.h"
 #include "port_config_reset.h"
@@ -638,6 +639,14 @@ bool UpdateMouseAim(bool active, bool locked, float x, float y, float z, bool po
       sMouseAimState.lagPitch = 0.f;
     }
   }
+  // An open Trilogy radial menu takes the aim travel as its selection (the Wii pointed at
+  // it), and the view holds still meanwhile.
+  if (PortRadial::Capturing()) {
+    PortRadial::AddTravel(sMouseFrameX + sStickFrameX + sGyroCameraFrameX,
+                          sMouseFrameY + sStickFrameY + sGyroCameraFrameY);
+    sMouseFrameX = sMouseFrameY = sStickFrameX = sStickFrameY = 0.f;
+    sGyroCameraFrameX = sGyroCameraFrameY = 0.f;
+  }
   // Under pointer aim the stick moves the pointer, unless the gyro does: then the
   // stick (and the keyboard look keys) turn the camera as they do without
   // pointer aim. A lock leaves the view nothing to turn, so they move the pointer too.
@@ -1064,8 +1073,9 @@ void BeginFrameMouse() {
   }
   // On the direct aim path (mouse aim, twin stick, or the modern touch layout) the
   // touch travel joins the mouse's; in the classic GameCube scheme
-  // CPlayer::UpdateTouchLook takes it instead (TakeTouchLook).
-  const bool directAim = DirectAim();
+  // CPlayer::UpdateTouchLook takes it instead (TakeTouchLook). While a radial menu
+  // captures input it joins the mouse's either way, so a look drag points the menu.
+  const bool directAim = DirectAim() || PortRadial::Capturing();
   sTouchLookFrameX = directAim ? 0.f : touchX;
   sTouchLookFrameY = directAim ? 0.f : touchY;
   sMouseFrameX = sMousePendingX + sGyroPendingX + (directAim ? touchX : 0.f);
