@@ -454,6 +454,23 @@
   its own button wherever its binding works. The overlay hides while F1 is open, so Record can't see touch
   controls: the editor's "Add a touch control..." list picks them instead.
   The D-pad, the sticks and the menu button can't be remapped.
+  "Custom actions (advanced)" (issue #218) holds actions the player makes, as many as
+  wanted: "+ Add action" picks what one does from a searchable list, then it binds like any
+  row (chords, layers, triggers and touch buttons included); Edit and Delete are on its row,
+  and Delete drops its bindings in every profile too. The list: Settings (turn any on/off
+  setting of the port menu on, off or toggle it), Cheats (Invincibility, Phazon Beam, free
+  camera, freeze the game, show Samus in free camera, refill energy, refill missiles and
+  power bombs, give or take an item, kill the locked-on enemy), Travel (warp to a room picked
+  by its in-game name, or to where a world starts; another world or a room not loaded yet
+  reloads the world, a loaded room of this world is instant), Save states (save to or load
+  from a given slot; the F5/F9 slot stays), Display (show a message on the HUD, text language)
+  and Advanced (any debug console command line, `docs/CONSOLE.md`; it must be given a name).
+  The on/off ones take Toggle, Turn on or Turn off. Its name is made from what it does
+  ("Phazon Beam (on/off)", "Warp to Ice Ruins West (Phendrana Drifts)") unless one is typed.
+  A press shows what it did as a note at the top of the screen; Cheats, Travel and console
+  commands refuse in the Original experience and with Archipelago connected. Saved in `controls.toml` as `[[custom_action]]` tables (`id`, `name`,
+  `preset`, `arg`, `mode`, `command`) and bound as action `custom:<id>`; a preset or setting
+  this build doesn't know is kept and does nothing.
 - `stretch_menus=0|1` (Video > Display "Stretch menus to the screen", default off; off
   under Original experience): the title and file select menus, made for 4:3, are
   stretched to fill a wide screen (the image is distorted) instead of being kept in
@@ -679,6 +696,11 @@
   size is Remastered's size at a 55 degree vertical FOV (it scales with the screen height);
   the size slider scales it. A custom crosshair colour replaces the idle colour, opacity
   multiplies the alpha. Classic under Original experience.
+- On Trilogy discs these crosshair settings act on Trilogy's own aiming cursor (centre and
+  arms) and the old crosshair it still draws: a custom colour replaces their colour, opacity
+  scales their alpha (the defaults leave them as on the Wii), the size slider scales them under
+  direct aim, and `remastered` draws the Remastered cursor where the aiming cursor is, without
+  the old crosshair.
 - Secondary crosshairs (Video > Display, `secondary_crosshairs`, `MP_SECONDARY_CROSSHAIRS`,
   default on): off hides the next-target reticles: the combat visor's seeker and the
   X-ray ring and thermal crosshair on the target Lock-On would pick. The lock-on
