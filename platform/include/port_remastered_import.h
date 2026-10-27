@@ -183,7 +183,18 @@ inline constexpr int kModels = 22;
 // 118: matched objects' PART property GENPs (room-only).
 // 119: Metroid Prime relay particle property GENPs (room-only).
 // 120: MetroidBeta 3ec1f3bd -> 9AEBBD85, 8e1a4b01 -> SWHC 18E0EADC (#by-hand).
-inline constexpr int kEffects = 121;   // Thardus/FlyingPirate/Elite/Omega slot GENPs, four ELC2 slots (#by-hand)
+// 121: Thardus/FlyingPirate/Elite/Omega slot GENPs, four ELC2 slots (#by-hand).
+// 122: room-only ELC2 slots (AtomicBeta) as ELSCs.
+// 124: Ridley's plasma-beam ELC2 (kActorEffectGuids).
+// 125: its GPSM/EPSM GENPs, resolved under their own ids.
+// 127: a standalone GENP another embeds: one id for both (Babygoth's flame collision).
+// 129: Babygoth's frozen VFX (VFX_FrameBuffer_Color_Erosion_Unlit, a HUD billboard).
+// 130: the Ice Sheegoth's breath.
+// 131: the Parasite Queen's beam electric.
+// 132: SteamMP1 GENPs (room-only).
+// 133: visor steam (VFX_VisorSteam 53eceaa4).
+// 134: Metroid Prime's beams' electric (room ELC2s).
+inline constexpr int kEffects = 135;   // KESP kept as the ELC2 node tween (AtomicBeta ELC2 radius)
 // 20: two rooms matching one area write only the closer match's files, not the later room's.
 // 21: roomenv version 22, the world master's hints driven by its camera volumes (the table in every roomenv).
 // 22: a master's InventoryActivator fired by the camera going under water drives its hints (kSenderCameraWaterItem).
@@ -214,7 +225,11 @@ inline constexpr int kEffects = 121;   // Thardus/FlyingPirate/Elite/Omega slot 
 // 53: the Metroid Prime relay's nested CMetroidPrimeData particle properties.
 // 54: the unplaced relay pairs with the area's only type 0x84 object.
 // 55: Thardus, FlyingPirate, ElitePirate and OmegaPirate particle properties.
-inline constexpr int kRooms = 55;
+// 56: AtomicBeta's electric effect (ELSC) property, per placement.
+// 57: .roomfx v8, a matched Steam's Remastered visor steam (SteamMP1).
+// 58: .roomliquid v5, each surface's matched retail Water editor id.
+// 59: .roomfx v9, the Metroid Prime relay's beams' Remastered electric (actor slots).
+inline constexpr int kRooms = 59;
 inline constexpr int kRoomModels = 1;  // the rooms' own models and their levels of detail
 inline constexpr int kText = 1;        // port_remastered_text, and the font (port_remastered_font)
 // 9: envfx.bin, the EnvironmentFX flake textures (port_envfx_file.h).

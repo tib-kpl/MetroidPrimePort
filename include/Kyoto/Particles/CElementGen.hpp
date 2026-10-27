@@ -301,6 +301,8 @@ public:
   // particles at the given local positions, at rest, the PART children first.
   void PortCreateParticlesAtPositions(int n, const CVector3f* pos);
   const CGenDescription* PortDesc() const { return x28_loadedGenDesc; }
+  // The PART id this system was built from (Remastered compares a generator's desc id).
+  CAssetId PortDescId() const { return x1c_genDesc.GetTag().GetId(); }
   int PortCurFrame() const { return x74_curFrame; }
   void PortCreateParticlesAtPositionsIncludingChildren(int n, const CVector3f* pos);
   // Remastered particle variables (PVRT): a handle is looked up once and then binds are cheap.
@@ -328,6 +330,9 @@ public:
   // The global translation just set is already the presented one (placed from
   // the presented camera on every drawn frame): draw it as is, unblended.
   void PortGlobalIsPresented();
+  // A Remastered HUD billboard's scene: the local scale is in camera axes and model particles are
+  // pushed out from the eye by eyeScale (CHUDBillboardEffect::PreRender). 0 = a world effect.
+  void PortSetHudScene(float eyeScale);
   // The lights of the active nested child generators (PHDR); not this generator's own, which the
   // host carries as the retail root light.
   void PortCollectNestedLightSnapshots(std::vector< CPortNestedLightSnapshot >& out) const {
@@ -556,6 +561,7 @@ private:
   // orientations and local translation here, which EXTR/EXTT and the getters read.
   bool xPortIntFrame = false;
   CVector3f xPortSpawnSpread{1.f, 1.f, 1.f};
+  float xPortHudEyeScale = 0.f;
   CVector3f PortSpreadSpawn(const CVector3f& rel) const;
   CTransform4f xPortExtOrientation = CTransform4f::Identity();
   CTransform4f xPortExtGlobalOrientation = CTransform4f::Identity();

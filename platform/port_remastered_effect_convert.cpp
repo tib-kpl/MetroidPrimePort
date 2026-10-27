@@ -173,6 +173,8 @@ const Signatures& ElementsOf(Type type) {
       {F("DFCS"), "rr"},  {F("DFCP"), "rr"},
       // Port-only: a converted KEWS, its KEYP read at the swoosh node key.
       {F("KEWS"), "r"},
+      // Port-only: a converted KESP, its KEYP read at the ELC2 node key (time slot 2).
+      {F("KESP"), "r"},
       // Port-only (CParticleDataFactory under TARGET_PC).
       {F("DIVD"), "rr"},
       // Port-only CREPortTicksToSeconds: Remastered's T2S_, an int element (ticks) as seconds.
@@ -513,7 +515,8 @@ bool FlipbookTransform(const EffectValue& value, bool& flip) {
 constexpr uint32_t kColorTex = 1, kOpacityTex = 2, kErosion = 4, kRamp = 8, kIndirect = 16, kDepthSoften = 32,
                    kThresholding = 64, kDualMod = 128, kOpacityFresnel = 256, kColorIndexing = 512, kAddColor = 1024,
                    kOpacityFade = 2048, kColorRgbOnly = 4096, kPyro = 8192, kDisintegration = 16384,
-                   kSceneWarp = 32768, kVisorSplat = 65536, kIceChargeBeam = 1u << 20,
+                   kSceneWarp = 32768, kVisorSplat = 65536, kFrameBufferColorErosion = 1u << 18,
+                   kVisorSteam = 1u << 19, kIceChargeBeam = 1u << 20,
                    kIceChargeCollision = 1u << 21, kUnfogged = 1u << 22, kVisorRunOff = 1u << 23,
                    kVisorRunOffLit = 1u << 24, kIceChargeCollisionLit = 1u << 25, kParticleLit = 1u << 26,
                    kVisorRain = 1u << 28, kBarrierShield = 1u << 29, kBarrierGlow = 1u << 30;
@@ -698,6 +701,20 @@ const Recipe* RecipeOf(uint32_t shader) {
       // (0.75 .. 1) x vc.rgb, alpha vc.a; elsewhere discarded. The visor composite pass has no fog, so Unfogged
       // whatever the DFOG.
       {0x0ec41df0, kVisorRain, {{"TCH0", Role::Color, -1, -1}}, {}, -1, false, false, 1, false, true},
+      // VFX_VisorSteam (53eceaa4, the SteamMP1 HUD billboard's model particle, MATI f4970293; FS perm 000_0,
+      // VS 000_1; vfx/53eceaa4.md): TCH0 Repeat_Texture (wrap repeat) read at uv x CCH0.x, offset by TCH1
+      // Macro_Texture (the second raw sample slot, the Indirect role: no CCH warp) and scrolled by the VS's
+      // o2.yz, which depends on CCH0/2/3/4 only (the shader computes it). CCH0..4 in VPRM, SMTR-animated by the
+      // Ship1 particle variables. No scene copy; the visor composite pass has no fog, so Unfogged.
+      {0x53eceaa4, kVisorSteam, {{"TCH0", Role::Color, -1, -1}, {"TCH1", Role::Indirect, -1, -1}}, {}, -1, false,
+       false, 5, false, true},
+      // VFX_FrameBuffer_Color_Erosion_Unlit (d8ece62c, the frozen-player HUD effect GENP c23f13f7, MATI
+      // eaef3c6e; FS perm 000_0, fog perm 001_0, 002/004 identical to 000 and 003/005 to 001): BCLR's
+      // x and y offset the scene copy at the fragment by near / HUD depth x CCH0.xy, read at lod
+      // max(0, CCH0.z - 1); rgb = (BCLR.rgb + scene) x vc.rgb x PCMD, alpha max(0, BCLR.a - PMTR row
+      // 0's x) x vc.a (the VS's o2 is PMTR row 0). CCH0 in VPRM, animated by SMTR.
+      {0xd8ece62c, kFrameBufferColorErosion | kErosion, {{"BCLR", Role::Color, -1, -1}}, {{kSrcErosion, 0, 0}},
+       -1, false, false, 1, true},
       // VFX_BarrierShield (f197ec38, the Parasite Queen barrier's MATI 6429c234; its refraction perm 002,
       // the material flag MFC0 USE_FRAME_BUFFER_DISTORTION with shield-exterior MFC1 off; build/
       // s-queenbarrier-20261024/SHADER-IMPLEMENTATION.md): TCH0 read at (-2u, 2v) is the pattern (its .b
@@ -1998,14 +2015,27 @@ public:
       }
       return Element(value.args[1], Type::Real, out, why);
     }
-    // KESP is KEYP on time slot 2, which is always zero (CREKeyframeEmitterSpecific), so it
-    // is its first key: CNST(keys[0]).
+    // KESP is KEYP on time slot 2 (CREKeyframeParticle 0x296430, time type 3): the port-only
+    // KESP around a percent KEYP of its keys, read at the slot-2 key. Only an ELC2's UpdateBolt
+    // 0xb77638 sets that slot (node over node count - 1); elsewhere it is 0, the first key.
     if (value.fourcc == F("KESP") && type == Type::Real && value.args.size() == 1 &&
         value.args[0].kind == EffectValue::Kind::Keys && value.args[0].size >= 26 &&
         ReadLE32(m_data + value.args[0].offset + 18) >= 1 &&
         value.args[0].size - 22 == size_t(ReadLE32(m_data + value.args[0].offset + 18)) * 4) {
-      AppendBE32(out, F("CNST"));
-      AppendBE32(out, ReadLE32(m_data + value.args[0].offset + 22));
+      const uint8_t* p = m_data + value.args[0].offset;
+      const uint32_t count = ReadLE32(p + 18);
+      AppendBE32(out, F("KESP"));
+      AppendBE32(out, F("KEYP"));
+      AppendBE32(out, 1); // percent: the lifetime-key path
+      AppendBE32(out, ReadLE32(p + 4));
+      out.push_back(p[8]);
+      out.push_back(p[9]);
+      AppendBE32(out, ReadLE32(p + 10));
+      AppendBE32(out, ReadLE32(p + 14));
+      AppendBE32(out, count);
+      for (uint32_t i = 0; i < count; ++i) {
+        AppendBE32(out, ReadLE32(p + 22 + size_t(i) * 4));
+      }
       return true;
     }
     if (value.fourcc == F("GRAD") && type == Type::Color) {

@@ -3,6 +3,7 @@
 #include "port_remastered_room_internal.h"
 #include "port_queen_barrier_assets.h"
 #include "port_room_effects.h"
+#include "port_maya_spline.h"
 
 namespace PortRemastered {
 namespace RoomDetail {
@@ -798,6 +799,20 @@ struct PartSlot {
   uint32_t offset;
 };
 constexpr uint32_t kMetroidPrimeRelayMP1 = 0x622f6b23;
+// SteamMP1 (retail Steam, 0x46) and the SLdrSteamMP1 properties port_room_effects.h Steam takes.
+constexpr uint32_t kSteamMP1 = 0xfc64463e;
+constexpr uint32_t kPropSteamColor = 0xfaa2682b;
+constexpr uint32_t kPropSteamGenp = 0x4054322b;
+constexpr uint32_t kPropSteamSpline1 = 0x8030d7a6;
+constexpr uint32_t kPropSteamSpline2 = 0x911d77bd;
+constexpr uint32_t kPropSteamA = 0xd560318d;
+constexpr uint32_t kPropSteamB = 0x14e3228a;
+constexpr uint32_t kPropSteamG = 0x5e432bd2;
+constexpr uint32_t kPropSteamH = 0x67d639e2;
+constexpr uint32_t kPropSteamI = 0x6b6d170d;
+constexpr uint32_t kPropSteamColorFlag = 0x1c983b7f;
+// The link CScriptSteamMP1 averages its source position over (its constructor's EScriptLink).
+constexpr uint32_t kSteamSourceLink = 0x2ae68d05;
 constexpr uint32_t kPrimeData = 0x7e3d43f5;  // SLdrMetroidPrimeData_MP1Typedef
 constexpr PartSlot kPartSlots[] = {
     // CScriptWater: splash particles 1-3, visor runoff, unmorph visor runoff
@@ -822,6 +837,9 @@ constexpr PartSlot kPartSlots[] = {
     {0xf4326a02, {0xe32acfab}, 0x26, 703},
     {0x7f2845c7, {0x63903958}, 0x86, 659},
     {0x7f2845c7, {0x50025ca7}, 0x86, 703},
+    // AtomicBetaMP1: the electric effect (ELC2 -> ELSC, LoadAtomicBeta's electricId), ahead
+    // of weaponId and the paired particleId. Two different ELC2s take the one retail ELSC by placement.
+    {0x87412090, {0xb460f7fc}, 0x77, 482},
     // MetroidPrimeRelayMP1's CMetroidPrimeData (CMetroidPrimeRelay.cpp), by the
     // CMetroidPrimeDataMP1 ctor and the SLdr typedef converters: ice attack particles 1-3,
     // x460_particle1, beam 0's contact and pulse effects, beam 2's fourth weapon asset, beam
@@ -840,10 +858,27 @@ constexpr PartSlot kPartSlots[] = {
     {kMetroidPrimeRelayMP1, {kPrimeData, 0x31f3a3f5}, 0x84, 2362},
 };
 
-// The GENP a slot's property holds, zero when unset or absent. flat caches room.Flat(c).
-Id16 SlotGenp(const Room& room, const Component& c, const PartSlot& slot, std::map<uint32_t, Span>& flat) {
+// Remastered effect properties with no retail field (port_room_effects.h ActorSlotEffect): the
+// component, the property path, the paired retail object's type and the slot.
+struct ActorSlot {
+  uint32_t component;
+  uint32_t path[4];
+  uint8_t retailType;
+  uint32_t slot;
+};
+constexpr ActorSlot kActorSlotTable[] = {
+    // MetroidPrimeRelayMP1: beams 0-3's electric (CMetroidPrimeMP1 +0x12ac, the beam's 5d9bd2fe).
+    {kMetroidPrimeRelayMP1, {kPrimeData, 0x6a5a1bfe, 0x5d9bd2fe}, 0x84, PortRoomEffects::kActorSlotExoBeamElectric},
+    {kMetroidPrimeRelayMP1, {kPrimeData, 0x194f407d, 0x5d9bd2fe}, 0x84, PortRoomEffects::kActorSlotExoBeamElectric + 1},
+    {kMetroidPrimeRelayMP1, {kPrimeData, 0x6e48d90d, 0x5d9bd2fe}, 0x84, PortRoomEffects::kActorSlotExoBeamElectric + 2},
+    {kMetroidPrimeRelayMP1, {kPrimeData, 0x728f76b5, 0x5d9bd2fe}, 0x84, PortRoomEffects::kActorSlotExoBeamElectric + 3},
+};
+
+// The GENP (or other effect) a property path holds, zero when unset or absent. flat caches
+// room.Flat(c).
+Id16 SlotGenp(const Room& room, const Component& c, const uint32_t (&path)[4], std::map<uint32_t, Span>& flat) {
   size_t depth = 0;
-  while (depth < std::size(slot.path) && slot.path[depth] != 0) {
+  while (depth < std::size(path) && path[depth] != 0) {
     ++depth;
   }
   Span at{};
@@ -851,12 +886,12 @@ Id16 SlotGenp(const Room& room, const Component& c, const PartSlot& slot, std::m
     if (flat.empty()) {
       flat = room.Flat(c);
     }
-    const auto found = flat.find(slot.path[0]);
+    const auto found = flat.find(path[0]);
     if (found == flat.end()) {
       return {};
     }
     at = found->second;
-  } else if (!room.Nested(c, slot.path, depth, at)) {
+  } else if (!room.Nested(c, path, depth, at)) {
     return {};
   }
   return at.size == 16 ? SwapUuid(room.Bytes(at)) : Id16{};
@@ -888,7 +923,7 @@ std::string WriteRoomEffects(const std::string& name, const Room& room, uint32_t
   if (effects.empty() && enemies.empty() && !slotted) {
     return {};
   }
-  char line[640];
+  char line[768];
   const std::vector<ScriptObject>& objects = area.objects;
   if (objects.empty()) {
     return "  " + name + ": no retail objects, its effect actors left out";
@@ -1137,6 +1172,9 @@ std::string WriteRoomEffects(const std::string& name, const Room& room, uint32_t
   // GENP, written over the retail one as the object loads.
   std::vector<PortRoomEffects::PropertyPatch> patches;
   size_t patchNoPart = 0;
+  // And the effects Remastered gives it where retail has no property (kActorSlotTable).
+  std::vector<PortRoomEffects::ActorSlotEffect> actorSlots;
+  size_t actorSlotNoPart = 0;
   for (const Component& c : room.Components()) {
     const auto matched = c.entity >= 0 ? scripts.retail.find(c.entity) : scripts.retail.end();
     const ScriptObject* paired = matched != scripts.retail.end() && matched->second < objects.size()
@@ -1167,7 +1205,7 @@ std::string WriteRoomEffects(const std::string& name, const Room& room, uint32_t
       if (slot.component != c.type || slot.retailType != o.type || o.props.size() < slot.offset + 4) {
         continue;
       }
-      const Id16 genp = SlotGenp(room, c, slot, flat);
+      const Id16 genp = SlotGenp(room, c, slot.path, flat);
       if (genp == Id16{}) {
         continue;
       }
@@ -1189,21 +1227,147 @@ std::string WriteRoomEffects(const std::string& name, const Room& room, uint32_t
         patches.push_back(p);
       }
     }
+    for (const ActorSlot& slot : kActorSlotTable) {
+      if (slot.component != c.type || slot.retailType != o.type) {
+        continue;
+      }
+      const Id16 effect = SlotGenp(room, c, slot.path, flat);
+      if (effect == Id16{}) {
+        continue;
+      }
+      const uint32_t part = io.effect(effect);
+      if (part == 0) {
+        ++actorSlotNoPart;
+        continue;
+      }
+      actorSlots.push_back({o.id, slot.slot, part});
+    }
   }
-  char patternedNote[160] = "";
-  if (!patterned.empty() || patternedNoPart != 0 || !patches.empty() || patchNoPart != 0) {
+  // A paired Steam object's Remastered visor steam (port_room_effects.h Steam): the SteamMP1's
+  // properties, and the objects its source link names.
+  std::vector<PortRoomEffects::Steam> steams;
+  size_t steamUnpaired = 0, steamNoPart = 0, steamSources = 0, steamSourcesPaired = 0;
+  const std::vector<Component>& comps = room.Components();
+  for (size_t ci = 0; ci < comps.size(); ++ci) {
+    const Component& c = comps[ci];
+    if (c.type != kSteamMP1) {
+      continue;
+    }
+    const auto matched = c.entity >= 0 ? scripts.retail.find(c.entity) : scripts.retail.end();
+    if (matched == scripts.retail.end() || matched->second >= objects.size() ||
+        objects[matched->second].type != 0x46) {
+      ++steamUnpaired;
+      continue;
+    }
+    const auto f = room.Flat(c);
+    PortRoomEffects::Steam s;
+    s.id = objects[matched->second].id;
+    Id16 genp{};
+    if (Property16(room, f, kPropSteamGenp, genp)) {
+      genp = SwapUuid(genp.data());
+      uint32_t part = io.effect(genp);
+      if (part == 0 && io.matched != nullptr) {
+        const std::vector<uint32_t> paired = io.matched(genp);
+        part = paired.size() == 1 ? paired[0] : 0;
+      }
+      if (part != 0) {
+        s.part = part;
+      }
+    }
+    if (s.part == 0xFFFFFFFF) {
+      // SetVisorSteamShip1 shows nothing without a PART.
+      ++steamNoPart;
+    }
+    const auto color = f.find(kPropSteamColor);
+    if (color != f.end() && color->second.size == 16) {
+      for (int k = 0; k < 4; ++k) {
+        s.color[k] = ReadLEFloat(room.Bytes(color->second) + 4 * k);
+      }
+    }
+    for (const auto& [id, value] : {std::pair{kPropSteamA, &s.a}, std::pair{kPropSteamB, &s.b},
+                                    std::pair{kPropSteamG, &s.g}, std::pair{kPropSteamH, &s.h},
+                                    std::pair{kPropSteamI, &s.i}}) {
+      const auto it = f.find(id);
+      if (it != f.end() && it->second.size == 4) {
+        *value = ReadLEFloat(room.Bytes(it->second));
+      }
+    }
+    const auto flag = f.find(kPropSteamColorFlag);
+    if (flag != f.end() && flag->second.size >= 1) {
+      s.colorFlag = room.Bytes(flag->second)[0] != 0;
+    }
+    bool ok = std::isfinite(s.a) && std::isfinite(s.b) && std::isfinite(s.g) && std::isfinite(s.h) &&
+              std::isfinite(s.i);
+    for (const auto& [id, spline] : {std::pair{kPropSteamSpline1, &s.s1}, std::pair{kPropSteamSpline2, &s.s2}}) {
+      const auto it = f.find(id);
+      if (it == f.end()) {
+        continue;
+      }
+      PortMayaSpline check;
+      if (it->second.size > PortRoomEffects::kMaxSteamSplineBytes ||
+          !check.Load(room.Bytes(it->second), it->second.size)) {
+        ok = false;
+        continue;
+      }
+      spline->assign(room.Bytes(it->second), room.Bytes(it->second) + it->second.size);
+    }
+    // GetAveragedSteamSourcePos counts each linked object once.
+    std::set<int> seen;
+    for (const auto& [link, target] : ReadEntityLinkIds(room, ci)) {
+      if (link != kSteamSourceLink || target < 0) {
+        continue;
+      }
+      Component t = comps[size_t(target)];
+      if (t.entity < 0) {
+        t.entity = target;  // the link names the entity itself
+      }
+      Vec3 pos, rot, scale;
+      if (!seen.insert(t.entity).second || !room.Xform(t, pos, rot, scale)) {
+        continue;
+      }
+      PortRoomEffects::SteamSource src;
+      const Vec3 w = Apply(area.xf, MulR2G(pos));
+      for (int k = 0; k < 3; ++k) {
+        src.pos[k] = float(w[size_t(k)]);
+      }
+      const auto paired = scripts.retail.find(t.entity);
+      if (paired != scripts.retail.end() && paired->second < objects.size()) {
+        src.id = objects[paired->second].id;
+        ++steamSourcesPaired;
+      }
+      ++steamSources;
+      if (s.sources.size() < PortRoomEffects::kMaxSteamSources) {
+        s.sources.push_back(src);
+      }
+    }
+    if (ok) {
+      steams.push_back(std::move(s));
+    }
+  }
+  char steamNote[160] = "";
+  if (!steams.empty() || steamUnpaired != 0) {
+    std::snprintf(steamNote, sizeof steamNote,
+                  ", %zu Remastered steam(s) (%zu without a PART, %zu unpaired), %zu steam source(s) (%zu on a "
+                  "retail object)",
+                  steams.size(), steamNoPart, steamUnpaired, steamSources, steamSourcesPaired);
+  }
+  char patternedNote[224] = "";
+  if (!patterned.empty() || patternedNoPart != 0 || !patches.empty() || patchNoPart != 0 || !actorSlots.empty() ||
+      actorSlotNoPart != 0) {
     std::snprintf(patternedNote, sizeof patternedNote,
-                  ", %zu enemy death particle(s) (%zu without a PART), %zu particle propert(ies) (%zu without a PART)",
-                  patterned.size(), patternedNoPart, patches.size(), patchNoPart);
+                  ", %zu enemy death particle(s) (%zu without a PART), %zu particle propert(ies) (%zu without a "
+                  "PART), %zu Remastered-only effect slot(s) (%zu without an asset)",
+                  patterned.size(), patternedNoPart, patches.size(), patchNoPart, actorSlots.size(), actorSlotNoPart);
   }
   std::snprintf(line, sizeof line,
                 "  %s: %zu effect actor(s) added, %zu retail effect(s) replaced, %zu retail effect(s) take "
                 "Remastered's effect, %zu connected and left out, %zu matched a retail object (%zu of them still on "
-                "the retail PART), %zu without a PART, %zu on an unknown layer%s%s%s%s",
+                "the retail PART), %zu without a PART, %zu on an unknown layer%s%s%s%s%s",
                 name.c_str(), added.size(), replacedNear, overridden, connectedCount, kept + keptOwn + overridden,
                 keptOwn, noPart, noLayer, full != 0 ? ", the id range is full" : "",
-                badVars != 0 ? ", unreadable particle variables" : "", barrierNote, patternedNote);
-  if (added.empty() && overrides.empty() && skips.empty() && !group && patterned.empty() && patches.empty()) {
+                badVars != 0 ? ", unreadable particle variables" : "", barrierNote, patternedNote, steamNote);
+  if (added.empty() && overrides.empty() && skips.empty() && !group && patterned.empty() && patches.empty() &&
+      steams.empty() && actorSlots.empty()) {
     return line;
   }
   PortRoomEffects::File file;
@@ -1215,6 +1379,8 @@ std::string WriteRoomEffects(const std::string& name, const Room& room, uint32_t
   file.overrides = std::move(overrides);
   file.patterned = std::move(patterned);
   file.patches = std::move(patches);
+  file.steams = std::move(steams);
+  file.actorSlots = std::move(actorSlots);
   if (group) {
     PortRoomEffects::BarrierGroup barrierGroup;
     barrierGroup.controller = PortQueenBarrier::kController;
@@ -1294,10 +1460,26 @@ std::vector<std::array<uint8_t, 16>> RoomEffectGenpsOf(const Room& room) {
       if (slot.component != c.type) {
         continue;
       }
-      const Id16 genp = SlotGenp(room, c, slot, flat);
+      const Id16 genp = SlotGenp(room, c, slot.path, flat);
       if (genp != Id16{}) {
         out.push_back(genp);
       }
+    }
+    for (const ActorSlot& slot : kActorSlotTable) {
+      if (slot.component != c.type) {
+        continue;
+      }
+      const Id16 effect = SlotGenp(room, c, slot.path, flat);
+      if (effect != Id16{}) {
+        out.push_back(effect);
+      }
+    }
+  }
+  // Every steam's PART (WriteRoomEffects gives it to the retail Steam matched).
+  for (const Component* c : room.Of(kSteamMP1)) {
+    Id16 genp{};
+    if (c->entity >= 0 && Property16(room, room.Flat(*c), kPropSteamGenp, genp)) {
+      out.push_back(SwapUuid(genp.data()));
     }
   }
   // The barrier's ten effects, once its whole graph validates: the only connected actors the
