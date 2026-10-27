@@ -438,8 +438,12 @@ struct Converted {
   uint32_t newest = 0;
 };
 
-std::string ConversionNote(const PortSaveConvert::Conversion& conversion) {
-  std::string text = std::string("converted from ") + PortSaveConvert::FormatName(conversion.from);
+std::string ConversionNote(const PortSaveConvert::Conversion& conversion, const std::vector<uint8_t>& bytes) {
+  // A Trilogy disc's card files hold PAL's layout; name them by what they are.
+  const bool trilogy = bytes.size() >= 4 && std::memcmp(bytes.data(), "R3M", 3) == 0;
+  std::string text = std::string("converted from ") +
+                     (trilogy ? (bytes[3] == 'P' ? "Trilogy (PAL)" : "Trilogy (USA)")
+                              : PortSaveConvert::FormatName(conversion.from));
   if (conversion.stats.Any()) {
     text += " (" + conversion.stats.Summary() + ")";
   }
@@ -462,7 +466,7 @@ bool Convert(const std::vector<uint8_t>& bytes, const std::vector<uint8_t>& art,
     return false;
   }
   out.gci = std::move(conversion.gci);
-  out.note = ConversionNote(conversion);
+  out.note = ConversionNote(conversion, bytes);
   out.newest = conversion.newest;
   if (bytes.size() >= 0x2C) {
     out.modTime = port::GetBE32(bytes, 0x28);
@@ -1151,6 +1155,93 @@ Report MigrateMountedLegacyPal() {
     MarkCardChanged();
   }
   return migrated;
+}
+
+namespace {
+struct Release {
+  const char* code;
+  const char* label;
+};
+constexpr Release kReleases[] = {
+    {"GM8E", "Metroid Prime (USA GameCube)"},
+    {"GM8P", "Metroid Prime (PAL GameCube)"},
+    {"R3ME", "Metroid Prime Trilogy (USA)"},
+    {"R3MP", "Metroid Prime Trilogy (PAL)"},
+};
+
+fs::path RestoreMarker(const fs::path& folder) { return folder / (std::string(".restore-offered-") + sGameCode); }
+} // namespace
+
+std::vector<OtherRelease> OtherReleaseSaves() {
+  std::vector<OtherRelease> found;
+  fs::path folder = MountedCardFolder();
+  if (folder.empty()) {
+    return found;
+  }
+  if (!folder.has_filename()) {
+    folder = folder.parent_path(); // a trailing separator
+  }
+  // <base>/<region>/Card A: the other region's card sits beside this one.
+  const fs::path base = folder.parent_path().parent_path();
+  const fs::path cardName = folder.filename();
+  for (const Release& release : kReleases) {
+    if (std::strncmp(release.code, sGameCode, 4) == 0) {
+      continue;
+    }
+    const fs::path source = base / (release.code[3] == 'P' ? "EUR" : "USA") / cardName;
+    OtherRelease other{source, release.code, release.label, fs::file_time_type::min()};
+    bool any = false;
+    for (const fs::path& file : FilesOf(source, release.code)) {
+      // Only files with a game in them: an empty card is nothing to restore.
+      std::vector<uint8_t> bytes;
+      std::string error;
+      PortSaveConvert::Format format;
+      PortSaveConvert::Save save;
+      if (!ReadAll(file, bytes, error) ||
+          !PortSaveConvert::Read(bytes.data(), bytes.size(), format, save, nullptr, error)) {
+        continue;
+      }
+      std::error_code ec;
+      other.written = std::max(other.written, fs::last_write_time(file, ec));
+      any = true;
+    }
+    if (any) {
+      found.push_back(std::move(other));
+    }
+  }
+  std::sort(found.begin(), found.end(),
+            [](const OtherRelease& a, const OtherRelease& b) { return a.written > b.written; });
+  return found;
+}
+
+Report RestoreFrom(const OtherRelease& source) {
+  const fs::path folder = MountedCardFolder();
+  if (folder.empty()) {
+    Report report;
+    AddError(report, "the memory card is not a GCI folder");
+    return report;
+  }
+  Report report = CopyFiles(source.folder, FilesOf(source.folder, source.code), folder, sGameCode);
+  if (report.copied > 0) {
+    MarkCardChanged();
+  }
+  return report;
+}
+
+std::vector<OtherRelease> RestoreToOffer() {
+  const fs::path folder = MountedCardFolder();
+  std::error_code ec;
+  if (folder.empty() || !GameFiles(folder).empty() || fs::exists(RestoreMarker(folder), ec)) {
+    return {};
+  }
+  return OtherReleaseSaves();
+}
+
+void MarkRestoreOffered() {
+  const fs::path folder = MountedCardFolder();
+  if (!folder.empty()) {
+    std::ofstream(RestoreMarker(folder)) << "asked\n";
+  }
 }
 
 void MarkCardChanged() { sCardChanged = true; }

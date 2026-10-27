@@ -1226,6 +1226,14 @@ void CCompoundTargetReticle::DrawNextLockOnGroup(const CMatrix3f& rot,
     }
   }
 
+#ifdef TARGET_PC
+  // Trilogy's next-target group (fn_80237EC4) draws no scan lines: its reticle code has no line
+  // primitives and no 20.5 arm length. Its scan reticle is the ring and brackets
+  // (PortTriDrawScan).
+  if (xPortTri) {
+    scanRet = false;
+  }
+#endif
   if (scanRet && visorFactor > 0.f) {
     float nextFactor = x174_nextGroupInterp.GetFactor();
     float scale = CalculateClampedScale(position, radius,
@@ -1645,7 +1653,17 @@ float CCompoundTargetReticle::CalculateClampedScale(CVector3f pos, float scale, 
   float pixelScale =
       cam.GetPerspectiveMatrix().MultiplyOneOverW(viewSpace + CVector3f(scale, 0.f, 0.f)).GetX() -
       projX1;
+#ifdef TARGET_PC
+  // Trilogy (fn_8023A0B4, 0x8023A1CC) measures against a fixed 640 (lbl_805C6CF8), its
+  // framebuffer width in 4:3 and anamorphic 16:9 alike, so a clamp is a share of the screen
+  // width. The port's viewport widens with the aspect (854 at 16:9), which shrank Trilogy's
+  // scan brackets by a quarter.
+  pixelScale *= PortDisc::IsTrilogy(PortDisc::Current())
+                    ? 640.f
+                    : static_cast< float >(CGraphics::GetViewport().mWidth);
+#else
   pixelScale *= static_cast< float >(CGraphics::GetViewport().mWidth);
+#endif
   return scale * (CMath::Clamp(clampMin, pixelScale, clampMax) / pixelScale);
 }
 
@@ -1716,14 +1734,32 @@ void CTargetingManager::Draw(const CStateManager& mgr, bool hideLockon) const {
 // hardcoded in the Trilogy tweak ctor fn_802685B8.
 static const float skTriScanFadeTime = 0.15f; // tweak 0x360
 
-// Trilogy reads the Wii-remote pointer (player +0xEB8, fn_80015090). The port has none: the
-// pointer is the screen centre, always valid, so fn_80015D20 (valid) is true. The ray follows
-// fn_80015090 from the camera along the pointer direction.
+// Trilogy reads the Wii-remote pointer (player +0xEB8, fn_80015090). The port's pointer is the
+// pointer aim's, or the screen centre without it; either is always valid, so fn_80015D20
+// (valid) is true. presented takes the pointer as drawn this frame rather than as of the tick.
+static CVector3f PortTriPointerDir(const CTransform4f& camXf, const CStateManager& mgr,
+                                   bool presented) {
+  float x = 0.f;
+  float y = 0.f;
+  const bool on = presented ? PortDebug::PresentedPointerAimPosition(
+                                  CCameraManager::GetPresentationInterpolation(), x, y)
+                            : PortDebug::PointerAimPosition(x, y);
+  if (!on) {
+    return camXf.GetForward();
+  }
+  const CGameCamera& cam = mgr.GetCameraManager()->GetCurrentCamera(mgr);
+  float yaw = 0.f;
+  float pitch = 0.f;
+  PortMouse::PointerAim::RayAngles(x, y, cam.GetRenderFov(), cam.GetAspectRatio(), yaw, pitch);
+  return camXf.Rotate(CVector3f(sinf(yaw) * cosf(pitch), cosf(yaw) * cosf(pitch), sinf(pitch)));
+}
+
+// The ray follows fn_80015090 from the camera along the pointer direction.
 // @ fn_80015090
 void CCompoundTargetReticle::PortTriUpdateScanPointer(const CStateManager& mgr) {
   const CTransform4f camXf = PortReticleCameraXf(mgr);
   const CVector3f start = camXf.GetTranslation();
-  const CVector3f dir = camXf.GetForward();
+  const CVector3f dir = PortTriPointerDir(camXf, mgr, false);
   const CMaterialFilter filter = CMaterialFilter::MakeIncludeExclude(
       CMaterialList(kMT_Solid, kMT_Character, kMT_NonSolidDamageable),
       CMaterialList(kMT_ProjectilePassthrough, kMT_Player));
@@ -1923,7 +1959,11 @@ static uchar PortTriAlphaU8(float a) {
 // @ fn_80239C84
 static float PortTriScanRingDistance(const CStateManager& mgr) {
   const CGameCamera& cam = mgr.GetCameraManager()->GetCurrentCamera(mgr);
-  float dist = 224.f /* lbl_805C6CF0 */ / CCast::LtoF(gpTweakPlayer->GetOrbitZoneHeight(0));
+  // Trilogy's GetOrbitZoneHeight (fn_80254158) scales the tweak value by 0.65 (lbl_805C6EE0)
+  // and truncates (fctiwz): 180 -> 116 (0.65f * 180 is 116.99999 in single precision), so the
+  // ring sits farther out and draws smaller than the raw tweak value would put it.
+  const int height = static_cast< int >(0.65f * CCast::LtoF(gpTweakPlayer->GetOrbitZoneHeight(0)));
+  float dist = 224.f /* lbl_805C6CF0 */ / CCast::LtoF(height);
   return dist / CMath::SlowTangentR(cam.GetRenderFov() * 0.5f /* lbl_805C6C80 */ *
                                     (1.f / 360.f) /* lbl_805C6CF4 */ * (2.f * M_PIF) /* lbl_805C6C94 */);
 }
@@ -1973,22 +2013,25 @@ void CCompoundTargetReticle::PortTriDrawScan(const CMatrix3f& rot, const CStateM
   }
 
   // 0x80238F9C: Wii pointer intensity (fn_80015D2C, pointer +0x94) while not scanning. The
-  // port's pointer is always on screen, so it is 1. player +0x11A4 (0x80238FAC) only ramps
-  // while player +0x300 is set (fn_8019BDFC), which normal play never does: 0.
+  // port's pointer is always on screen, so it is 1. player +0x11A4 (0x80238FAC) is the orbit
+  // lock fade (fn_8019BDFC): the ring and brackets fade out as the lock settles.
   const bool scanning = mgr.GetPlayer()->GetScanningObjectId() != kInvalidUniqueId;
   const float pointerIntensity = 1.f;
-  const float intensity = (scanning ? 1.f : pointerIntensity) * (1.f - 0.f);
+  const float intensity =
+      (scanning ? 1.f : pointerIntensity) * (1.f - mgr.GetPlayer()->PortTriOrbitFade());
 
-  // fn_80239B84: the ring sits on the pointer ray at the orbit-ring distance.
+  // fn_80239B84: the ring sits on the pointer ray at the orbit-ring distance. The port takes
+  // the pointer as drawn, so the ring stays on the scan window that follows it between ticks.
   const CTransform4f camXf = PortReticleCameraXf(mgr);
-  const CVector3f camPos = camXf.GetTranslation();
-  const CVector3f ringPos = camPos + PortTriScanRingDistance(mgr) *
-                                         (xPortTriPointerPos - camPos).AsNormalized();
+  const CVector3f ringPos =
+      camXf.GetTranslation() + PortTriScanRingDistance(mgr) * PortTriPointerDir(camXf, mgr, true);
 
   // 0x80239014..0x802390AC
   CColor ringColor = CColor::Lerp(skTriScanRingColor, skTriScanLockedColor, x404_scanFade);
   ringColor.SetAlpha(PortTriAlphaU8(intensity * ringColor.GetAlphau8()));
-  CColor bracketColor = CColor::Lerp(skTriScanBracketColor, skTriScanLockedColor, x404_scanFade);
+  // The brackets lerp the other way (0x80239050: from 0x370 to 0x36c): faint on the pointer,
+  // full once they frame a target.
+  CColor bracketColor = CColor::Lerp(skTriScanLockedColor, skTriScanBracketColor, x404_scanFade);
   bracketColor.SetAlpha(PortTriAlphaU8(intensity * bracketColor.GetAlphau8()));
   // 0x80239094: Trilogy recolours both while not scanning and its counter x388 runs. x388 only
   // counts while the Wii pointer is off screen (fn_80015DAC), which the port's never is.
@@ -2015,7 +2058,8 @@ void CCompoundTargetReticle::PortTriDrawScan(const CMatrix3f& rot, const CStateM
   // 0x80239284..0x802392E0
   gpRender->SetModelMatrix(CTransform4f(rot, ringPos) *
                            CTransform4f::Scale(1.8f /* lbl_805C6CE0 */ * skTriScanRingScale));
-  ring->Draw(CModelFlags::Additive(ringColor));
+  // CModelFlags(7, 0, 0, colour): no depth compare or update, so the HUD draws over the world.
+  ring->Draw(CModelFlags::AdditiveDepthCompareUpdate(ringColor, false, false));
 
   // 0x802392F0..0x80239490: project the box corners, clamped to the NDC unit disc.
   CVector3f corners[4];
@@ -2056,7 +2100,7 @@ void CCompoundTargetReticle::PortTriDrawScan(const CMatrix3f& rot, const CStateM
     gpRender->SetModelMatrix(CTransform4f(rot * CMatrix3f::Scale(s), centre) *
                              CTransform4f::Scale(cx, 1.f, cz) *
                              CTransform4f::Translate(pos * invS));
-    bracket->Draw(CModelFlags::Additive(drawColor));
+    bracket->Draw(CModelFlags::AdditiveDepthCompareUpdate(drawColor, false, false));
   }
 }
 #endif

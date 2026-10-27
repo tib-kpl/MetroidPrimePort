@@ -4,7 +4,8 @@ A native build of **Metroid Prime** for Linux, Windows and Android (plus
 experimental, untested-on-hardware macOS and iPhone/iPad builds), compiled
 from the [PrimeDecomp](https://github.com/PrimeDecomp/prime) decompilation and
 rendered through Aurora (SDL3/WebGPU). There's no emulator involved. Supported
-discs: USA 1.00, 1.01 and 1.02, and PAL.
+discs: USA 1.00, 1.01 and 1.02, PAL, and (experimental) the Wii's Metroid Prime
+Trilogy, USA and PAL.
 
 **No game content is included.** You need your own copy of the game: the port
 reads it from a disc image and never ships any of its assets. This repository
@@ -23,12 +24,19 @@ ships no disc image, and neither does any package or release built from it.
 
 ## What it adds over the console release
 
-- **Remastered assets:** — (Experimental) import models and effects from your own Metroid Prime
-  Remastered dump (F1 > Remastered)
+- **Remastered assets:** — (Experimental) import models, effects and lighting from your own Metroid Prime
+  Remastered dump (F1 > Remastered), with Remastered's thermal visor and a performance mode
+- **Metroid Prime Trilogy:** run Trilogy's Metroid Prime from a Wii disc, with Trilogy's HUD,
+  scan visor and radial beam and visor menus
+- **Metroid Dread Samus:** import Samus's suits from your own Metroid Dread dump, first-person
+  arm cannon included
+- **Third-person camera** with an aiming cannon arm, and **suit colour customisation**
 - **Widescreen:** with an edge-to-edge HUD, and **uncapped frame rate**
-- **Graphics:** FOV, MSAA, anisotropic filtering, HUD scale, arm cannon offset,
-  and toggles to hide the helmet and visor effects
-- **Controls:** mouse and twin-stick aim, gyro, full rebinding and presets
+- **Graphics:** FOV, MSAA, anisotropic filtering, resolution scale and dynamic
+  resolution, HUD scale, arm cannon offset, toggles to hide the helmet and visor
+  effects, and a choice of renderer, OpenGL included
+- **Controls:** mouse and twin-stick aim, gyro, lock-on free aim, full rebinding
+  and presets, separate Morph Ball binds
 - **Optional tweaks:** Fast Morph, Spring Ball, Toggle
   Lock-On, Sticky Charge...
 - **Skippable cutscenes**
@@ -37,7 +45,10 @@ ships no disc image, and neither does any package or release built from it.
 - **Photo mode** with free-cam and high-resolution capture
 - **Map and tracker:** reveal the map, plus item, scan and room tracking
 - **Dolphin texture packs**, including HD texture replacements
-- **Discord Rich Presence** on desktop, and a **touch overlay** on Android
+- **Mods:** drop-in mod folders that replace disc data, plus
+  [community mods](docs/MODS.md)
+- **Discord Rich Presence** on desktop, and a **touch overlay** with a layout
+  editor on Android and iOS
 - The **F1 overlay** has every setting, with search; the common ones are also in
   pause > Options
 - And more..!
@@ -56,7 +67,8 @@ Releases are published on the
 Every build needs your own disc image; none of them contains one.
 
 **Quick start:** download the build for your platform (Windows zip, Linux
-AppImage or tarball, Android APK), start it, and pick your disc image when it
+AppImage, tarball or Flatpak, macOS zip, Android APK, or the iPhone/iPad `.ipa`
+to sideload, see [docs/IOS.md](docs/IOS.md)), start it, and pick your disc image when it
 asks. It remembers the choice. Supported discs are the GameCube USA 1.00, 1.01
 and 1.02 (`GM8E01`) and PAL (`GM8P01`) releases and the Wii Metroid Prime
 Trilogy (USA `R3ME01` and PAL `R3MP01`; its Metroid Prime, experimental), as `.iso`, `.gcm`,
@@ -122,6 +134,7 @@ Nintendo and Retro Studios, and ships no game data.
 | `docs/SETTINGS.md` | Every control, setting and environment variable |
 | `docs/NATIVE_PORT.md` | The detailed reference: build options, smoke-test hooks, platform notes |
 | `docs/MODS.md` | HD texture packs and the mods folder |
+| `docs/MOD_FORMATS.md` | Mod file formats, for mod authors |
 | `docs/DREAD_SAMUS.md` | The Metroid Dread Samus model import |
 | `docs/RANDOMIZER.md` | The built-in randomizer |
 | `docs/ARCHIPELAGO.md` | The Archipelago multiworld client |

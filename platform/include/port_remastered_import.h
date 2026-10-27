@@ -128,7 +128,8 @@ inline constexpr int kTextures = 5;
 //     (CHPR FAA9C708's model node N is name-pool character N), Truth/Lifegiver/Chozo/World added;
 //     the elevator platforms 32103B70/F33A6018 take 6FA561D0's model, not a Frigate rubble sheet.
 // 21: intra-Mines elevator C0A4DF30 uses the shipped E8E0AB8D platform, not a VFX model.
-inline constexpr int kModels = 21;
+// 22: a static model on a rigid retail skin keeps each connected piece on one bone (the gunship's hatch).
+inline constexpr int kModels = 22;
 // 63: ELPS reads its CNST surface flag; the system tween is 0 only at a 0x1000000 lifetime.
 // 62: NEGT, CRCV, SPEV, ELPS, ROTV, PNCV, KEYF, SLTW, CRLN octaves, KESP, one-stop GRAD, PAP0/9,
 //     ADV9 and IAV0..3 are converted; PLNV counts come from MAXP.
@@ -174,7 +175,7 @@ inline constexpr int kModels = 21;
 // look, not proven by any CHPR or other serialized reference).
 // 106: a VMSH whose material's shader reads COLOR (perm 016) is tinted by its vertex colour (VMSH flag 4).
 // 112: a VFX material's sRGB texture over 64 texels is an sRGB .dds, decoded by the GPU.
-inline constexpr int kEffects = 112;   // exact GPSM primitive dispatch, transformed squares and SIZE
+inline constexpr int kEffects = 113;   // early PIRN (old late-marker PARTs need reimport) and Ice model back culling
 // 20: two rooms matching one area write only the closer match's files, not the later room's.
 // 21: roomenv version 22, the world master's hints driven by its camera volumes (the table in every roomenv).
 // 22: a master's InventoryActivator fired by the camera going under water drives its hints (kSenderCameraWaterItem).
@@ -197,12 +198,15 @@ inline constexpr int kEffects = 112;   // exact GPSM primitive dispatch, transfo
 // 44: exposure hint fluid enum, priority and initial activation.
 // 45: exclude Landing Site's added unposed gunship hulls; keep retail's animated ship.
 // 46: a script node's retail input passes unmatched Relays (the frigate hangar's intro hull counter).
-inline constexpr int kRooms = 48;
+// 49: an ActorKeyframe's Play to a PlatformMP1 (its own action hash) plays its clip, and script
+// objects in a cycle match by a subset of their retail targets.
+// 50: a retail model on an Actor or Platform that names an animation set stays retail.
+inline constexpr int kRooms = 50;
 inline constexpr int kRoomModels = 1;  // the rooms' own models and their levels of detail
 inline constexpr int kText = 1;        // port_remastered_text, and the font (port_remastered_font)
 // 9: envfx.bin, the EnvironmentFX flake textures (port_envfx_file.h).
 // 10: shell.bin, the silhouette-shell textures (port_shell_file.h).
-inline constexpr int kHud = 10;        // port_remastered_hud, port_remastered_map, envfx.bin, shell.bin
+inline constexpr int kHud = 17;        // port_remastered_hud, port_remastered_map, envfx.bin, shell.bin
 inline constexpr int kMovies = 0;      // port_remastered_movie
 inline constexpr int kGallery = 0;     // the gallery pictures (port_gallery)
 }  // namespace ImportStage

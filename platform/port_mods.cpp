@@ -12,6 +12,7 @@
 #include "port_remastered_storage.h"
 
 #include "port_debug.h"
+#include "port_disc.h"
 #include "port_hd_font.h"
 #include "port_hud_bars.h"
 #include "port_log.h"
@@ -329,9 +330,12 @@ void SetSuspended(bool suspended) { sSuspended = suspended; }
 
 bool Suspended() { return sSuspended; }
 
-// Every .pak on the disc, as (entryNum, path).
+// Every .pak on the disc, as (entryNum, path). On Trilogy the root is MP1/; the disc's
+// other top-level folders stay reachable beside it, but they are the menu's and the
+// other games' (MP3-format paks, and MP2 ids that would clash with Prime's), not ours.
 std::vector<std::pair<int32_t, std::string>> DiscPaks() {
   std::vector<std::pair<int32_t, std::string>> paks;
+  const bool trilogy = PortDisc::IsTrilogy(PortDisc::Current());
   std::vector<std::string> dirs{"/"};
   while (!dirs.empty()) {
     const std::string dirPath = dirs.back();
@@ -347,6 +351,10 @@ std::vector<std::pair<int32_t, std::string>> DiscPaks() {
       }
       const std::string path = dirPath + entry.name;
       if (entry.isDir) {
+        if (trilogy && dirPath == "/" &&
+            (Lower(entry.name) == "fe" || Lower(entry.name) == "mp2" || Lower(entry.name) == "mp3")) {
+          continue;
+        }
         dirs.push_back(path + "/");
       } else if (EndsWith(Lower(path), ".pak")) {
         paks.emplace_back(int32_t(entry.entryNum), path);
@@ -629,6 +637,19 @@ void Initialize() {
       if (it->is_regular_file(ec)) {
         files.push_back(it->path());
       }
+    }
+    // Geometry buffers are reserved at process startup. Defer the WHOLE mod if
+    // it arrived later, before even textures/sidecars can register: a partially
+    // active Remastered import is not a usable fallback. Keep mods_disabled as
+    // saved so the next process loads it. Reuse the file list (no second walk).
+    if (!PortRoomGeo::BuffersReady() && std::any_of(files.begin(), files.end(), [](const fs::path& file) {
+          uint32_t id = 0;
+          return PortRoomGeo::ParseFileName(PathString(file.filename()), id);
+        })) {
+      info.enabled = false;
+      info.pendingRestart = true;
+      Message(info.name + ": Restart the application to apply (room geometry buffers were not reserved at startup)");
+      continue;
     }
     std::sort(files.begin(), files.end());
     std::unordered_map<uint32_t, std::string> native;

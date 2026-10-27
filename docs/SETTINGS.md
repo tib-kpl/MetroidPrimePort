@@ -588,6 +588,11 @@
   On Windows this replaces asking for OpenGL ES: Dawn's Windows build has no GLES
   backend. Elsewhere the setting is ignored and Android's choice stays `opengles` /
   `MP_OPENGLES`.
+  `MP_GL_VERSION=3.3` runs desktop OpenGL as a 3.3 core context even when the
+  driver offers newer (Dawn's `gl_force_desktop_gl_33` adapter toggle): Dawn then
+  uses only 3.3 plus extensions, like a 3.3-only GPU would, and the adapter's
+  driver description in game.log ends in "(treated as 3.3)". For testing the 3.3
+  paths on a newer GPU; any other value is ignored.
 - Vulkan driver (Android, Video > Compatibility, persisted as `gpu_driver`: an
   installed driver's id, empty for the phone's own, the default): a custom Vulkan
   driver such as Mesa Turnip, installed from a driver zip with "Install driver
@@ -1082,7 +1087,13 @@ other `X:\Users\<name>`: `X:\Users\<user>`); the
   cannot be shared. The card needs to exist (set the emulator's Slot A to "GCI
   Folder", start the game once). Randomizer/Archipelago keep their own cards.
   "Copy port saves into shared card" copies the port's own card over (its old
-  files move to `_replaced`). Logic in `platform/port_gci.cpp` and
+  files move to `_replaced`). Switching discs (USA, PAL, Trilogy) leaves the
+  new release's card empty: at boot (and when a randomizer or Archipelago
+  seed's own card mounts; seeds are version-neutral) the port asks once per card and release
+  whether to copy the newest other release's saves over, converted (skipped
+  under `MP_CONSOLE`/`MP_NO_DISC_DIALOG`); "Restore from <release>" in the
+  Memory card section (console `gci restore [n]`) does it any time, the card's
+  earlier files moving to `_replaced`. Logic in `platform/port_gci.cpp` and
   `platform/port_save_convert.cpp`, covered by `port_gci_tests` and
   `port_save_convert`. Console: `gci list | import <path> | export [usa|pal]
   <dir or .raw> | export trilogy <save.bin> | dolphin import | dolphin export
@@ -1275,7 +1286,7 @@ other `X:\Users\<name>`: `X:\Users\<user>`); the
   geometry instances that span fewer than n pixels of the game's 480-line
   screen.
 - `remastered_performance=<0|1>` (Mods > Prime Remastered > Performance mode;
-  default 0): faster Remastered drawing that is no longer exact (glass copy
+  default 1): faster Remastered drawing that is no longer exact (glass copy
   every second frame, quarter-size exposure measure, blended volumetric fog,
   arm cannon depth laid first); see `docs/MODS.md`. Console `roomgeo perf
   [mask]` sets single shortcuts (1 glass, 2 measure, 4 fog, 8 gun), not saved.
