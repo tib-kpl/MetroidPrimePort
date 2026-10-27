@@ -2507,9 +2507,12 @@ void CmdRadial() {
   float x = 0.f;
   float y = 0.f;
   PortRadial::GetSelection(x, y);
-  Out("radial setting %d held beam %d visor %d capturing %d selection %.2f %.2f",
+  Out("radial setting %d held beam %d visor %d capturing %d selection %.2f %.2f eligible beam %d "
+      "visor %d",
       PortDebug::RadialMenus() ? 1 : 0, PortRadial::Held(PortRadial::kBeam) ? 1 : 0,
-      PortRadial::Held(PortRadial::kVisor) ? 1 : 0, PortRadial::Capturing() ? 1 : 0, x, y);
+      PortRadial::Held(PortRadial::kVisor) ? 1 : 0, PortRadial::Capturing() ? 1 : 0, x, y,
+      PortRadial::Eligible(PortRadial::kBeam) ? 1 : 0,
+      PortRadial::Eligible(PortRadial::kVisor) ? 1 : 0);
   Finish();
 }
 
@@ -2864,8 +2867,13 @@ void CmdRemastered() {
     }
   } else if (verb == "cancel") {
     PortRemastered::CancelImport();
+  } else if (verb == "toggle") {
+    // As the Remastered graphics binding: the import on or off, then the mods reload.
+    PortDebug::ToggleRemastered();
+    Out("mods_disabled=%s", PortDebug::ModsDisabled().c_str());
+    return Finish();
   } else if (!verb.empty()) {
-    return Finish("usage: remastered [start <image.nsp|xci> [key file] | dread <dread.nsp|xci> [key file] | cancel]");
+    return Finish("usage: remastered [start <image.nsp|xci> [key file] | dread <dread.nsp|xci> [key file] | cancel | toggle]");
   }
   const PortRemastered::ImportState state = PortRemastered::ImportStatus();
   Out("%s %d/%d failed %d: %s",
@@ -4063,7 +4071,8 @@ const CommandSpec kCommands[] = {
     {"mods", CmdMods, nullptr,
      "mods [reload]              loaded mods, disc files and native textures; reload reads the folder again"},
     {"remastered", CmdRemastered, nullptr,
-     "remastered [start <image.nsp|xci> [key file] | cancel]  the Remastered import and its progress"},
+     "remastered [start <image.nsp|xci> [key file] | cancel | toggle]  the Remastered import and its progress;\n"
+     "                           toggle turns it on or off, as its binding"},
     {"touchpad", CmdTouchPad, nullptr,
      "touchpad [attach|detach|stick <x> <y>]  a virtual gamepad like Android's touch overlay"},
     {"minimap", CmdMinimap, nullptr,

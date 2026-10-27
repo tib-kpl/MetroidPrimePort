@@ -839,6 +839,36 @@ constexpr MatchedEffect kMatchedEffects[] = {
     // keeps the disc's.
     {"c3a53327-731d-4870-8f1e-fdc755bccf13", 0x2D16014C},  // 07BEED38 breastPlate_LCTR
     {"d701c231-cf56-4451-b177-107724371c42", 0xFD17C2C9},  // 07BEED38 breastPlate_LCTR
+    // WallCrawlerSwarm: WallCrawlerSwarmMP1's one effect property (2a0f3c8f)
+    // is LoadWallCrawlerSwarm's part1 (ScriptLoader.cpp), the first of its
+    // four PART slots; every placement, retail and Remastered, agrees. The
+    // script-slot rule misses it because the object's other uuid properties
+    // are not effects. part2 (18B11B28, intro) has no Remastered effect.
+    {"de057194-ef63-4abf-9ed7-b6ddad9486fb", 0x0A621238},  // 00a_Crater_connect part1
+    {"f17e87e4-91ca-4893-b601-1cf5822b8e36", 0x7DFF579C},  // 00F_intro_begin part1 (7 rooms)
+    // MetroidBeta: SLdrMetroidBetaMP1::Load reads its five effect ids
+    // (4a60c1ab, 55e32683, d74656b0, 29ed4133, e4168360) into consecutive
+    // slots, in CMetroidBetaData's order xf4..x104 (CMetroidBeta.cpp); the two
+    // paired by script slot (xfc, x104) confirm it. All 10 placements agree:
+    // xf4_electricParticleId (PART) is 3ec1f3bd and xf8_electricSwooshEffectId
+    // (SWHC) is the swoosh 8e1a4b01. Exo's CMetroidPrimeData xa1c_particle2 is
+    // the same PART, so Exo takes 3ec1f3bd too.
+    {"3ec1f3bd-e45d-4fac-99ed-488537af39c3", 0x9AEBBD85},  // MetroidBeta electricParticle
+    {"8e1a4b01-b461-4968-951e-6aab5fbbd6e3", 0x18E0EADC},  // MetroidBeta electricSwoosh
+    // Electric (ELC2) slots by SLdr slot order between paired assets; every
+    // placement agrees. Elite and Omega Pirate share CElitePirateData's
+    // x118 shockwave weapon (CElitePirate.cpp).
+    {"d4ee1e33-8108-467b-92c8-86d500dcf210", 0x5C29A5C5},  // Elite/Omega shockwave
+    {"c4409b28-4503-45ba-b63f-f05ac2d80ced", 0x38C0B9C6},  // PhazonHealingNodule (9 of 9)
+    {"b204de64-5633-4f81-8b98-06cabda8ef04", 0x1EB570E1},  // IceSheegoth x1ac (5 of 5)
+    {"c9c4d688-74fc-4464-aab7-fec950f28147", 0x6A6957FB},  // MetroidPrimeStage2 (1 of 1)
+    // Puffer: all 71 retail placements put C9D453A3 in both the CPatternedInfo
+    // particle slot and LoadPuffer's cloudEffect; all 69 Remastered ones put
+    // 813f0267 in the PatternedInfo slot and 78aa5da7 in the cloud slot. The
+    // cloud has no PART of its own, so it goes under a synthetic id that
+    // LoadPuffer substitutes (ScriptLoader.cpp).
+    {"813f0267-799d-41c2-b1aa-a50a25691614", 0xC9D453A3},  // Puffer patterned particle
+    {"78aa5da7-0062-4fce-8de1-3b7ee4894b3a", PortRemastered::SyntheticEffectId("puffercloud")},
     {"#loose-chpr", 0},  // method of the entries below
     // No ROOM, CHPR-set or script reference reaches these, or the counts are not
     // 1:1 (kb topic/unpaired-retail-particles.md). The missile pickup: CHPR a9b8e446 has one

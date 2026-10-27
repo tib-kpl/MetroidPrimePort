@@ -962,14 +962,21 @@ int main(int argc, char** argv) {
         PortLog::Write("metroid_prime_port: installed the imported Remastered models\n");
     }
     const bool roomGeometry = PortMods::HasRoomGeometry();
+    // The arena and the frame limits are set aside without room geometry too, so an import
+    // made or turned on later loads without a restart. Neither costs memory until used: the
+    // arena's pages are touched as the heap fills, and the frame buffers start small and grow.
+    // Android takes its device buffers at the full limit up front (aurora, issue #165), so
+    // when no enabled mod has room geometry it holds the limits back until one loads (port_mods).
+    const bool reserveRoomGeometry = true;
     uint32_t mem1Size = MEM1_DEFAULT_SIZE;
     {
         const int envMb = port::EnvInt("MP_MEM1_MB", -1);
-        const unsigned long mb = envMb >= 0 ? static_cast<unsigned long>(envMb) : roomGeometry ? kRoomGeoMem1MB : 0;
+        const unsigned long mb =
+            envMb >= 0 ? static_cast<unsigned long>(envMb) : reserveRoomGeometry ? kRoomGeoMem1MB : 0;
         if (mb > MEM1_DEFAULT_SIZE / (1024 * 1024)) {
             mem1Size = static_cast<uint32_t>(std::min(mb, 1024UL) * 1024 * 1024);
             PortLog::Write("port: MEM1 arena raised to %u MB (%s)\n", mem1Size / (1024 * 1024),
-                           envMb >= 0 ? "MP_MEM1_MB" : "room geometry");
+                           envMb >= 0 ? "MP_MEM1_MB" : "room geometry reserve");
         }
     }
     // With room_geo_resident (or MP_ROOM_GEO_RESIDENT=1), a room geometry mod's models stay on
@@ -982,15 +989,18 @@ int main(int argc, char** argv) {
     const unsigned long kResidentMiB = 256;
 #endif
     const unsigned long kResidentFrameBuffers = 2;
-    bool resident = roomGeometry && PortDebug::RoomGeoResidentAtStartup();
-    resident = roomGeometry && port::EnvFlag("MP_ROOM_GEO_RESIDENT", resident);
+    // Only for a mod that loads now: the region would otherwise keep the frame buffers taken
+    // whole on Android. One turned on later is sent each frame until the next launch.
+    const bool enabledRoomGeometry = roomGeometry && PortMods::HasEnabledRoomGeometry();
+    bool resident = enabledRoomGeometry && PortDebug::RoomGeoResidentAtStartup();
+    resident = enabledRoomGeometry && port::EnvFlag("MP_ROOM_GEO_RESIDENT", resident);
     uint32_t residentMiB = 0;
     if (resident) {
         const int envMiB = port::EnvInt("MP_ROOM_GEO_RESIDENT_MB", -1);
         residentMiB = static_cast<uint32_t>(
             envMiB >= 0 ? std::clamp(static_cast<unsigned long>(envMiB), 16UL, 2048UL) : kResidentMiB);
     }
-    uint32_t frameBufferScale = !roomGeometry ? 1 : resident ? kResidentFrameBuffers : kRoomGeoFrameBuffers;
+    uint32_t frameBufferScale = !reserveRoomGeometry ? 1 : resident ? kResidentFrameBuffers : kRoomGeoFrameBuffers;
     const int envFrameBuffers = port::EnvInt("MP_FRAME_BUFFERS", -1);
     if (envFrameBuffers >= 0) {
         frameBufferScale = static_cast<uint32_t>(std::clamp(static_cast<unsigned long>(envFrameBuffers), 1UL, 16UL));
@@ -1006,7 +1016,7 @@ int main(int argc, char** argv) {
         PortLog::Write("port: frame buffers at %ux, storage at %ux (%s)\n", frameBufferScale,
                        frameStorageScale != 0 ? frameStorageScale : frameBufferScale,
                        envFrameBuffers >= 0 || envStorageBuffers >= 0 ? "MP_FRAME_BUFFERS/MP_STORAGE_BUFFERS"
-                                                                      : "room geometry");
+                                                                      : "room geometry reserve");
     }
     // The startup compile of the cached and seeded pipelines costs ~950 MiB of process memory
     // (issue #162): Android, and any device short on RAM, builds them on first use instead. An 8 GB
@@ -1180,6 +1190,7 @@ int main(int argc, char** argv) {
         .dawnDisableToggles = nullptr,
         // Explicit MP_FRAME_BUFFERS / MP_STORAGE_BUFFERS keep the staging buffers at full size.
         .frameBuffersPinned = envFrameBuffers >= 0 || envStorageBuffers >= 0,
+        .frameBuffersDeferred = !enabledRoomGeometry,
         // Aurora's Null backend draws nothing: the game would play its sound behind
         // a black window (issue #33). Scripted runs, which can't answer a box, keep it.
         .noGraphicsMessage = port::EnvFlag("MP_NO_DISC_DIALOG")

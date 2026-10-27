@@ -92,10 +92,10 @@ void TestFile() {
   bad.push_back(0);
   CHECK_MSG(!PortRoomEffects::Parse(bad, out, error), "trailing bytes");
   bad = data;
-  bad[4] = 6;
+  bad[4] = 7;
   CHECK_MSG(!PortRoomEffects::Parse(bad, out, error), "version");
-  // Version 4 is the newest, and Write writes it with no barriers.
-  CHECK(data[4] == 4 && data[5] == 0 && PortRoomEffects::kFileVersion == 5);
+  // Write writes version 4 with no barriers, placements or patterned records.
+  CHECK(data[4] == 4 && data[5] == 0 && PortRoomEffects::kFileVersion == 7);
 
   // An object outside the add-on range, or on another layer than its own, is refused.
   File wrong;
@@ -243,6 +243,102 @@ void TestOverridePlacement() {
   bad[position + 2] = 0xC0;
   bad[position + 3] = 0x7F;
   CHECK(!PortRoomEffects::Parse(bad, out, error));
+}
+
+// Version 6 appends an enemy's death particles; without them the file stays version 5 or 4.
+void TestFilePatterned() {
+  File in;
+  PortRoomEffects::PatternedEffect death;
+  death.id = 0x041A0123;
+  death.part = 0xFE00ABCD;
+  death.hasOffset = true;
+  death.offset[2] = 1.5f;
+  in.patterned.push_back(death);
+  PortRoomEffects::PatternedEffect ice;
+  ice.id = 0x041A0123;
+  ice.slot = 1;
+  ice.part = 0x12345678;
+  in.patterned.push_back(ice);
+  in.overrides.push_back({0x000E01FE, 0xFE123456, {}});
+  const auto data = PortRoomEffects::Write(in);
+  File out;
+  std::string error;
+  REQUIRE(data[4] == 6);
+  REQUIRE_MSG(PortRoomEffects::Parse(data, out, error), error.c_str());
+  REQUIRE(out.patterned.size() == 2 && out.overrides.size() == 1);
+  CHECK(out.patterned[0].id == death.id && out.patterned[0].slot == 0 && out.patterned[0].part == death.part &&
+        out.patterned[0].hasOffset && out.patterned[0].offset[2] == 1.5f && out.patterned[0].offset[0] == 0.f);
+  CHECK(out.patterned[1].slot == 1 && out.patterned[1].part == ice.part && !out.patterned[1].hasOffset);
+  CHECK(!out.overrides[0].hasPlacement);
+  // 16 + 12 bytes of offset + 16 bytes of the second record, the count, then the v5 flag.
+  for (size_t cut = 1; cut <= 52; ++cut) {
+    auto bad = data;
+    bad.resize(bad.size() - cut);
+    CHECK(!PortRoomEffects::Parse(bad, out, error));
+    CHECK(out.patterned.empty());
+  }
+  auto old = data;
+  old.resize(old.size() - 48);
+  old[4] = 5;
+  REQUIRE_MSG(PortRoomEffects::Parse(old, out, error), error.c_str());
+  CHECK(out.patterned.empty() && out.overrides.size() == 1);
+  auto badSlot = data;
+  badSlot[badSlot.size() - 16 + 4] = 2;  // the second record's slot
+  CHECK(!PortRoomEffects::Parse(badSlot, out, error));
+  auto badOffset = data;
+  const size_t z = data.size() - 16 - 4;  // the first record's offset.z
+  badOffset[z + 2] = 0xC0;
+  badOffset[z + 3] = 0x7F;
+  CHECK(!PortRoomEffects::Parse(badOffset, out, error));
+  in.patterned.clear();
+  CHECK(PortRoomEffects::Write(in)[4] == 4);
+}
+
+// Version 7 appends PART property patches; without them the file stays version 6 or older.
+void TestFilePatches() {
+  File in;
+  in.patches.push_back({0x0410002A, 252, 0x00494E00, 0xFE00ABCD});
+  in.patches.push_back({0x0410002A, 268, 0xFFFFFFFF, 0x12345678});
+  const auto data = PortRoomEffects::Write(in);
+  File out;
+  std::string error;
+  REQUIRE(data[4] == 7);
+  REQUIRE_MSG(PortRoomEffects::Parse(data, out, error), error.c_str());
+  REQUIRE(out.patches.size() == 2);
+  CHECK(out.patches[0].id == 0x0410002A && out.patches[0].offset == 252 && out.patches[0].retail == 0x00494E00 &&
+        out.patches[0].part == 0xFE00ABCD);
+  CHECK(out.patches[1].offset == 268 && out.patches[1].part == 0x12345678);
+  for (size_t cut = 1; cut <= 36; ++cut) {
+    auto bad = data;
+    bad.resize(bad.size() - cut);
+    CHECK(!PortRoomEffects::Parse(bad, out, error));
+    CHECK(out.patches.empty());
+  }
+  auto far = data;
+  far[far.size() - 12 + 2] = 0x02;  // the second patch's offset, past kMaxPatchOffset
+  CHECK(!PortRoomEffects::Parse(far, out, error));
+  in.patches.clear();
+  CHECK(PortRoomEffects::Write(in)[4] == 4);
+
+  // Applying: offsets count from after the name's NUL; a changed retail value, another id, a
+  // PART the caller cannot build or a slot past the end leave the bytes alone.
+  std::vector<uint8_t> props = {'w', 0, 0, 0, 0, 0, 0x00, 0x49, 0x4E, 0x00, 0xAA};
+  const std::vector<PortRoomEffects::PropertyPatch> patches = {
+      {0x0410002A, 4, 0x00494E00, 0xFE00ABCD},
+      {0x0410002A, 0, 0x11111111, 0x22222222},  // retail value differs
+      {0x0510002B, 4, 0x00494E00, 0x33333333},  // another object
+      {0x0410002A, 6, 0, 0x44444444},            // past the end
+  };
+  // Layer bits don't take part: 0x0C10002A is the same object.
+  CHECK(PortRoomEffects::ApplyPatches(patches, 0x0C10002A, props.data(), props.size(), nullptr) == 1);
+  CHECK(props[6] == 0xFE && props[7] == 0x00 && props[8] == 0xAB && props[9] == 0xCD && props[10] == 0xAA);
+  CHECK(props[2] == 0 && props[5] == 0);
+  std::vector<uint8_t> again = {'w', 0, 0, 0, 0, 0, 0x00, 0x49, 0x4E, 0x00};
+  CHECK(PortRoomEffects::ApplyPatches(patches, 0x0410002A, again.data(), again.size(),
+                                      [](uint32_t) { return false; }) == 0);
+  CHECK(again[6] == 0x00 && again[7] == 0x49);
+  std::vector<uint8_t> noName = {'w', 'x'};
+  CHECK(PortRoomEffects::ApplyPatches(patches, 0x0410002A, noName.data(), noName.size(), nullptr) == 0);
 }
 
 // Version 4 carries a room's barrier: a controller retail Effect object, its duration, and five
@@ -574,6 +670,8 @@ int main() {
   TestFileVariables();
   TestFileOverrides();
   TestOverridePlacement();
+  TestFilePatterned();
+  TestFilePatches();
   TestFileBarriers();
   TestExternalVariables();
   uint32_t id = 0;
