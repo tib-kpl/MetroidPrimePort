@@ -32,6 +32,39 @@ jobs:
         with:
           key: ${{ runner.os }}-clangcl
 
+      # SDL loads libusb at run time for GameCube adapters in Wii U mode.
+      - name: Locate vcpkg
+        id: vcpkg
+        shell: pwsh
+        run: |
+          $root = $env:VCPKG_INSTALLATION_ROOT
+          if (-not $root -or -not (Test-Path "$root/vcpkg.exe")) {
+            $root = "$env:RUNNER_TEMP/vcpkg"
+            git clone --depth 1 https://github.com/microsoft/vcpkg $root
+            & "$root/bootstrap-vcpkg.bat" -disableMetrics
+          }
+          "root=$root" >> $env:GITHUB_OUTPUT
+          "rev=$(git -C $root rev-parse HEAD)" >> $env:GITHUB_OUTPUT
+
+      - uses: actions/cache@v4
+        id: libusb
+        with:
+          path: libusb
+          key: libusb-x64-windows-${{ steps.vcpkg.outputs.rev }}
+
+      - name: Build libusb
+        if: steps.libusb.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          & "${{ steps.vcpkg.outputs.root }}/vcpkg.exe" install libusb:x64-windows --x-install-root=libusb
+          if ($LASTEXITCODE -ne 0) { throw 'vcpkg failed to build libusb' }
+
+      - name: Point CMake at libusb
+        shell: pwsh
+        run: |
+          $root = "$env:GITHUB_WORKSPACE/libusb/x64-windows".Replace('\', '/')
+          "LIBUSB_ROOT=$root" >> $env:GITHUB_ENV
+
       # Configure downloads and unpacks about a dozen dependencies. Keep the
       # unpacked sources and the stamps that say they are current; the build
       # directories beside them are left out, since ccache covers those.
@@ -57,6 +90,14 @@ jobs:
           -DAURORA_SDL3_LINKAGE=static
           -DAURORA_NOD_LINKAGE=static
           -DOPENSSL_USE_STATIC_LIBS=TRUE
+          -DLibUSB_LIBRARY=${{ env.LIBUSB_ROOT }}/lib/libusb-1.0.lib
+          -DLibUSB_INCLUDE_PATH=${{ env.LIBUSB_ROOT }}/include/libusb-1.0
+
+      - name: Check SDL has libusb
+        shell: pwsh
+        run: |
+          $config = Get-ChildItem -Recurse build-win/_deps/sdl-build -Filter SDL_build_config.h | Select-Object -First 1
+          if (-not $config -or -not (Select-String -Path $config.FullName -Pattern '#define SDL_LIBUSB_DYNAMIC "libusb-1\.0\.dll"')) { throw 'SDL was configured without libusb: GameCube adapters in Wii U mode would not work' }
 
       - name: Build
         run: cmake --build build-win -j
@@ -136,6 +177,8 @@ jobs:
           Copy-Item ffmpeg-min/out/ffmpeg.exe dist/
           Copy-Item ffmpeg-min/out/COPYING.LGPLv2.1 dist/licenses/ffmpeg-LGPL-2.1.txt
           Copy-Item ffmpeg-min/out/ffmpeg-build.txt dist/licenses/ffmpeg.txt
+          Copy-Item "$env:LIBUSB_ROOT/bin/libusb-1.0.dll" dist/
+          Copy-Item "$env:LIBUSB_ROOT/share/libusb/copyright" dist/licenses/libusb.txt
           # Keep notices supplied by the fetched runtime packages too.
           Get-ChildItem build-win/_deps -Recurse -File -Include LICENSE*,COPYING*,NOTICE* |
             ForEach-Object {
