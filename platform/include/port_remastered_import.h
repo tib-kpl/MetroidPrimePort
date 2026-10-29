@@ -197,7 +197,8 @@ inline constexpr int kModels = 22;
 // 135: KESP kept as the ELC2 node tween (AtomicBeta ELC2 radius).
 // 136: GunTurret particle properties (room GENPs).
 // 137: GunTurret visor effects (room ELC2s).
-inline constexpr int kEffects = 138;   // Drone laser and scanner particles (room GENPs)
+// 138: Drone laser and scanner particles (room GENPs).
+inline constexpr int kEffects = 139;   // Queen barrier shield/glow models back-cull (MATI cull byte)
 // 20: two rooms matching one area write only the closer match's files, not the later room's.
 // 21: roomenv version 22, the world master's hints driven by its camera volumes (the table in every roomenv).
 // 22: a master's InventoryActivator fired by the camera going under water drives its hints (kSenderCameraWaterItem).
@@ -236,7 +237,8 @@ inline constexpr int kEffects = 138;   // Drone laser and scanner particles (roo
 // 61: a GunTurret's visor effect (actor slot 4: ELC2 or GENP).
 // 62: a Drone's laser particles and its scanner effect (actor slot 5).
 // 63: roomenv version 29, the suns' links and timelines (the intro's fill suns fade out).
-inline constexpr int kRooms = 63;
+// 64: the Queen barrier group survives its effects' back-cull bit (effects 139 dropped it).
+inline constexpr int kRooms = 64;
 inline constexpr int kRoomModels = 1;  // the rooms' own models and their levels of detail
 // kText: port_remastered_text, and the font (port_remastered_font).
 // 2: text/.disc, the disc the tables were merged from (kTextDiscName).

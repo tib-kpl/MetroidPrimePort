@@ -1209,6 +1209,26 @@ void CmdFxQuery() {
       Out("  %08X u%u PART %08X %s %s, %zu variable(s) set", s.eid, unsigned(s.uid), s.part,
           !alive ? "gone" : ent->GetActive() ? "active" : "inactive", s.name.c_str(), s.vars);
     }
+  } else if (sub == "barrier") {
+    // The Parasite Queen barrier group (port_queen_barrier.h), from each live ring controller.
+    const CStateManager* const mgr = PortDebug::StateManager();
+    if (mgr == nullptr) {
+      return Finish("no game");
+    }
+    const CObjectList& list = mgr->GetObjectListById(kOL_All);
+    size_t found = 0;
+    for (int i = list.GetFirstObjectIndex(); i != -1; i = list.GetNextObjectIndex(i)) {
+      const CScriptSpecialFunction* const func = TCastToConstPtr< CScriptSpecialFunction >(list[i]);
+      if (func == nullptr || func->PortFunction() != CScriptSpecialFunction::kSF_IntroBossRingController) {
+        continue;
+      }
+      ++found;
+      Out("fx barrier u%u %s: %s", unsigned(func->GetUniqueId().Value()), func->GetActive() ? "active" : "inactive",
+          func->PortDescribeBarrier().c_str());
+    }
+    if (found == 0) {
+      Out("fx barrier: no ring controller here");
+    }
   } else if (sub == "mute" || sub == "solo") {
     const std::string arg = sCmd.args.size() > 2 ? Lower(sCmd.args[2]) : "";
     if (arg == "clear" || (sub == "mute" && arg.empty())) {
@@ -2037,7 +2057,7 @@ void CmdCollDump() {
 void CmdThirdPerson() {
   static const char* const usage =
       "usage: thirdperson [on|off] [distance <m>] [shoulder <m>] [height <m>] [clips] [feet] "
-      "[clip <name>|off [phase [yaw]]]";
+      "[clip <name>|off [phase [yaw]]] [backwalk procedural|struggle|reverse]";
   for (size_t i = 1; i < sCmd.args.size(); ++i) {
     const std::string arg = Lower(sCmd.args[i]);
     float number = 0.f;
@@ -2046,6 +2066,14 @@ void CmdThirdPerson() {
     } else if (arg == "feet") {
       sCmd.out += PortThirdPersonBody::DescribeFeet();
       return Finish();
+    } else if (arg == "backwalk" && i + 1 < sCmd.args.size()) {
+      const std::string mode = Lower(sCmd.args[++i]);
+      if (mode != "struggle" && mode != "reverse" && mode != "procedural") {
+        return Finish(usage);
+      }
+      PortThirdPersonBody::SetBackWalk(mode == "struggle"  ? PortThirdPersonBody::BackWalk::Struggle
+                                       : mode == "reverse" ? PortThirdPersonBody::BackWalk::Reverse
+                                                           : PortThirdPersonBody::BackWalk::Procedural);
     } else if (arg == "clips") {
       sCmd.out += PortThirdPersonBody::DescribeClips();
       return Finish();
@@ -2084,10 +2112,10 @@ void CmdThirdPerson() {
   Finish();
 }
 
-// freecam [on|off|freeze on|off|player on|off|speed <n>|pos <x> <y> <z>|look <yaw> <pitch>]
+// freecam [on|off|freeze on|off|player on|off|drive on|off|speed <n>|pos <x> <y> <z>|look <yaw> <pitch>]
 void CmdFreeCam() {
   static const char* const usage =
-      "usage: freecam [on|off|freeze on|off|player on|off|speed <n>|pos <x> <y> <z>|look <yaw> <pitch>]";
+      "usage: freecam [on|off|freeze on|off|player on|off|drive on|off|speed <n>|pos <x> <y> <z>|look <yaw> <pitch>]";
   const CStateManager* mgr = PortDebug::StateManager();
   if (sCmd.args.size() > 1) {
     const std::string arg = Lower(sCmd.args[1]);
@@ -2103,6 +2131,8 @@ void CmdFreeCam() {
       PortFreeCam::SetFrozen(value == "on");
     } else if (arg == "player" && (value == "on" || value == "off")) {
       PortFreeCam::SetShowPlayer(value == "on");
+    } else if (arg == "drive" && (value == "on" || value == "off")) {
+      PortFreeCam::SetDrive(value == "on");
     } else if (arg == "speed" && sCmd.args.size() > 2 && ParseFloat(sCmd.args[2], number)) {
       PortFreeCam::SetSpeed(number);
     } else if (arg == "pos" && sCmd.args.size() > 4 && ParseFloat(sCmd.args[2], pose.x) &&
@@ -4013,7 +4043,7 @@ struct CommandSpec {
 // fx's queries, which read the particle debug state rather than the world.
 bool FxIsQuery() {
   if (sCmd.args.size() > 1) {
-    static const char* const queries[] = {"list", "tree", "stats", "addons", "mute", "solo", "timescale"};
+    static const char* const queries[] = {"list", "tree", "stats", "addons", "barrier", "mute", "solo", "timescale"};
     for (const char* q : queries) {
       if (Lower(sCmd.args[1]) == q) {
         return true;
@@ -4043,6 +4073,7 @@ const CommandSpec kCommands[] = {
      "fx tree <#id>              one generator and its children, recursively\n"
      "fx stats                   live generators, vfx quads/triangles and CPU ms (update, render) last frame\n"
      "fx addons                  this area's Remastered effect actors a mod added, and the retail ones they replace\n"
+     "fx barrier                 the Parasite Queen barrier group: state, ring state, per-ring motion\n"
      "fx mute <asset>|clear|list  hide a PART/SWHC/ELSC asset (it still updates); fx solo <asset|#id> hides the rest\n"
      "fx timescale <s>           particle time scale (0 freezes particles only; 1 = off)",
      FxIsQuery},
@@ -4186,10 +4217,10 @@ const CommandSpec kCommands[] = {
     {"mappan", CmdMapPan, nullptr,
      "mappan <dx> <dy> [hold s]   drag the open map screen by dx,dy dp (view height 400 dp); finger down for hold s (0.25)"},
     {"freecam", CmdFreeCam, nullptr,
-     "freecam [on|off|freeze on|off|player on|off|speed <n>|pos <x> <y> <z>|look <yaw> <pitch>]\n"
+     "freecam [on|off|freeze on|off|player on|off|drive on|off|speed <n>|pos <x> <y> <z>|look <yaw> <pitch>]\n"
      "                           fly the view away from the player (HUD hidden; freeze holds the game still)"},
     {"thirdperson", CmdThirdPerson, nullptr,
-     "thirdperson [on|off] [distance <m>] [shoulder <m>] [height <m>] [clips] [feet] [clip <name>|off [phase [yaw]]]\n"
+     "thirdperson [on|off] [distance <m>] [shoulder <m>] [height <m>] [clips] [feet] [clip <name>|off [phase [yaw]]] [backwalk procedural|struggle|reverse]\n"
      "                           third-person gameplay camera (also third_person* settings)"},
     {"photo", nullptr, CmdPhoto,
      "photo [on|off|capture [1|2|4]|fov <n>|roll <n>|samus on|off|panel on|off|super 1|2|4|speed <n>]\n"

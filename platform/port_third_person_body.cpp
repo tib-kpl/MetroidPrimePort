@@ -61,7 +61,10 @@ struct ClipNames {
   const char* a;
   const char* b;
 };
-constexpr ClipNames kIdle{"B_ready_samus", "B_rready_samus"};
+// Standing: the relaxed ready, the pose the stop ends in (B_ready_samus, the cannon levelled,
+// stands in a lunge side-on, and turning into it from the stop's end swung the body a quarter
+// turn). Walking back keeps B_ready_samus above the hips (s.ready).
+constexpr ClipNames kIdle{"B_rready_samus", "B_ready_samus"};
 constexpr ClipNames kStop{"B_intorreadyfromwalk_samus", "B_rready_samus"};
 // The walk clips (B_walkgun_samus is not one: the aim clips over the legs raise the cannon at
 // any speed), each with the one that stands in where a set lacks it. The other sets give the
@@ -163,6 +166,7 @@ struct State {
   float hipsHeight = 0.f;          // its height in the skeleton
   CSegId spine = CSegId::Invalid(); // Spine_1, the upper body's top bone
   int idle = -1;
+  int ready = -1; // B_ready_samus, the cannon levelled: the backpedal's and walk-back's upper body
   int stop = -1;
   Clip loco[kLocoSlots];
   // Measured by Build: each walk clip's ground speed (world units per second), the ground one
@@ -184,10 +188,25 @@ struct State {
   float locoWeight[kLocoSlots] = {};
   float stride = 0.f;     // where the feet are, in loops; each walk clip is at stride + its peak
   bool legsBack = false;  // the legs walk back (LegsBackward)
+  // The procedural backpedal (Backpedal): each leg's hip, knee, ankle and ball (left, right), their
+  // lengths, and the ready pose's ankles and balls (model space, unscaled), measured by Build.
+  CSegId leg[2][4] = {{CSegId::Invalid(), CSegId::Invalid(), CSegId::Invalid(), CSegId::Invalid()},
+                      {CSegId::Invalid(), CSegId::Invalid(), CSegId::Invalid(), CSegId::Invalid()}};
+  bool legs = false;
+  float thigh[2] = {}, shin[2] = {};
+  CVector3f restAnkle[2] = {CVector3f::Zero(), CVector3f::Zero()};
+  CVector3f restBall[2] = {CVector3f::Zero(), CVector3f::Zero()}; // from the ankle
+  float backLoop = 0.f;   // ground one backpedal loop covers (world units)
+  float backDuty = kBackDuty; // the share of a loop each foot is planted, last pose
+  float backWeight = 0.f; // the backpedal's share of the walk, eased
+  float backCrouch = 0.f; // how far it lowered the hips last pose (model units; thirdperson feet)
   float legYaw = 0.f;     // the legs' turn from the facing (LegYaw), eased
   float clock = 0.f;      // seconds, for the clips that play by time (ready, aim)
   float stanceTime[int(Stance::Count)] = {}; // seconds since each stance was last entered
   float airTime = 0.f;    // seconds off the ground
+  float slowTime = 0.f;   // seconds under kStandSpeed
+  float brakeTime = 0.f;  // seconds braking (kBrakeDecel), the time under kBrakeHold after it too
+  float lastSpeed = 0.f;  // ground speed last tick
   // Where the player and the platform it rides stood last tick (GroundVelocity).
   bool haveLast = false;
   CVector3f lastPos = CVector3f::Zero(), lastPlatformPos = CVector3f::Zero();
@@ -246,6 +265,10 @@ struct State {
   std::unique_ptr<CModelData> beamData;
 };
 State s;
+// The procedural backpedal: the walk-back clip covers 0.88 u/s, so at Samus's ~1.9 u/s backward
+// it plays over twice its speed, and its stance stays splayed; the forward walks reversed swing
+// the arms and land heel first, which reads as a moonwalk (#216).
+BackWalk sBackWalk = BackWalk::Procedural;
 
 int CharIdx(const CStateManager& mgr) {
   const CPlayerState::EPlayerSuit suit = mgr.GetPlayerState()->GetCurrentSuitRaw();
@@ -689,6 +712,7 @@ Pose sAcc;
 Pose sArms;
 Pose sModel;
 Pose sBlended;
+Pose sUpper;
 
 // Pose p with each rotation turned into the model's frame (its parents' rotations times its
 // own); a segment RecalcPoseBuilder doesn't set keeps the pose builder's rotation.
@@ -814,6 +838,155 @@ void Measure(CAnimData& data) {
   s.gridUp = extent(up, nu);
 }
 
+// The procedural backpedal's shape, in leg lengths (hip to ankle): how high a swinging foot
+// lifts, how far the pelvis bobs, and the least it crouches; the torso's forward lean (radians).
+constexpr float kBackLift = 0.1f;
+constexpr float kBackBob = 0.02f;
+constexpr float kBackCrouch = 0.03f;
+constexpr float kBackReach = 0.96f; // the longest a leg stretches
+constexpr float kBackLean = 0.1f;
+// The furthest a planted foot travels either side of under her, in leg lengths, and the most
+// loops a second (faster, the loop lengthens; past what a foot covers planted, she runs).
+constexpr float kBackHalf = 0.3f;
+constexpr float kBackCadence = 3.f;
+
+// The legs' bones and lengths, and the ready pose's feet, for Backpedal (s.legs if all there).
+void FindLegBones(CAnimData& data) {
+  const CCharLayoutInfo& layout = *data.GetCharLayoutInfo();
+  static const char* const kNames[2][4] = {{"L_hip", "L_knee", "L_ankle", "L_ball"},
+                                           {"R_hip", "R_knee", "R_ankle", "R_ball"}};
+  s.legs = s.ready >= 0 && s.hips != CSegId::Invalid();
+  for (int f = 0; f < 2; ++f) {
+    for (int b = 0; b < 4; ++b) {
+      s.leg[f][b] = layout.GetSegIdFromString(rstl::string_l(kNames[f][b]));
+      s.legs = s.legs && s.leg[f][b] != CSegId::Invalid() && s.leg[f][b].val() < kSegs && s.posed[s.leg[f][b].val()];
+    }
+    s.legs = s.legs && IsAncestor(layout, s.leg[f][0], s.leg[f][1]) && IsAncestor(layout, s.leg[f][1], s.leg[f][2]) &&
+             IsAncestor(layout, s.leg[f][2], s.leg[f][3]);
+  }
+  if (!s.legs) {
+    return;
+  }
+  Sample(data, s.ready, 0.f, sTmp);
+  for (int f = 0; f < 2; ++f) {
+    const CVector3f hip = SegPosition(data, s.leg[f][0]);
+    const CVector3f knee = SegPosition(data, s.leg[f][1]);
+    s.restAnkle[f] = SegPosition(data, s.leg[f][2]);
+    s.restBall[f] = SegPosition(data, s.leg[f][3]) - s.restAnkle[f];
+    s.thigh[f] = (knee - hip).Magnitude();
+    s.shin[f] = (s.restAnkle[f] - knee).Magnitude();
+    s.legs = s.legs && s.thigh[f] > 1e-3f && s.shin[f] > 1e-3f;
+  }
+}
+
+// seg's rotation in the model, as the pose builder holds it now.
+CQuaternion ModelRotation(const CHierarchyPoseBuilder& pb, const CCharLayoutInfo& layout, CSegId seg) {
+  CQuaternion rot = pb.GetSegRotation(seg);
+  for (CSegId p = layout.GetOriginalParent(seg); p != CSegId::Character(); p = layout.GetOriginalParent(p)) {
+    rot = pb.GetSegRotation(p) * rot;
+  }
+  return rot;
+}
+
+// Walking backward, posed rather than sampled (no clip walks backward well; #216): the ready pose
+// above the hips, the cannon held, and below them each foot on its BackpedalFoot path, planted
+// feet sliding forward under her at her ground speed (s.stride runs a loop per s.backLoop of
+// ground). Two-bone IK puts each ankle there, its knee bent forward; the hips crouch so the
+// stretched leg reaches, and bob at each step.
+void Backpedal(CAnimData& data, Pose& out) {
+  const float readyDuration = std::max(data.GetAnimationDuration(s.ready), 0.1f);
+  Sample(data, s.ready, Wrap(s.clock / readyDuration), out);
+  CHierarchyPoseBuilder& pb = data.PoseBuilder();
+  const CCharLayoutInfo& layout = *data.GetCharLayoutInfo();
+  const float leg = 0.5f * (s.thigh[0] + s.shin[0] + s.thigh[1] + s.shin[1]);
+  // A foot is planted while it covers 2 * kBackHalf legs of ground, at most kBackDuty of a loop.
+  const float duty = std::clamp(2.f * kBackHalf * leg * kBodyScale / std::max(s.backLoop, 0.1f), 0.2f, kBackDuty);
+  s.backDuty = duty;
+  // Left foot furthest forward at stride 0, as the walk clips are at their peaks.
+  const float phaseL = Wrap(duty - s.stride);
+  const float phase[2] = {phaseL, Wrap(phaseL + 0.5f)};
+  const float half = duty * s.backLoop / (2.f * kBodyScale);
+  const float midY = 0.5f * (s.restAnkle[0].GetY() + s.restAnkle[1].GetY());
+  // Running, the feet lift higher.
+  const float lift = kBackLift * leg * (1.f + 4.f * (kBackDuty - duty));
+
+  // Crouch so the leg furthest from under its hip still reaches.
+  float crouch = kBackCrouch * leg;
+  for (int f = 0; f < 2; ++f) {
+    const CVector3f hip = SegPosition(data, s.leg[f][0]);
+    const float dx = hip.GetX() - s.restAnkle[f].GetX();
+    const float dy = std::fabs(hip.GetY() - midY) + half;
+    const float reach = kBackReach * (s.thigh[f] + s.shin[f]);
+    const float dz = std::sqrt(std::max(reach * reach - dx * dx - dy * dy, 0.f));
+    crouch = std::max(crouch, hip.GetZ() - s.restAnkle[f].GetZ() - dz);
+  }
+  s.backCrouch = crouch;
+  CVector3f hipsOff = pb.GetSegOffset(s.hips);
+  hipsOff.SetZ(hipsOff.GetZ() - crouch - kBackBob * leg * BackpedalBob(phaseL, duty));
+  pb.Insert(s.hips, hipsOff);
+
+  for (int f = 0; f < 2; ++f) {
+    const CSegId hipSeg = s.leg[f][0];
+    const CSegId kneeSeg = s.leg[f][1];
+    const CSegId ankleSeg = s.leg[f][2];
+    const BackFoot foot = BackpedalFoot(phase[f], duty);
+    // The ankle's place: the foot turns about its ball landing toe first, about its heel (under
+    // the ankle) rolling up onto the toe.
+    const CVector3f& ball = s.restBall[f];
+    const CVector3f pivot = foot.pitch < 0.f ? ball : CVector3f(0.f, -0.35f * std::fabs(ball.GetY()), -s.restAnkle[f].GetZ());
+    const CVector3f roll = pivot - CQuaternion::XRotation(CRelAngle::FromRadians(foot.pitch)).Transform(pivot);
+    const CVector3f target(s.restAnkle[f].GetX(), midY + foot.y * half + roll.GetY(),
+                           s.restAnkle[f].GetZ() + foot.lift * lift + roll.GetZ());
+    const CQuaternion ankleReady = ModelRotation(pb, layout, ankleSeg);
+
+    // The knee bends to the hip-to-target distance.
+    {
+      const CVector3f hip = SegPosition(data, hipSeg);
+      const CVector3f knee = SegPosition(data, kneeSeg);
+      const CVector3f ankle = SegPosition(data, ankleSeg);
+      const CVector3f up = hip - knee;
+      const CVector3f down = ankle - knee;
+      const float reach = s.thigh[f] + s.shin[f];
+      const float d = std::clamp((target - hip).Magnitude(), 0.05f * reach, 0.999f * reach);
+      const float want = KneeAngle(s.thigh[f], s.shin[f], d);
+      float now = std::acos(std::clamp(CVector3f::Dot(up.AsNormalized(), down.AsNormalized()), -1.f, 1.f));
+      CVector3f axis = CVector3f::Cross(up, down);
+      if (!axis.CanBeNormalized() || axis.GetX() <= 0.f) {
+        // Straight or bent backward: about the model's right, the way a knee bends.
+        now = axis.CanBeNormalized() ? 2.f * 3.14159265f - now : 3.14159265f;
+        axis = CVector3f(1.f, 0.f, 0.f);
+      }
+      TurnSeg(pb, layout, kneeSeg, pb.GetSegRotation(kneeSeg),
+              CQuaternion::AxisAngle(CUnitVector3f(axis.AsNormalized()), CRelAngle::FromRadians(want - now)));
+    }
+    // The hip swings the ankle onto the target, then twists the knee forward (a little out).
+    const CVector3f hip = SegPosition(data, hipSeg);
+    const CVector3f toAnkle = SegPosition(data, ankleSeg) - hip;
+    const CVector3f toTarget = target - hip;
+    if (toAnkle.CanBeNormalized() && toTarget.CanBeNormalized()) {
+      TurnSeg(pb, layout, hipSeg, pb.GetSegRotation(hipSeg),
+              CQuaternion::ShortestRotationArc(toAnkle.AsNormalized(), toTarget.AsNormalized()));
+      const CVector3f line = toTarget.AsNormalized();
+      const CVector3f kneeDir = SegPosition(data, kneeSeg) - hip;
+      const CVector3f pole(s.restAnkle[f].GetX() < 0.f ? -0.2f : 0.2f, 1.f, 0.f);
+      const CVector3f a = kneeDir - line * CVector3f::Dot(kneeDir, line);
+      const CVector3f b = pole - line * CVector3f::Dot(pole, line);
+      if (a.CanBeNormalized() && b.CanBeNormalized()) {
+        TurnSeg(pb, layout, hipSeg, pb.GetSegRotation(hipSeg),
+                CQuaternion::ShortestRotationArc(a.AsNormalized(), b.AsNormalized()));
+      }
+    }
+    // The foot keeps the ready pose's orientation in the model, pitched.
+    const CQuaternion ankleNow = ModelRotation(pb, layout, ankleSeg);
+    TurnSeg(pb, layout, ankleSeg, pb.GetSegRotation(ankleSeg),
+            CQuaternion::XRotation(CRelAngle::FromRadians(foot.pitch)) * ankleReady * ankleNow.BuildInverted());
+    for (int b = 0; b < 3; ++b) {
+      out.rot[s.leg[f][b].val()] = pb.GetSegRotation(s.leg[f][b]);
+    }
+  }
+  out.off[s.hips.val()] = hipsOff;
+}
+
 // Poses the body into its pose builder: the legs' stances blended by their weights (the walk
 // clips by speed, in step), then, with the cannon raised, the aim clips over the upper body.
 void PoseBody(CAnimData& data) {
@@ -829,10 +1002,21 @@ void PoseBody(CAnimData& data) {
     Sample(data, s.stop, std::min(s.stanceTime[int(Stance::Stop)] / duration, 0.999f), sTmp);
     Mix(sAcc, total, sTmp, s.stanceWeight[int(Stance::Stop)], false);
   }
+  const float backWeight = s.stanceWeight[int(Stance::Loco)] * s.backWeight;
+  if (backWeight > 0.f) {
+    Backpedal(data, sTmp);
+    Mix(sAcc, total, sTmp, backWeight, false);
+  }
   for (int i = 0; i < kLocoSlots; ++i) {
-    const float w = s.stanceWeight[int(Stance::Loco)] * s.locoWeight[i];
+    const float w = s.stanceWeight[int(Stance::Loco)] * s.locoWeight[i] * (1.f - s.backWeight);
     if (w > 0.f) {
       Sample(s.loco[i], Wrap(kLocoDir[i] * s.stride + s.locoPeak[i]), sTmp);
+      if (kLocoDir[i] < 0.f) {
+        // The walk-back is Samus struggling in the Phazon: its arms clutch the helmet and
+        // fling out. Only its legs; above them the ready pose.
+        Sample(data, s.ready, Wrap(s.clock / std::max(data.GetAnimationDuration(s.ready), 0.1f)), sUpper);
+        Overlay(sTmp, sUpper, 1.f, true);
+      }
       Mix(sAcc, total, sTmp, w, false);
     }
   }
@@ -920,6 +1104,14 @@ void PoseBody(CAnimData& data) {
       }
     }
   }
+  // Backpedalling, the torso leans forward over the feet (over the aim, which AimArm corrects).
+  if (backWeight > 0.f && s.spine != CSegId::Invalid()) {
+    ModelRotations(data, sAcc, sModel);
+    const int sp = s.spine.val();
+    const CQuaternion parent = sModel.rot[sp] * sAcc.rot[sp].BuildInverted();
+    const CQuaternion lean = CQuaternion::XRotation(CRelAngle::FromRadians(-kBackLean * backWeight));
+    sAcc.rot[sp] = parent.BuildInverted() * lean * sModel.rot[sp];
+  }
   // Strafing: the hips turn the legs the way they walk (about the model's up), and Spine_1
   // turns back, so the upper body keeps its orientation in the model.
   if (std::fabs(s.legYaw) > 1e-4f && s.hips != CSegId::Invalid() && s.spine != CSegId::Invalid()) {
@@ -955,6 +1147,10 @@ void Build(CStateManager& mgr) {
   s.animating = s.idle >= 0;
   if (!s.animating) {
     return;
+  }
+  s.ready = data->GetCharacterInfo().GetAnimationIndex(rstl::string_l(kReady));
+  if (s.ready < 0) {
+    s.ready = s.idle;
   }
   s.stop = Find(*data, kStop);
   if (s.stop < 0) {
@@ -1001,6 +1197,8 @@ void Build(CStateManager& mgr) {
   s.flinch = FindClip(kFlinch.name);
   s.scan = FindClip(kScan.name);
   Measure(*data);
+  FindLegBones(*data);
+  s.backWeight = 0.f;
   s.stance = Stance::Idle;
   std::fill(std::begin(s.stanceWeight), std::end(s.stanceWeight), 0.f);
   s.stanceWeight[int(Stance::Idle)] = 1.f;
@@ -1109,9 +1307,21 @@ void Update(CStateManager& mgr, float dt) {
                                ? s.body->GetAnimationData()->GetAnimationDuration(s.stop)
                            : s.stance == Stance::Land && s.land.Valid() ? ShotSeconds(s.land, kLand)
                                                                          : 0.f;
+  const float speed = std::sqrt(fwd * fwd + side * side);
+  s.slowTime = speed < kStandSpeed ? s.slowTime + dt : 0.f;
+  if (dt > 0.f) {
+    const bool slowing = speed <= s.lastSpeed - kBrakeDecel * dt;
+    s.brakeTime = slowing || (speed < kBrakeHold && s.brakeTime > 0.f) ? s.brakeTime + dt : 0.f;
+    s.lastSpeed = speed;
+  }
+  const bool braking = grounded && s.brakeTime >= kBrakeSeconds && speed < kBrakeSpeed;
   const Stance stance = ChooseStance(fwd, side, grounded, vel.GetZ(), s.stance,
                                      s.stanceTime[int(s.stance)] >= stanceDone,
-                                     s.airTime >= kLandAirSeconds);
+                                     s.airTime >= kLandAirSeconds, s.slowTime >= kSettleSeconds,
+                                     braking);
+  if (stance == Stance::Loco && s.stance == Stance::Stop) {
+    s.brakeTime = 0.f; // walking on after a stop played out: only a new slowdown brakes
+  }
   if (stance != s.stance) {
     s.stanceTime[int(stance)] = 0.f;
     if (s.changeCount == int(std::size(s.changes))) {
@@ -1142,7 +1352,6 @@ void Update(CStateManager& mgr, float dt) {
   // the walk clips' weights (kept while the walk fades out) from the tiers for the way they
   // walk, and the feet move a loop for each stride of ground covered: the clips play at the
   // speed the body moves, in step with each other.
-  const float speed = std::sqrt(fwd * fwd + side * side);
   if (stance == Stance::Loco) {
     s.legsBack = LegsBackward(fwd, side, s.legsBack);
     LocoSlot tier[4];
@@ -1154,7 +1363,7 @@ void Update(CStateManager& mgr, float dt) {
         }
       }
     };
-    if (s.legsBack) {
+    if (s.legsBack && sBackWalk == BackWalk::Struggle) {
       add(kBackTiers, int(std::size(kBackTiers)));
     }
     if (n == 0) {
@@ -1173,10 +1382,16 @@ void Update(CStateManager& mgr, float dt) {
   }
   const float legYaw = stance == Stance::Loco ? LegYaw(fwd, side, s.legsBack) : 0.f;
   s.legYaw = s.legYaw + std::clamp(legYaw - s.legYaw, -kLegTurnSpeed * dt, kLegTurnSpeed * dt);
+  // Backpedalling posed (Backpedal): a loop is half a walk's, the steps short and quick, and
+  // lengthens once that would step more than kBackCadence loops a second.
+  s.backLoop = std::max(0.5f * s.locoStride[kWalk], speed / kBackCadence);
+  const bool backpedal = s.legsBack && sBackWalk == BackWalk::Procedural && s.legs && s.backLoop > 0.1f;
+  s.backWeight = Approach(s.backWeight, backpedal ? 1.f : 0.f, dt / kBlendSeconds);
   float stride = 0.f;
   for (int i = 0; i < kLocoSlots; ++i) {
     stride += s.locoWeight[i] * s.locoStride[i];
   }
+  stride += (s.backLoop - stride) * s.backWeight;
   if (stride > 0.1f) {
     s.stride = Wrap(s.stride + dt * (s.legsBack ? -speed : speed) / stride);
   }
@@ -1267,27 +1482,38 @@ bool Render(const CStateManager& mgr, const CTransform4f& feet, const CActorLigh
   }
   const CTransform4f xf =
       s.pinned.Valid() ? feet * CTransform4f::RotateZ(CRelAngle::FromDegrees(s.pinYaw)) : feet;
+  // A camera pulled in by a wall behind her ends up in her: the body fades as it nears.
+  float cam[3];
+  PortThirdPerson::GetCameraPosition(cam);
+  const CAABox box = s.body->GetBounds(xf);
+  float near2 = 0.f;
+  for (int i = 0; i < 3; ++i) {
+    const float d = std::max({box.GetMinPoint()[i] - cam[i], cam[i] - box.GetMaxPoint()[i], 0.f});
+    near2 += d * d;
+  }
+  const float fade = std::clamp(std::sqrt(near2) / kFadeDistance, kFadeAlpha, 1.f);
+  const CModelFlags flags = fade < 1.f ? CModelFlags(CModelFlags::kT_Blend, fade) : CModelFlags::Normal();
   s.body->Touch(mgr, 0);
-  s.body->Render(mgr, xf, lights, CModelFlags::Normal());
+  s.body->Render(mgr, xf, lights, flags);
   // Prime's cannon at the hand locator, unless the dread-samus mod's body carries its own.
   const bool drawGun = s.beamData && !PortDreadSamus::Replaces(PortDreadSamus::CutsceneBody(s.loadedChar));
   const CTransform4f gun = drawGun ? xf * s.body->GetScaledLocatorTransform("GUN_LCTR") : xf;
   if (drawGun) {
     s.beamData->Touch(mgr, 0);
-    s.beamData->Render(mgr, gun, lights, CModelFlags::Normal());
+    s.beamData->Render(mgr, gun, lights, flags);
   }
   if (shell) {
     // The lights are the player's, alive until the frame's Flush; the body is this file's.
     const CStateManager* const pmgr = &mgr;
-    PortShell::Defer(PortShell::kBody, s.body->GetBounds(xf), [pmgr, xf, lights] {
+    PortShell::Defer(PortShell::kBody, box, [pmgr, xf, lights, flags] {
       if (s.body) {
-        s.body->Render(*pmgr, xf, lights, CModelFlags::Normal());
+        s.body->Render(*pmgr, xf, lights, flags);
       }
     });
     if (drawGun) {
-      PortShell::Defer(PortShell::kBody, s.beamData->GetBounds(gun), [pmgr, gun, lights] {
+      PortShell::Defer(PortShell::kBody, s.beamData->GetBounds(gun), [pmgr, gun, lights, flags] {
         if (s.beamData) {
-          s.beamData->Render(*pmgr, gun, lights, CModelFlags::Normal());
+          s.beamData->Render(*pmgr, gun, lights, flags);
         }
       });
     }
@@ -1335,7 +1561,7 @@ void Release() { Drop(); }
 
 std::string DescribeClips() {
   if (!Ready()) {
-    return "body not ready";
+    return "body not ready\n";
   }
   BuildSets(true);
   std::string out;
@@ -1358,7 +1584,7 @@ std::string DescribeClips() {
 
 std::string DescribeFeet() {
   if (!Ready()) {
-    return "body not ready";
+    return "body not ready\n";
   }
   std::string out;
   char line[200];
@@ -1393,6 +1619,13 @@ std::string DescribeFeet() {
   std::snprintf(line, sizeof(line), "legs %s yaw %.1f deg\n", s.legsBack ? "back" : "forward",
                 s.legYaw * 57.29578f);
   out += line;
+  std::snprintf(line, sizeof(line),
+                "backpedal %s weight %.2f loop %.2f u duty %.2f crouch %.3f legs %d thigh %.3f/%.3f shin %.3f/%.3f\n",
+                sBackWalk == BackWalk::Procedural ? "procedural"
+                : sBackWalk == BackWalk::Struggle ? "struggle"
+                                                  : "reverse",
+                s.backWeight, s.backLoop, s.backDuty, s.backCrouch, int(s.legs), s.thigh[0], s.thigh[1], s.shin[0], s.shin[1]);
+  out += line;
   for (int i = 0; i < s.changeCount; ++i) {
     const auto& c = s.changes[i];
     std::snprintf(line, sizeof(line), "  %8.2fs -> %s fwd %+.2f side %+.2f rise %+.2f\n", c.clock,
@@ -1414,6 +1647,9 @@ std::string DescribeFeet() {
                 s.aimYawNow * 57.2958f, s.aimPitchNow * 57.2958f);
   return out + line;
 }
+
+void SetBackWalk(BackWalk mode) { sBackWalk = mode; }
+BackWalk GetBackWalk() { return sBackWalk; }
 
 bool PinClip(const char* name, float phase, float yaw) {
   if (name == nullptr || !Ready()) {

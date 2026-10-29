@@ -43,6 +43,9 @@ int main() {
   CHECK(ChooseStance(9.f, 0.f, false, 3.f, Stance::Loco, true, false) == Stance::Jump);
   CHECK(ChooseStance(9.f, 0.f, false, -3.f, Stance::Jump, true, false) == Stance::Fall);
   CHECK(ChooseStance(0.f, 0.f, false, -1.f, Stance::Idle, true, false) == Stance::Fall);
+  // The takeoff tick, no rise yet, stays on the ground stance; in the air it stays airborne.
+  CHECK(ChooseStance(0.f, 0.f, false, 0.f, Stance::Idle, true, false) == Stance::Idle);
+  CHECK(ChooseStance(0.f, 0.f, false, 0.f, Stance::Jump, true, false) == Stance::Fall);
   // Landing: a long fall plays Land (even at the touchdown's speed blip), to its end standing
   // still; a short hop doesn't, and moving leaves it.
   CHECK(ChooseStance(0.f, 0.f, true, 0.f, Stance::Fall, true, true) == Stance::Land);
@@ -53,6 +56,17 @@ int main() {
   CHECK(ChooseStance(0.f, 0.f, true, 0.f, Stance::Land, false, false) == Stance::Land);
   CHECK(ChooseStance(0.f, 0.f, true, 0.f, Stance::Land, true, false) == Stance::Idle);
   CHECK(ChooseStance(5.f, 0.f, true, 0.f, Stance::Land, false, false) == Stance::Loco);
+  // A walk dipping under kStandSpeed keeps walking until it has settled; standing doesn't start one.
+  CHECK(ChooseStance(0.3f, 0.f, true, 0.f, Stance::Loco, true, false, false) == Stance::Loco);
+  CHECK(ChooseStance(0.3f, 0.f, true, 0.f, Stance::Loco, true, false, true) == Stance::Stop);
+  CHECK(ChooseStance(0.3f, 0.f, true, 0.f, Stance::Idle, true, false, false) == Stance::Idle);
+  CHECK(ChooseStance(0.3f, 0.f, false, -1.f, Stance::Loco, true, false, false) == Stance::Fall);
+  // Braking stops while still moving, and keeps stopping; it starts no stop from a stand.
+  CHECK(ChooseStance(4.f, 0.f, true, 0.f, Stance::Loco, true, false, false, true) == Stance::Stop);
+  CHECK(ChooseStance(2.f, 0.f, true, 0.f, Stance::Stop, false, false, false, true) == Stance::Stop);
+  CHECK(ChooseStance(2.f, 0.f, true, 0.f, Stance::Stop, false, false, false, false) == Stance::Loco);
+  CHECK(ChooseStance(0.3f, 0.f, true, 0.f, Stance::Loco, true, false, false, true) == Stance::Stop);
+  CHECK(ChooseStance(4.f, 0.f, true, 0.f, Stance::Idle, true, false, false, true) == Stance::Loco);
 
   // The walk clips by speed: one alone outside their range, the bracketing two linearly inside,
   // continuous where the pairs meet.
@@ -119,5 +133,25 @@ int main() {
     sum += e;
   }
   CHECK(Near(sum, 1.f) && Near(g[1], 0.7f * 0.6f) && Near(g[2], 0.3f * 0.6f));
+
+  // The backpedal's foot: touches down at the back toe first, slides forward flat at a steady
+  // speed, rolls up onto the heel, and swings back without a jump at either end.
+  CHECK(Near(BackpedalFoot(0.f).y, -1.f) && Near(BackpedalFoot(0.f).pitch, -kBackToeDown));
+  CHECK(std::fabs(BackpedalFoot(kBackDuty - 1e-5f).y - 1.f) < 1e-3f);
+  CHECK(Near(BackpedalFoot(1.f).y, -1.f) && Near(BackpedalFoot(0.5f).lift, 0.f));
+  CHECK(Near(BackpedalFoot(0.5f * kBackDuty).pitch, 0.f));
+  CHECK(Near(BackpedalFoot(kBackDuty - 1e-5f).pitch, BackpedalFoot(kBackDuty).pitch));
+  CHECK(Near(BackpedalFoot(1.f - 1e-5f).pitch, BackpedalFoot(0.f).pitch));
+  CHECK(Near(BackpedalFoot(kBackDuty + 0.5f * (1.f - kBackDuty)).lift, 1.f));
+  const float v0 = BackpedalFoot(0.3f).y - BackpedalFoot(0.2f).y;
+  const float v1 = BackpedalFoot(0.5f).y - BackpedalFoot(0.4f).y;
+  CHECK(Near(v0, v1) && v0 > 0.f);
+  CHECK(Near(BackpedalBob(0.5f * kBackDuty), 0.f) && Near(BackpedalBob(0.5f * kBackDuty + 0.5f), 0.f));
+  CHECK(Near(BackpedalBob(0.5f * kBackDuty + 0.25f), 1.f));
+  // Running (a shorter duty), a foot still plants for that share and swings, peaking, the rest.
+  CHECK(std::fabs(BackpedalFoot(0.3f - 1e-5f, 0.3f).y - 1.f) < 1e-3f && Near(BackpedalFoot(0.2f, 0.3f).lift, 0.f));
+  CHECK(Near(BackpedalFoot(0.65f, 0.3f).lift, 1.f) && Near(BackpedalFoot(1.f - 1e-5f, 0.3f).pitch, BackpedalFoot(0.f, 0.3f).pitch));
+  CHECK(Near(BackpedalBob(0.15f, 0.3f), 0.f) && Near(BackpedalBob(0.4f, 0.3f), 1.f));
+  CHECK(Near(KneeAngle(1.f, 1.f, 2.f), 3.14159265f) && Near(KneeAngle(1.f, 1.f, std::sqrt(2.f)), 1.5707963f));
   return port_test::Failures() == 0 ? 0 : 1;
 }
