@@ -129,7 +129,9 @@ inline constexpr int kTextures = 5;
 //     the elevator platforms 32103B70/F33A6018 take 6FA561D0's model, not a Frigate rubble sheet.
 // 21: intra-Mines elevator C0A4DF30 uses the shipped E8E0AB8D platform, not a VFX model.
 // 22: a static model on a rigid retail skin keeps each connected piece on one bone (the gunship's hatch).
-inline constexpr int kModels = 22;
+// 23: the HUD's minimap depth mask 5EA45156 keeps its retail model (a Remastered mesh in its
+//     place hid the whole map).
+inline constexpr int kModels = 23;
 // 63: ELPS reads its CNST surface flag; the system tween is 0 only at a 0x1000000 lifetime.
 // 62: NEGT, CRCV, SPEV, ELPS, ROTV, PNCV, KEYF, SLTW, CRLN octaves, KESP, one-stop GRAD, PAP0/9,
 //     ADV9 and IAV0..3 are converted; PLNV counts come from MAXP.
@@ -238,7 +240,9 @@ inline constexpr int kEffects = 139;   // Queen barrier shield/glow models back-
 // 62: a Drone's laser particles and its scanner effect (actor slot 5).
 // 63: roomenv version 29, the suns' links and timelines (the intro's fill suns fade out).
 // 64: the Queen barrier group survives its effects' back-cull bit (effects 139 dropped it).
-inline constexpr int kRooms = 64;
+// 65: roomenv version 30, room trigger volumes (room-local TriggerMP1 player/camera detect) drive the room's hints.
+// 66: roomenv version 31, environment variables (the master's META vars, trigger modifiers, query branches).
+inline constexpr int kRooms = 66;
 inline constexpr int kRoomModels = 1;  // the rooms' own models and their levels of detail
 // kText: port_remastered_text, and the font (port_remastered_font).
 // 2: text/.disc, the disc the tables were merged from (kTextDiscName).
