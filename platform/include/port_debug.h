@@ -495,6 +495,8 @@ void SetUnlockGalleries(bool enabled);
 // Motion/buttons are accepted only while SDL owns relative capture.
 bool MouseAim();
 void SetMouseAim(bool enabled);
+// Marks settings.cfg for saving; for code that changes settings through the setters that do not.
+void MarkSettingsDirty();
 // Twin-stick: the right stick aims the first-person camera directly (through the
 // same aim state as the mouse) and is consumed, so it no longer drives the
 // game's free-look. Works with or without mouse aim.
@@ -696,6 +698,9 @@ bool MouseGameplayActive();
 void SetMouseGameplayActive(bool active);
 bool MouseInvertX();
 bool MouseInvertY();
+// Map rotate direction flips (Controls > Options > Map).
+bool MapInvertX();
+bool MapInvertY();
 bool MouseButtons();
 bool MouseCrosshair();
 // The free-aim crosshair under direct aim: the setting, or always with pointer aim.

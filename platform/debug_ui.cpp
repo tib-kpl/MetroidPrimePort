@@ -569,6 +569,8 @@ void EnsureInitialized() {
 
 namespace PortDebug {
 
+void MarkSettingsDirty() { MarkDirty(); }
+
 void LoadDiscPath() {
   const std::string path = SettingsFilePath();
   std::ifstream file(path);
