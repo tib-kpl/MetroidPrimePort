@@ -9,6 +9,8 @@
 #include "port_graphics_backend.h"
 #include "port_gyro_motion.h"
 #include "port_dynamic_res.h"
+#include "port_input_devices.h"
+#include "port_input_remap_ui.h"
 #include "port_pointer.h"
 #include "port_hd_font.h"
 #include "port_paths.h"
@@ -819,8 +821,20 @@ void DrawTexturePack() {
     ImGui::TextUnformatted("No user texture folder.");
     return;
   }
+  bool enabled = PortTextures::UserPackEnabled();
+  const std::string toggleKeys = PortInputRemap::BindingsText(PortInput::Action::ToggleTexturePack, " / ");
+  const std::string toggleLabel =
+      (toggleKeys.empty() ? std::string("Use the texture pack") : "Use the texture pack (" + toggleKeys + ")") +
+      "###texture-pack-enabled";
+  if (ImGui::Checkbox(toggleLabel.c_str(), &enabled)) {
+    PortTextures::SetUserPackEnabled(enabled);
+  }
+  ImGui::SetItemTooltip("Off shows the game's own textures, without deleting the pack.\n"
+                        "The binding (Controls > Remap > Port) switches it in game, to compare.");
   const size_t count = PortTextures::UserPackCount();
-  if (count > 0) {
+  if (!enabled) {
+    ImGui::TextUnformatted("Texture pack off.");
+  } else if (count > 0) {
     ImGui::Text("%zu replacements loaded, over the built-in set.", count);
   } else {
     ImGui::TextUnformatted("No texture pack loaded.");
@@ -831,22 +845,34 @@ void DrawTexturePack() {
     ImGui::TextWrapped("%s", status.c_str());
   }
   if (ImGui::Button("Choose texture pack folder...")) {
-    PickTexturePack();
+    PickTexturePack(false);
   }
   ImGui::SameLine();
+  if (ImGui::Button("Import texture pack .zip...")) {
+    PickTexturePack(true);
+  }
   if (ImGui::Button("Remove texture pack")) {
     PortTextures::RequestUserPackRemoval();
     SetTexturePackStatus("Texture pack removed.");
   }
   ImGui::TextWrapped(
-      "The folder is copied into the data folder, so it keeps working if the original is "
-      "moved. Pick it again after changing it.");
+      "The pack is copied into the data folder, so it keeps working if the original is "
+      "moved. Pick it again after changing it. Use the .zip import if the folder picker "
+      "shows no files.");
 #else
   ImGui::TextWrapped("Folder: %s", root);
   if (ImGui::Button("Reload texture pack")) {
     PortTextures::RequestUserPackReload();
   }
 #endif
+}
+
+void ToggleTexturePack() {
+  const bool on = !PortTextures::UserPackEnabled();
+  PortTextures::SetUserPackEnabled(on);
+  // Saved now: outside the overlay, changes are otherwise written at exit.
+  SaveSettingsNow();
+  ShowNote(on ? "Texture pack: on" : "Texture pack: off");
 }
 
 } // namespace PortDebug

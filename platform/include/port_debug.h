@@ -601,6 +601,8 @@ void SetRemasteredHidden(const std::string& list);
 // The Remastered import on or off (mods_disabled, saved as on the Mods page), then the mods
 // reload; a note at the top of the screen says which.
 void ToggleRemastered();
+// The user's texture pack on or off (texture_pack, saved now); a note says which.
+void ToggleTexturePack();
 // A note at the top of the screen for a few seconds. Thread-safe.
 void ShowNote(const std::string& text);
 // Starts a Remastered import (port_remastered_import.h) with the mods unloaded
@@ -644,6 +646,10 @@ void SetFastMorph(bool enabled);
 // apply only unmorphed, in gameplay (port_hold_toggle.h).
 bool LockOnToggle();
 void SetLockOnToggle(bool enabled);
+// Aim Lock-On: lock onto the target nearest the crosshair instead of retail's
+// pick, which prefers a nearer target (CPlayer::FindBestOrbitableObject).
+bool AimLockOn();
+void SetAimLockOn(bool enabled);
 bool StickyCharge();
 void SetStickyCharge(bool enabled);
 // Remastered charge: holding fire shoots a few quick shots after the press shot
