@@ -351,7 +351,24 @@ float PortVfxExposureGain(const CGenDescription& desc, bool model) {
 
 std::optional<float> PortVfxModelExposureOverride(const CGenDescription& desc) {
   if (!desc.xPortExposurePolicy || !desc.xPortInverseExposure || !desc.xPortVfx ||
-      desc.xPortVfx->mat.blend == uint32_t(aurora::gfx::vfx::Blend::Opaque) || !PortRoomEnv::Enabled()) {
+      desc.xPortVfx->mat.blend == uint32_t(aurora::gfx::vfx::Blend::Opaque)) {
+    return std::nullopt;
+  }
+  return PortVfxFrameExposureOverride();
+}
+
+// Lit sprites too: 20e149b2's lit perms (084_0/088_0) apply no exposure, and their VS (084_1/088_1) passes
+// COLR through without the writers' ITEN x inverse-exposure scalar (FUN_002b4634/002b44c0, component 0xe),
+// so the sprite is bare and nets E from the tonemap (kb topic/lit-sprite-exposure.md).
+std::optional<float> PortVfxSpriteExposureOverride(const CGenDescription& desc) {
+  if (!desc.xPortExposurePolicy || !desc.xPortVfx) {
+    return std::nullopt;
+  }
+  return PortVfxFrameExposureOverride();
+}
+
+std::optional<float> PortVfxFrameExposureOverride() {
+  if (!PortRoomEnv::Enabled()) {
     return std::nullopt;
   }
   float tone[3][4];
@@ -439,6 +456,7 @@ void CElementGen::PortRenderPlanarVfx(const CParticle& particle, int frame) {
   if (!PortVfxBuildDesc(vfx, xPortVsmt, xPortVsmtMask, desc)) return;
   PortVfxEvalParams(vfx, x74_curFrame, desc.params);
   if (x28_loadedGenDesc->xPortExposurePolicy) desc.alreadyExposed = false;
+  desc.exposureOverride = PortVfxSpriteExposureOverride(*x28_loadedGenDesc);
   const bool lit = (desc.features & aurora::gfx::vfx::ParticleLit) != 0;
   const CTransform4f& model = CGraphics::GetModelMatrix();
   if (lit) {
@@ -521,6 +539,7 @@ void CElementGen::PortRenderParticlesVfx() {
     desc.alreadyExposed = false;
   }
   const float inverseExposure = PortVfxExposureGain(*x28_loadedGenDesc);
+  desc.exposureOverride = PortVfxSpriteExposureOverride(*x28_loadedGenDesc);
   // VisorRunOff is a PMDL model particle (the mesh path below), but a sprite generator sharing its
   // material still reads CCH0..4: evaluate them rather than draw from zeroed uniforms. VisorRain is a
   // sprite whose CCH0 is the drop mask's scale (SMTR-animated), so it needs the same rows, as does
@@ -1073,9 +1092,11 @@ void CPortVfxMeshBatch::Add(const CPortVfxData& vfx, const CTransform4f& model,
     v.vec[1] = nv3.GetZ();
     v.vec[2] = nv3.GetY();
   }
+  const uint32_t base = static_cast< uint32_t >(verts.size());
+  verts.insert(verts.end(), world.begin(), world.end());
   const size_t count = size_t(vfx.meshTris) * 3;
   for (size_t k = 0; k < count; ++k) {
-    verts.push_back(world[wide ? vfx.meshIdx32[k] : vfx.meshIdx16[k]]);
+    indices.push_back(base + (wide ? vfx.meshIdx32[k] : vfx.meshIdx16[k]));
   }
 }
 
@@ -1172,6 +1193,7 @@ void CElementGen::PortRenderMeshesVfx(CPortVfxMeshBatch& batch) {
   aurora::gfx::vfx::DrawDesc desc;
   if (!PortVfxBuildDesc(*x28_loadedGenDesc->xPortVfx, xPortVsmt, xPortVsmtMask, desc)) {
     batch.verts.clear();
+    batch.indices.clear();
     return;
   }
   const CPortVfxData& vfx = *x28_loadedGenDesc->xPortVfx;
@@ -1210,11 +1232,23 @@ void CElementGen::PortRenderMeshesVfx(CPortVfxMeshBatch& batch) {
   const aurora::gfx::vfx::DepthSelection depth =
       aurora::gfx::vfx::select_model_depth(desc.blend, x26c_28_zTest, x26c_26_AAPH, x26c_27_ZBUF);
   CGraphics::SetDepthWriteMode(depth.compare, kE_LEqual, depth.write);
-  PortFx::gTriangles += static_cast< uint32_t >(batch.verts.size() / 3);
+  PortFx::gTriangles += static_cast< uint32_t >(batch.indices.size() / 3);
   ++PortFx::gDraws;
   // Model-only: Aurora copies this submission's value into its queued uniform payload.
   desc.exposureOverride = PortVfxModelExposureOverride(*x28_loadedGenDesc);
-  aurora::gfx::vfx::draw_triangles(desc, batch.verts.data(), static_cast< uint32_t >(batch.verts.size() / 3));
+  if (batch.verts.size() <= aurora::gfx::vfx::MaxIndexedVertices) {
+    aurora::gfx::vfx::draw_indexed_triangles(desc, batch.verts.data(), static_cast< uint32_t >(batch.verts.size()),
+                                             batch.indices.data(), static_cast< uint32_t >(batch.indices.size()));
+  } else {
+    // One particle whose mesh alone is past an indexed draw: its triangles, unshared, in split draws.
+    static std::vector< aurora::gfx::vfx::Vertex > tris;
+    tris.clear();
+    for (const uint32_t i : batch.indices) {
+      tris.push_back(batch.verts[i]);
+    }
+    aurora::gfx::vfx::draw_triangles(desc, tris.data(), static_cast< uint32_t >(tris.size() / 3));
+  }
   batch.verts.clear();
+  batch.indices.clear();
   batch.probePosSet = false;
 }

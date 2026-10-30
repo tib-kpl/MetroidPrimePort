@@ -87,6 +87,8 @@ std::string sThermalLut;
 std::string sEnvFx;
 // shell.bin: Remastered's silhouette-shell textures (port_shell_assets.h).
 std::string sShell;
+// icy.bin: Remastered's frozen-enemy material (port_icy_assets.h).
+std::string sIcy;
 // retailplacements.bin: the transforms objects draw Remastered's per-object retail models through (port_retail_placement.h).
 std::string sRetailPlacements;
 // effectids.map: the retail effect ids a mod gives a second user its own effect for. Loaded on first use.
@@ -263,7 +265,8 @@ const char* ImportPartOf(const fs::path& relative) {
       return "geometry";
     }
     if (folder == "roomenv") {
-      return PortRoomEffects::ParseFileName(name, id) ? "effects" : "lighting";
+      // A room's lighting goes with its geometry: Remastered's lights are made for its rooms.
+      return PortRoomEffects::ParseFileName(name, id) ? "effects" : "geometry";
     }
     if (folder == PortRemastered::kHudFolder) {
       return "hud";
@@ -524,6 +527,7 @@ std::string ThermalLutPath() { return sThermalLut; }
 std::string EnvFxPath() { return sEnvFx; }
 
 std::string ShellPath() { return sShell; }
+std::string IcyPath() { return sIcy; }
 
 std::string RetailPlacementPath() { return sRetailPlacements; }
 
@@ -621,6 +625,7 @@ void Initialize() {
   sThermalLut.clear();
   sEnvFx.clear();
   sShell.clear();
+  sIcy.clear();
   sRetailPlacements.clear();
   sDreadBodies.clear();
   sDreadBalls.clear();
@@ -815,6 +820,10 @@ void Initialize() {
       }
       if (name == "shell.bin") {
         sShell = PathString(file);
+        continue;
+      }
+      if (name == "icy.bin") {
+        sIcy = PathString(file);
         continue;
       }
       if (name == PortRetailPlacement::kFileName) {

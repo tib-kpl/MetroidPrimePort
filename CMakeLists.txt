@@ -237,6 +237,8 @@ set(MP_PORT_SOURCES
     platform/input/port_input_engine.cpp
     platform/input/port_input_bindings.cpp
     platform/input/port_input_remap_ui.cpp
+    platform/input/port_input_user_presets.cpp
+    platform/input/port_input_user_presets_store.cpp
     platform/input/port_custom_actions.cpp
     platform/port_randomizer.cpp
     platform/port_ap_metroidprime.cpp
@@ -330,6 +332,8 @@ set(MP_PORT_SOURCES
     platform/port_shell.cpp
     platform/port_shell_assets.cpp
     platform/port_shell_file.cpp
+    platform/port_icy_assets.cpp
+    platform/port_icy_file.cpp
     platform/port_room_geo.cpp
     platform/port_room_geo_file.cpp
     platform/port_room_liquid.cpp
@@ -1186,6 +1190,9 @@ if(MP_BUILD_TESTS)
     mp_port_test(port_shell_file_tests
         SOURCES tests/port_shell_file.cpp platform/port_shell_file.cpp
         INCLUDES platform/include)
+    mp_port_test(port_icy_file_tests
+        SOURCES tests/port_icy_file.cpp platform/port_icy_file.cpp
+        INCLUDES platform/include)
     mp_port_test(port_hud_bars_tests
         SOURCES tests/port_hud_bars.cpp platform/port_hud_bars_file.cpp
         INCLUDES platform/include)
@@ -1375,6 +1382,11 @@ if(MP_BUILD_TESTS)
         INCLUDES platform/include)
     mp_port_test(port_input_bindings_tests
         SOURCES tests/port_input_bindings.cpp
+            platform/input/port_input_bindings.cpp platform/input/port_input_engine.cpp
+        INCLUDES platform/include)
+    mp_port_test(port_input_user_presets_tests
+        SOURCES tests/port_input_user_presets.cpp
+            platform/input/port_input_user_presets.cpp
             platform/input/port_input_bindings.cpp platform/input/port_input_engine.cpp
         INCLUDES platform/include)
     mp_port_test(port_tick_pair_tests SOURCES tests/port_tick_pair.cpp INCLUDES platform/include)

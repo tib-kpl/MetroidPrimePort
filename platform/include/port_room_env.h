@@ -19,7 +19,7 @@
 // ambient colour.
 //
 // The file is little endian:
-//   'MPEV', u32 version (1 to 30), f32 tonemap[4], u32 probes, u32 cubes
+//   'MPEV', u32 version (1 to 33), f32 tonemap[4], u32 probes, u32 cubes
 //   probe: f32 worldToBox[12], f32 worldToCube[9], s32 layer, u32 cube, f32 scale, f32 padding
 //          and from version 8 on, s32 priority, f32 intensity min, f32 intensity max
 //          (before it the padding is unused, 1 m, and the rest 0, 0, 1). From version 9
@@ -173,6 +173,17 @@
 //           u8 pad[2], s32 value, u32 query (the master's query component)
 //   Every room of a world carries the world's vars and branches; link senders kSenderEnvQuery + b
 //   name its branches.
+// Version 32 adds to each room volume, after its pad:
+//   u8 on (the trigger is active at load; 0: the room's script activates it), u8 pad[3], u32 links,
+//   then links as a grade's: the script states that switch the trigger on and off (show = Activate,
+//   hide = Deactivate, toggle = ToggleActive). An inactive trigger tests nothing, so the volume is
+//   only tested while on; switching it off clears the side of its box it was on without an event
+//   (Remastered's Deactivate frees the touch list and clears the camera bit, and sends no Exited),
+//   and switching it on makes SetAreaPoints decide again. Older files have every volume on with no
+//   links.
+// Version 33 adds, at the end, u32 iceDarkeners, then each f32 factor, f32 delay: the
+//   ActorIceDarkenerMP1s the room fires at load (IceDarkeners), each giving every physics actor
+//   present `delay` seconds after the area loads its icy shell darkening `factor`.
 // The tonemap is Remastered's: the exposure value without auto exposure, the radiance
 // that comes out as middle grey once exposed, and how far the curve's toe and shoulder
 // are pulled in.
@@ -561,6 +572,8 @@ struct RoomVolume {
   float half[3] = {};
   float axes[9] = {1.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 1.f};
   uint8_t detect = 0;
+  bool on = true;               // version 32: the trigger is active at load
+  std::vector<GradeLink> links; // version 32: the script that switches it on and off
 };
 // Whether what the volume detects is in it now: the camera at `camera`, the player's bounds
 // `playerMin`..`playerMax` (left out when `hasPlayer` is false).
@@ -590,6 +603,14 @@ struct WorldVolumeState {
   void Replay(std::vector<Event>& out) const;
 };
 
+// An ActorIceDarkenerMP1 the room fires at load (version 33): ApplyIceDarkeningFactor 0xf798e0
+// gives every physics actor present `factor` (CActorMP1 +0x1d0, SetIceDarkeningFactor 0xc4d200),
+// `delay` seconds after the area's entities load (the timers in between).
+struct IceDarkener {
+  float factor = 1.f;
+  float delay = 0.f;
+};
+
 struct File {
   uint32_t version = 0;
   float tonemap[4] = {};
@@ -605,6 +626,7 @@ struct File {
   std::vector<EnvVar> envVars;           // version 31
   std::vector<EnvOp> envOps;             // version 31
   std::vector<EnvBranch> envBranches;    // version 31
+  std::vector<IceDarkener> iceDarkeners; // version 33
   float contrast = 0.f;
   float bloomThreshold = 0.9f;
   std::vector<float> bloomTints; // RGBA; empty: the room has no bloom
@@ -985,7 +1007,9 @@ inline void SetCameraPoint(const float pos[3]) {
 // Once a frame for each loaded area `mrea`: the camera and the player's bounds in that area's
 // own space. The player or camera going into or out of one of its room volumes drives the hints
 // of that area linked to kSenderRoomVolume + k. Every volume starts outside, so one already
-// inside enters on the first call after the area's file is in.
+// inside enters on the first call after the area's file is in. A volume whose trigger is off
+// (version 32: on clear and no link yet) is not tested; its room's script links switch it (see
+// RoomVolume), and an off volume keeps no side of its box.
 void SetAreaPoints(uint32_t mrea, const float camera[3], const float playerMin[3], const float playerMax[3],
                    bool hasPlayer);
 // Once a frame: the inputs of the exposure hint swap (CAutoExposureHintMP1GOC): the player is
@@ -1060,6 +1084,9 @@ void SetViewArea(uint32_t mrea);
 // The EnvironmentFX colour intensity of the area the camera is in (File::envFxIntensity), 1 when
 // the area has no room environment.
 float EnvFxIntensity();
+// The ice darkeners of a loaded area's room environment (File::iceDarkeners); null while the area's
+// file is not loaded (SetLoadedAreas).
+const std::vector<IceDarkener>* IceDarkeners(uint32_t mrea);
 // Once a frame, after SetViewArea: moves the frame's exposure and tone curve on
 // (CPostFXManager::UpdateTonemapping). The tonemap moves linearly to the camera room's
 // over a second; with an auto exposure hint the exposure is the tonemap's EV until the

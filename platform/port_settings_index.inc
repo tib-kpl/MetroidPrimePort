@@ -200,6 +200,7 @@
 {"Mods", "", "Mods", "Open mods folder", "mods folder open directory"},
 #endif
 {"Mods", "", "Built-in mods > Prime Remastered", "Use the Remastered models", "remastered mod enable disable toggle on off retail models"},
+{"Mods", "", "Built-in mods > Prime Remastered", "Phazon Suit aura", "phazon suit aura shell silhouette glow distortion remastered off"},
 {"Mods", "", "Built-in mods > Prime Remastered", "Performance mode", "performance fast faster speed fps glass fog exposure gun cannon remastered"},
 // The one key file row, above both built-in sections: both imports read it, so it has one row.
 #if defined(__ANDROID__)
@@ -211,8 +212,7 @@
 {"Mods", "", "Built-in mods > Prime Remastered > Import", "Browse...", "remastered browse image file path nsp xci game"},
 {"Mods", "", "Built-in mods > Metroid Dread > Import", "Load Metroid Dread image", "dread browse image file path nsp xci game"},
 #endif
-{"Mods", "", "Built-in mods > Prime Remastered > Parts to use", "Room geometry", "remastered parts use hide show render room geometry rooms retail"},
-{"Mods", "", "Built-in mods > Prime Remastered > Parts to use", "Room lighting", "remastered parts use hide show render room lighting fog grade environment"},
+{"Mods", "", "Built-in mods > Prime Remastered > Parts to use", "Room geometry and lighting", "remastered parts use hide show render room geometry rooms retail lighting fog grade environment"},
 {"Mods", "", "Built-in mods > Prime Remastered > Parts to use", "Particle effects", "remastered parts use hide show render particle effects beams"},
 {"Mods", "", "Built-in mods > Prime Remastered > Parts to use", "Models", "remastered parts use hide show render models characters creatures items"},
 {"Mods", "", "Built-in mods > Prime Remastered > Parts to use", "HUD", "remastered parts use hide show render hud visor"},
@@ -279,6 +279,7 @@
 {"Randomizer", "", "New seed", "Random", "random seed generate roll"},
 {"Randomizer", "", "New seed", "Generate", "generate seed create"},
 {"Randomizer", "", "New seed", "Generate & Play", "generate play start seed"},
+{"Randomizer", "", "Seeds", "Play the normal game", "vanilla normal game stop seed off unrandomized switch back"},
 {"Randomizer", "", "Seeds", "Play", "play start seed launch"},
 {"Randomizer", "", "Seeds", "Spoiler", "spoiler log show seed"},
 {"Randomizer", "", "Seeds", "Write spoiler file", "spoiler file write save text"},

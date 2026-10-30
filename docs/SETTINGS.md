@@ -135,7 +135,8 @@
 - Quick setup (Controls > Options): "Use mouse & keyboard" turns on mouse aim (with twin stick) and applies
   the Mouse & keyboard layout; "Use twin-stick controller" turns on twin stick and applies the
   Remastered layout to all controllers (greyed out with a GameCube adapter). Both replace your own
-  bindings for that device (Remap > Presets...) and are saved.
+  bindings for that device (Remap > Presets...) and are saved. "Save current as..." in the same popup
+  keeps a device's bindings as a preset of your own (see Control presets).
 - `MP_TWIN_STICK=1` (Controls > Options, persisted as `twin_stick`): twin-stick aiming. The
   right stick feeds the first-person aim through the same path as the mouse (so
   the same sensitivity/invert apply, tuned by `stick_aim_rate`, default 900 px/s, 50-10000; the F1
@@ -323,6 +324,13 @@
   none): a second controller button or trigger per GameCube button. Aurora maps
   one native button to each PAD button, so the port reads the alt one itself and
   ORs it in (`PortControls::HeldAltPadButtons`, from `CDolphinController`).
+- Your own presets (Remap > Presets... > "Save current as...", per device: keyboard or controller, not touch): a
+  snapshot of the device's Remap bindings with its custom actions, the controller's button/axis mapping and the
+  device's settings (twin stick, mouse aim, shift buttons, mouse button actions, alt buttons; not turbo). Saved
+  under the buttons of the built-in layouts; one click applies it (replacing your own bindings for that device), x
+  deletes it. One file per preset, `control_presets/<keyboard|pad>-<name>.toml` in the user folder: valid
+  `controls.toml` text with `#! key = value` header lines, so it can be shared. Console: `keypreset|padpreset
+  <saved name>` applies, `... save <name>` saves.
 - Control presets (Controls > Remap, "Presets..." beside the device list: one click applies a layout to Keyboard & mouse or to all Controllers, replacing your own bindings there; a selected kind or model keeps its own on top). Keyboard: **Classic** (the first-run layout)
   and **Mouse & keyboard** (WASD, E fire, Space jump, left ctrl/C morph, F
   missile, Q lock on, left alt free look, Tab/M map, 1-4 beams and 5-8 visors
@@ -756,9 +764,9 @@
   cutscenes and scripted cameras are unchanged. The camera pulls in at walls.
   It is how the Dread Samus bodies are seen in play (`docs/DREAD_SAMUS.md`).
   `third_person_distance` (metres behind, 0.5..10, default 3.5),
-  `third_person_shoulder` (metres right, -2..2, default 0.6) and
+  `third_person_shoulder` (metres right, -2..2, default 0.9) and
   `third_person_height` (metres above the first-person eye, -1..2, default
-  0.1) place it. Console: `thirdperson [on|off] [distance N] [shoulder N]
+  0.25) place it. Console: `thirdperson [on|off] [distance N] [shoulder N]
   [height N]`.
 - Speedrun timer and LiveSplit (F1 > Game > Speedrun; the timer also in pause Options >
   Display as In-Game Timer). `speedrun_timer` draws the in-game time (the play
@@ -974,7 +982,7 @@
   parts left out, comma-separated from `geometry`, `effects`, `hud`, `text`,
   `movies` and `gallery`; `MODS.md`); its "Parts to use" (`remastered_hide`:
   the installed parts the mods load without, comma-separated from `geometry`,
-  `lighting`, `effects`, `models`, `hud`, `font`, `text`, `map` and `movies`;
+  `effects`, `models`, `hud`, `font`, `text`, `map` and `movies`;
   `MP_REMASTERED_HIDE` overrides it; `MODS.md`); the
   Randomizer page's options (`rando_settings`, one line of JSON;
   `RANDOMIZER.md`); and Archipelago's "Staggered suit damage" (`ap_suit_damage`:
@@ -1339,11 +1347,18 @@ other `X:\Users\<name>`: `X:\Users\<user>`); the
   Remastered room models > Skip small models, console `roomgeo minpx <n>`; default 0): leaves out room
   geometry instances that span fewer than n pixels of the game's 480-line
   screen.
+- `MP_ICE_DARKENERS=0` (debugging aid; default on): the Remastered rooms' ice
+  darkeners (ActorIceDarkenerMP1) stay unfired, so frozen enemies' icy shell
+  keeps its full glow in those rooms.
 - `remastered_performance=<0|1>` (Mods > Prime Remastered > Performance mode;
   default 1): faster Remastered drawing that is no longer exact (glass copy
   every second frame, quarter-size exposure measure, blended volumetric fog,
   arm cannon depth laid first); see `docs/MODS.md`. Console `roomgeo perf
   [mask]` sets single shortcuts (1 glass, 2 measure, 4 fog, 8 gun), not saved.
+- `phazon_shell=<0|1>` (Mods > Prime Remastered > Phazon Suit aura; default 1):
+  the Phazon Suit wears Remastered's aura, its silhouette shell (on Samus, the
+  third-person body and the pause screen's doll). Off: the suit draws the
+  original game's distortion effect instead.
 - `MP_ROOM_GEO_LOD=<scale>` (setting `room_geo_lod`, F1 > Debug >
   Remastered room models > Detail distance, console `roomgeo lod <scale>`;
   default 1): the import also converts each room model's coarser Remastered

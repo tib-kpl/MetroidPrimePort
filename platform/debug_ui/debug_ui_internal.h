@@ -71,6 +71,7 @@ extern PortDebug::EAspectMode sAspectMode;
 extern bool sHudWide;
 extern bool sStretchMenus;
 extern bool sCinemaBars;
+extern bool sPhazonShell;
 extern bool sSharpScanWindow;
 extern bool sGeneratedBallLooks;
 extern bool sAutoAim;

@@ -450,6 +450,11 @@ bool CinemaBars() {
   return sCinemaBars || sOriginalExperience;
 }
 
+bool PhazonShell() {
+  EnsureInitialized();
+  return sPhazonShell;
+}
+
 bool SharpScanWindow() {
   EnsureInitialized();
   return sSharpScanWindow && !sOriginalExperience;
@@ -977,6 +982,15 @@ bool TwinStick() {
 }
 
 bool PadTwinStick() { return Loaded(sInput.twinStick); }
+
+int PadShiftBinding() { return Loaded(sInput.shiftBindings[2]); }
+
+bool PadSwapScanXray() { return Loaded(sInput.swapScanXray); }
+
+int StoredPadAltButton(int bit) {
+  EnsureInitialized();
+  return bit >= 0 && bit < kPadAltCount ? sInput.padAltButtons[bit] : -1;
+}
 
 void SetTwinStick(bool enabled) { StoreSetting(sInput.twinStick, enabled); }
 

@@ -85,6 +85,7 @@ PortDebug::EAspectMode sAspectMode = PortDebug::kAspect_Window;
 bool sHudWide = true;
 bool sStretchMenus = false;
 bool sCinemaBars = false;
+bool sPhazonShell = true;
 bool sSharpScanWindow = false;
 bool sGeneratedBallLooks = true;
 bool sAutoAim = true;

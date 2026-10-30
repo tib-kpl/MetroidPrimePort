@@ -1585,6 +1585,13 @@ void CPlayerGun::PortFireStackedBeams(float dt, CStateManager& mgr, const CTrans
         !playerState.HasPowerUp(mBeamArr[i])) {
       continue;
     }
+    // The port has 2048 object slots (retail 1024) and spins forever in AllocateUniqueId once
+    // they are gone. Stacked shots (up to 5 a trigger, with rapid fire) in a big room filled them
+    // and froze the game (Exterior Docking Hangar alone holds ~950), so they leave the
+    // primary shot and the room's own spawns a reserve.
+    if (mgr.GetObjectListById(kOL_All).size() > kMaxObjects - 48) {
+      break;
+    }
     beam->PortLockStackTokens();
     beam->PortFireStackedProjectile(
         x834_27_underwater, dt, CPlayerState::EChargeStage(x330_chargeState), xf, mgr,
@@ -2376,6 +2383,24 @@ void CPlayerGun::PortRenderFlashes(int first, int end) const {
   for (int i = first; i < end; ++i) {
     mPortFlashGens[i].Render();
   }
+}
+
+void CPlayerGun::PortRenderMuzzleFxAt(const CStateManager& mgr, const CTransform4f& muzzleXf) const {
+  // The effects are posed at x418_beamLocalXf in the gun's space (Update): seen from a camera
+  // moved into the space that puts that locator on `muzzleXf`, they form at the body's cannon.
+  const CTransform4f gunXf = muzzleXf * x418_beamLocalXf.GetInverse();
+  const CTransform4f oldViewMtx(CGraphics::GetViewMatrix());
+  CGraphics::SetViewPointMatrix(gunXf.GetInverse() * oldViewMtx);
+  gpRender->SetModelMatrix(CTransform4f::Identity());
+  if (x32c_chargePhase >= kCP_FxGrown && x32c_chargePhase < kCP_ComboXfer) {
+    x800_auxMuzzleGenerators[x320_currentAuxBeam]->Render();
+  }
+  if (x832_25_chargeEffectVisible &&
+      (x38c_muzzleEffectVisTimer > 0.f || x32c_chargePhase > kCP_AnimAndSfx)) {
+    x72c_currentBeam->DrawMuzzleFx(mgr);
+  }
+  PortRenderFlashes(0, kPortFirstChargeFlash);
+  CGraphics::SetViewPointMatrix(oldViewMtx);
 }
 
 // CPlayerMP1::ShouldGenerateUnderWaterBubbles 0xcf14bc: in normal water with the ball's top

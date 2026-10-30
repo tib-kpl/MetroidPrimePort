@@ -13,6 +13,7 @@
 
 class CStateManager;
 class CGuiModel;
+class CPlayerState;
 
 namespace PortDebug {
 
@@ -203,6 +204,9 @@ void SetStretchMenus(bool enabled);
 // below 16:9 the cinematic camera already renders the full shot, so it fills the
 // screen instead.
 bool CinemaBars();
+// Remastered's Phazon Suit aura (PortShell, the silhouette shell). On by default; off: the
+// Phazon Suit draws retail's distortion effect, as without the Remastered room environment.
+bool PhazonShell();
 // The scan visor's magnifier draws the world a second time through a camera zoomed by the
 // window's magnification (CMFGame::Draw), instead of stretching a copy of the screen. Off by
 // default and under Original experience.
@@ -487,6 +491,9 @@ void SetUnlockFusionSuit(bool enabled);
 // Puts the Fusion Suit on or off in game, as the Fusion Bonus menu's choice
 // would: the suit, arm and ball load again as after a suit pickup.
 void WearFusionSuit(CStateManager& mgr, bool wearing);
+// Lights or darkens the Artifact Temple totems to match the artifacts held, as
+// the artifact pickups' scripts would, for artifacts given by a cheat.
+void SyncTempleTotems(CStateManager& mgr, const CPlayerState& ps);
 bool UnlockGalleries();
 void SetUnlockGalleries(bool enabled);
 
@@ -505,6 +512,11 @@ void MarkSettingsDirty();
 bool TwinStick();
 // The stored pad Twin Stick setting, whatever the touch layout: what the pause option edits.
 bool PadTwinStick();
+// The stored pad settings, whatever the touch layout (ShiftBinding(2), SwapScanXray and
+// PadAltButton read as unset while touch is in use): what a saved controller preset keeps.
+int PadShiftBinding();
+bool PadSwapScanXray();
+int StoredPadAltButton(int bit);
 // Android: touch was the last input and the F1 menu is closed. False on desktop.
 bool TouchActive();
 // True on Android when the modern (non-classic) touch layout is the active device: drag aims like a mouse.

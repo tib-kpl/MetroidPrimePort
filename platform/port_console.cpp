@@ -36,6 +36,7 @@
 #include "port_room_liquid.h"
 #include "port_console.h"
 #include "port_controls.h"
+#include "port_input_user_presets.h"
 #include "port_mods.h"
 #include "port_savestate.h"
 #include "port_statedump.h"
@@ -957,6 +958,9 @@ void CmdGive(CStateManager& mgr, bool take) {
   if (type == CPlayerState::kIT_EnergyTanks) {
     ps.HealthInfo()->SetHP(ps.CalculateHealth());
   }
+  if (type >= CPlayerState::kIT_Truth && type <= CPlayerState::kIT_Newborn) {
+    PortDebug::SyncTempleTotems(mgr, ps);
+  }
   Out("%s: %d/%d", kItemNames[item], ps.GetItemAmount(type), ps.GetItemCapacity(type));
   Finish();
 }
@@ -1317,6 +1321,41 @@ void CmdKill(CStateManager& mgr) {
     damage = static_cast< float >(std::atof(sCmd.args[2].c_str()));
   }
   mgr.ApplyLocalDamage(actor->GetTranslation(), dir, *actor, damage, CWeaponMode::Power());
+  Finish();
+}
+
+// Freezes an enemy as an Ice Beam hit whose knockback freezes does (CPatterned::Freeze, hit
+// from the player's side), for looking at the frozen draw without having to land the shot.
+void CmdFreeze(CStateManager& mgr) {
+  if (sCmd.args.size() < 2) {
+    return Finish("usage: freeze <id>|target [seconds]");
+  }
+  CEntity* ent = nullptr;
+  if (Lower(sCmd.args[1]) == "target") {
+    const CPlayer* player = mgr.GetPlayer();
+    const TUniqueId target = player != nullptr ? player->GetOrbitTargetId() : kInvalidUniqueId;
+    if (target == kInvalidUniqueId) {
+      return Finish("nothing is locked on");
+    }
+    ent = const_cast< CEntity* >(mgr.GetObjectById(target));
+  } else {
+    ent = FindObject(mgr, sCmd.args[1]);
+  }
+  CPatterned* patterned = TCastToPtr< CPatterned >(ent);
+  if (patterned == nullptr) {
+    return Finish("not an enemy");
+  }
+  float duration = 10.f;
+  if (sCmd.args.size() > 2) {
+    duration = static_cast< float >(std::atof(sCmd.args[2].c_str()));
+  }
+  CVector3f dir = patterned->GetTranslation() - mgr.GetPlayer()->GetTranslation();
+  if (dir.CanBeNormalized()) {
+    dir.Normalize();
+  } else {
+    dir = patterned->GetTransform().GetForward();
+  }
+  patterned->Freeze(mgr, patterned->GetTranslation(), CUnitVector3f(dir), duration);
   Finish();
 }
 
@@ -2317,18 +2356,45 @@ void CmdOriginal() {
   Finish();
 }
 
+// The words from args[first] on, as one name.
+std::string PresetNameArg(size_t first) {
+  std::string name;
+  for (size_t i = first; i < sCmd.args.size(); ++i) name += (name.empty() ? "" : " ") + sCmd.args[i];
+  return name;
+}
+
+// A saved preset (Remap > Presets...) of that name, matched case-insensitively.
+bool ApplySavedPreset(PortInput::Family family) {
+  const std::string name = PresetNameArg(1);
+  return !name.empty() && PortInputUserPresets::Apply(family, name);
+}
+
+void SavePreset(PortInput::Family family) {
+  const std::string name = PresetNameArg(2);
+  if (name.empty()) return Finish("usage: keypreset|padpreset save <name>");
+  if (!PortInputUserPresets::Save(family, name)) {
+    return Finish(family == PortInput::Family::Pad && PADGetIndexForPort(PAD_CHAN0) < 0
+                      ? "no controller in port 1 to save"
+                      : "could not save the preset");
+  }
+  Out("saved preset %s", PortInputUserPresets::CleanName(name).c_str());
+  Finish();
+}
+
 void CmdKeyPreset() {
   const std::string preset = sCmd.args.size() > 1 ? Lower(sCmd.args[1]) : "";
-  if (!PortControls::ApplyKeyPresetNamed(preset)) {
-    return Finish("usage: keypreset classic|mouse");
+  if (preset == "save") return SavePreset(PortInput::Family::Keyboard);
+  if (!PortControls::ApplyKeyPresetNamed(preset) && !ApplySavedPreset(PortInput::Family::Keyboard)) {
+    return Finish("usage: keypreset classic|mouse|<saved preset name>|save <name>");
   }
   Finish();
 }
 
 void CmdPadPreset() {
   const std::string preset = sCmd.args.size() > 1 ? Lower(sCmd.args[1]) : "";
-  if (!PortControls::ApplyPadPresetNamed(preset)) {
-    return Finish("usage: padpreset gamecube|remastered|modern|southpaw");
+  if (preset == "save") return SavePreset(PortInput::Family::Pad);
+  if (!PortControls::ApplyPadPresetNamed(preset) && !ApplySavedPreset(PortInput::Family::Pad)) {
+    return Finish("usage: padpreset gamecube|remastered|modern|southpaw|<saved preset name>|save <name>");
   }
   Finish();
 }
@@ -3787,6 +3853,14 @@ void CmdRando() {
     if (!PortAp::PlaySolo(sCmd.args[2], error))
       return Finish(error.c_str());
     Out("playing seed %s", sCmd.args[2].c_str());
+  } else if (action == "off" && sCmd.args.size() == 2) {
+    if (PortAp::SoloSeedInPlay().empty())
+      return Finish("no seed is being played");
+    if (PortDebug::StateManager() != nullptr)
+      return Finish("quit to the title screen to go back to the normal game");
+    if (!PortAp::Disconnect(error))
+      return Finish(error.c_str());
+    Out("playing the normal game");
   } else if (action == "delete" && sCmd.args.size() == 3) {
     if (!PortAp::DeleteSolo(sCmd.args[2], error))
       return Finish(error.c_str());
@@ -3800,7 +3874,7 @@ void CmdRando() {
         Out("%s", file.substr(0, file.size() - 5).c_str());
     }
   } else {
-    return Finish("usage: rando [gen [seedtext] | play <name> | delete <name> | list]");
+    return Finish("usage: rando [gen [seedtext] | play <name> | off | delete <name> | list]");
   }
   Finish();
 }
@@ -4100,6 +4174,8 @@ const CommandSpec kCommands[] = {
     {"kill", nullptr, CmdKill,
      "kill <id>|target [damage]  kill an actor as with a last Power Beam shot (bosses too);\n"
      "                           target: the enemy the player is locked on to"},
+    {"freeze", nullptr, CmdFreeze,
+     "freeze <id>|target [s]     freeze an enemy as an Ice Beam hit does, for s seconds (default 10)"},
     {"phazongun", CmdPhazonGun, nullptr,
      "phazongun [off]            let the arm cannon fire the Phazon Beam (off: stop)"},
     {"hurt", nullptr, [](CStateManager&) { CmdHurt(sCmd.args.size() > 1 ? sCmd.args[1] : std::string()); },
@@ -4230,9 +4306,9 @@ const CommandSpec kCommands[] = {
     {"original", CmdOriginal, nullptr,
      "original [on|off]   Original experience (retail settings over the saved ones)"},
     {"keypreset", CmdKeyPreset, nullptr,
-     "keypreset classic|mouse   apply a keyboard preset (Controls > Remap), as its button"},
+     "keypreset classic|mouse|<saved name>|save <name>   apply or save a keyboard preset (Controls > Remap)"},
     {"padpreset", CmdPadPreset, nullptr,
-     "padpreset gamecube|remastered|modern|southpaw   apply a controller preset to pad 1"},
+     "padpreset gamecube|remastered|modern|southpaw|<saved name>|save <name>   apply or save a controller preset"},
     {"fov", CmdFov, nullptr, "fov <45..120>              first-person vertical FOV, as the Options row does"},
     {"gunoffset", CmdGunOffset, nullptr,
      "gunoffset <r> <f> <u>      arm cannon offset in metres (+-1), as the Video row does"},
@@ -4312,7 +4388,7 @@ const CommandSpec kCommands[] = {
     {"ap", CmdAp, nullptr,
      "ap [connect <server> <slot> [password] | disconnect | recent | resume <n> | say <text> | chat]   Archipelago, as the F1 Archipelago page does"},
     {"rando", CmdRando, nullptr,
-     "rando [gen [seedtext] | play <name> | delete <name> | list]  the built-in randomizer's seeds"},
+     "rando [gen [seedtext] | play <name> | off | delete <name> | list]  the built-in randomizer's seeds"},
     {"help", CmdHelp, nullptr, "help                       this list"},
     {"quit", CmdQuit, nullptr, "quit                       exit the game"},
     {"title", CmdTitle, nullptr, "title                      quit the game to the title screen"},
