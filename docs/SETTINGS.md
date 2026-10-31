@@ -1015,6 +1015,11 @@
   place, in any room and without the Phazon Suit: selecting Wave, Ice or Plasma leaves it through
   the game's exit morph, selecting Power enters it again, and missiles fire from it. Unticking
   it leaves the beam at once; real phazon pools behave as in the original either way.
+  Infinite, beside the Missiles and Power Bombs sliders, makes firing that ammo use none, even
+  at zero (charge combos fire too, once Samus has them); the HUD shows ∞ in place of the count
+  (keeping "/capacity" where the HUD shows it) with full meters. The real count is kept and
+  pickups still add to it; not saved. Refused in the Original experience and while connected to
+  Archipelago. `MP_INFINITE_AMMO=1` turns it on for both for one run (see below).
 - F1 > System > Log, "Write the log to a file" (`logging`, on by default; the older `log_file` key is ignored):
   everything the game prints to stdout/stderr, including the
   line Aurora prints before it aborts, also goes to `metroid_prime_port.log` in
@@ -1318,6 +1323,8 @@ other `X:\Users\<name>`: `X:\Users\<user>`); the
 - `MP_PBR_ANISO=<1-16>`: the most anisotropic filtering a PBR mod's native maps
   take, 2 by default whatever the Anisotropy setting says: higher levels turn a
   tiled floor into streaks towards the horizon.
+- `MP_INFINITE_AMMO=1`: infinite missiles and power bombs for this run (F1 > Debug > Cheats,
+  above), refused in the Original experience and with Archipelago as the cheat is.
 - `MP_GODMODE=<0|1>`: the Invulnerable cheat for this run, whatever the setting
   says. The console's `god [on|off]` changes the setting itself.
 - `MP_LOG_FILE=<0|1>`: the file log (`metroid_prime_port.log` in the user
@@ -1597,6 +1604,15 @@ headers, applies the same rule to its own on/off variables (`MP_LOG_COPY_TEX`,
   twice, freed or reused before the flush); a fault logs `HEAP CHECK:` lines and aborts.
 - `MP_PIPELINE_SEED=0`: start from an empty pipeline cache instead of the shipped
   seed (`tools/pipeline_seed.py` records with it).
+- `MP_PIPELINE_LAZY=<0|1>`: build pipelines on first use instead of compiling the
+  cache at startup. On by default on Android and on low-RAM devices (issue #162).
+  In lazy mode, built pipelines are trimmed when memory runs short (issue #187):
+  `MP_PIPELINE_TRIM_MIB=<n>` (default 1024) releases those a minute of frames didn't
+  draw when less than that is available, `MP_PIPELINE_TRIM_SEVERE_MIB=<n>` (default
+  512) all but what the last frames drew; 0 turns a level off.
+  `MP_PIPELINE_EVICT=<frames>` adds a fixed sweep of pipelines idle that long.
+- `MP_PIPELINE_PBR=<0|1>`: compile the cached PBR pipelines at startup. By default
+  only when a mod is enabled, since only converted materials draw with them.
 - `MP_HOLD_FRONTEND_SHADERS=<0|1>`: hold the seed's background shader builds while no
   game is loaded. On by default under D3D11 only, whose drivers made the front end
   crawl behind them (issue #54).

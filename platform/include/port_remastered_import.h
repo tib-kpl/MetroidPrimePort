@@ -142,7 +142,9 @@ inline constexpr int kTextures = 5;
 // 27: the frozen models (CCharacterInfo 0x0364A97A) of Magdolite, Metroid Prime and the elite
 //     and Phazon elite pirates replace their ice overlays, weighted by the character's body;
 //     an ANCS binding one pair in several characters is rebound in the named one only.
-inline constexpr int kModels = 27;
+// 28: retail CMDL 119683F6 (Monitor Station's spinner bridge, ANCS 2220567B) is in the table,
+//     paired with 96b2cc02, the skinned model of its CHPR.
+inline constexpr int kModels = 28;
 // 63: ELPS reads its CNST surface flag; the system tween is 0 only at a 0x1000000 lifetime.
 // 62: NEGT, CRCV, SPEV, ELPS, ROTV, PNCV, KEYF, SLTW, CRLN octaves, KESP, one-stop GRAD, PAP0/9,
 //     ADV9 and IAV0..3 are converted; PLNV counts come from MAXP.
@@ -258,7 +260,9 @@ inline constexpr int kEffects = 139;   // Queen barrier shield/glow models back-
 // (68 is port's trigger hash fix).
 // 70: the Chozo Lore sheets' actors (their own model, unmarked as added) stand in for retail's lore glow actors.
 // 71: roomenv version 33, the ice darkeners fired at load (ActorIceDarkenerMP1 0xf798e0).
-inline constexpr int kRooms = 71;
+// 72: animated platforms are left to retail's Platform (they looped as scenery, without collision).
+// 74: a platform's model is drawn only riding its retail Platform; unbound or animated, retail draws it.
+inline constexpr int kRooms = 74;
 inline constexpr int kRoomModels = 1;  // the rooms' own models and their levels of detail
 // kText: port_remastered_text, and the font (port_remastered_font).
 // 2: text/.disc, the disc the tables were merged from (kTextDiscName).
