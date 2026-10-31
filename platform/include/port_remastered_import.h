@@ -106,7 +106,14 @@ namespace ImportStage {
 // 82: the surface's visor word keeps mesh bits 19 and 22 (the thermal visor's hot and cold passes).
 // 83: 9D53CF06 (the Chozo Lore statues' sheet) draws as kind 46, its waved, bent, premultiplied glow.
 // 84: every Lava2EmissiveOnly shader draws as kind 6 (Monitor Station's pool is 696EA755).
-inline constexpr int kConverter = 84;
+// 85: 34 more shader twins (exact, attribute-location-only and skinned copies) route to their handled family.
+// 86: bc1509e8 and its twins f43e3c13, 68eec2a3 draw as kind 41 with ICAN masked by BCLR.a and alpha DIFC.a.
+// 87: 16 more shader twins whose vertex shaders differ in the UVs only (AUVI and animated UVs) route to their family.
+// 88: ColorUnlit-white (568b8e25, 8afac076, ee2d9846) draws as ColorUnlit with base x CCH0.x, no vertex colour.
+// 89: 353d6547 draws as kind 29; 74c655e4 as kind 43 with the CCH1 tint and dual-source output.
+// 90: 54b4021f (Crystal) draws as kind 48.
+// 91: the skinned twins f07e9761 (of 98f0556d) and 3ef54cc4, 35acebd7 (of 4bc890c1) route to their family.
+inline constexpr int kConverter = 91;
 // What a converted texture holds: port_remastered_image/txtr/dds/astc, and Converter's Get and
 // Cube. Each converted texture is kept across imports under its tag and this number, so a
 // kConverter bump re-imports the models without converting their textures again.
@@ -263,7 +270,8 @@ inline constexpr int kEffects = 139;   // Queen barrier shield/glow models back-
 // 71: roomenv version 33, the ice darkeners fired at load (ActorIceDarkenerMP1 0xf798e0).
 // 72: animated platforms are left to retail's Platform (they looped as scenery, without collision).
 // 74: a platform's model is drawn only riding its retail Platform; unbound or animated, retail draws it.
-inline constexpr int kRooms = 74;
+// 75: the grid is the LTPB the ROOM's BLIT names, found in the master pak too (25 rooms had none).
+inline constexpr int kRooms = 75;
 inline constexpr int kRoomModels = 1;  // the rooms' own models and their levels of detail
 // kText: port_remastered_text, and the font (port_remastered_font).
 // 2: text/.disc, the disc the tables were merged from (kTextDiscName).
