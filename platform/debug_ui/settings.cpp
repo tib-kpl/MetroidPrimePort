@@ -123,6 +123,7 @@ const SettingKey kSettingKeys[] = {
     BoolKey< &sHudWide >("hud_wide"),
     BoolKey< &sStretchMenus >("stretch_menus"),
     BoolKey< &sCinemaBars >("cinema_bars"),
+    BoolKey< &sBallBars >("ball_bars"),
     BoolKey< &sPhazonShell >("phazon_shell"),
     BoolKey< &sSharpScanWindow >("sharp_scan_window"),
     BoolKey< &sGeneratedBallLooks >("power_spider_ball"),
@@ -134,6 +135,11 @@ const SettingKey kSettingKeys[] = {
     {"suit_colour_fusion_gravity", &ReadSuitColours< 5 >, &WriteSuitColours< 5 >, true, "FF4000,-,-", "-,-,2050FF"},
     {"suit_colour_fusion_varia", &ReadSuitColours< 6 >, &WriteSuitColours< 6 >, true, "FF4000,-,-", "-,-,2050FF"},
     {"suit_colour_fusion_phazon", &ReadSuitColours< 7 >, &WriteSuitColours< 7 >, true, "FF4000,-,-", "-,-,2050FF"},
+    {"suit_colour_dread_power", &ReadSuitColours< 8 >, &WriteSuitColours< 8 >, true, "FF4000,-,-", "-,2050FF,FFE0C0"},
+    {"suit_colour_dread_gravity", &ReadSuitColours< 9 >, &WriteSuitColours< 9 >, true, "FF4000,-,-,-",
+     "-,-,2050FF,FFE0C0"},
+    {"suit_colour_dread_varia", &ReadSuitColours< 10 >, &WriteSuitColours< 10 >, true, "FF4000,-,-", "-,2050FF,FFE0C0"},
+    {"suit_colour_dread_phazon", &ReadSuitColours< 11 >, &WriteSuitColours< 11 >, true, "FF4000,-", "-,2050FF"},
     BoolKey< &sAutoAim >("auto_aim"),
     {"scan_speed",
      [](const std::string& value) {
@@ -143,6 +149,23 @@ const SettingKey kSettingKeys[] = {
        }
      },
      [](std::ostream& out) { out << sScanSpeed; }, false, "100", "500"},
+    // The F1 Game > Audio rows' part above 100 percent; EnsureInitialized hands it to the mixers.
+    {"music_boost",
+     [](const std::string& value) {
+       const int b = std::atoi(value.c_str());
+       if (b >= PortDebug::kVolumeBoostMin && b <= PortDebug::kVolumeBoostMax) {
+         sMusicBoost = b;
+       }
+     },
+     [](std::ostream& out) { out << sMusicBoost; }, false, "100", "200"},
+    {"sfx_boost",
+     [](const std::string& value) {
+       const int b = std::atoi(value.c_str());
+       if (b >= PortDebug::kVolumeBoostMin && b <= PortDebug::kVolumeBoostMax) {
+         sSfxBoost = b;
+       }
+     },
+     [](std::ostream& out) { out << sSfxBoost; }, false, "100", "200"},
     {"hint_delay",
      [](const std::string& value) {
        const int m = std::atoi(value.c_str());

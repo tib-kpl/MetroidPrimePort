@@ -204,6 +204,9 @@ void SetStretchMenus(bool enabled);
 // below 16:9 the cinematic camera already renders the full shot, so it fills the
 // screen instead.
 bool CinemaBars();
+// The morph ball view's top/bottom bands (tweak BallViewportYReduction). Off by default:
+// the world fills the screen in ball mode, as below 4:3.
+bool BallBars();
 // Remastered's Phazon Suit aura (PortShell, the silhouette shell). On by default; off: the
 // Phazon Suit draws retail's distortion effect, as without the Remastered room environment.
 bool PhazonShell();
@@ -270,6 +273,13 @@ float ScanSpeed();
 // the hint the game would show next; ConsumeShowHintRequest() takes the request.
 const int kHintDelayMin = 0;
 const int kHintDelayMax = 30;
+// Music and sound effects boost in percent (music_boost=, sfx_boost=, MP_MUSIC_BOOST, MP_SFX_BOOST;
+// 100 = none): the F1 Game > Audio rows' part above 100 percent. The port's mixer scales the music
+// (the sequenced MusyX voices and the streamed music) or the sound effects voices past the game's
+// own maximum.
+const int kVolumeBoostMin = 100;
+const int kVolumeBoostMax = 200;
+const int kVolumeBoostDefault = 100;
 float HintDelaySeconds();
 void RequestShowHint();
 bool ConsumeShowHintRequest();
@@ -660,6 +670,12 @@ void SetFastMorph(bool enabled);
 // apply only unmorphed, in gameplay (port_hold_toggle.h).
 bool LockOnToggle();
 void SetLockOnToggle(bool enabled);
+// Shoot While Grappling (issue #243): the arm cannon stays out and fires while
+// the grapple beam holds a grapple point.
+bool GrappleShoot();
+void SetGrappleShoot(bool enabled);
+bool GrappleToggle();
+void SetGrappleToggle(bool enabled);
 // Toggle Spider Ball (issue #243): an R press that attaches the spider ball
 // latches until pressed again or the ball leaves its track; morph ball only.
 bool SpiderToggle();
@@ -794,8 +810,10 @@ bool TapUpdateToast(float x, float y);
 // Called during simulation, using the effective unbobbed camera direction.
 // pointerHold: under pointer aim, a lock that keeps the pointer where it is instead of
 // re-centring it (the Scan Visor's point orbit, CPlayer::UpdateMouseAim).
+// pointerStays: a pointerLock with no target (an empty lock under pointer aim). The view
+// holds, so the pointer keeps its place as the lock starts and ends.
 bool UpdateMouseAim(bool active, bool locked, float x, float y, float z, bool pointerLock = false,
-                    bool pointerHold = false);
+                    bool pointerHold = false, bool pointerStays = false);
 void SynchronizeMouseAim(float x, float y, float z);
 // Turns the mouse-look yaw by dyaw radians (the game turned the player: a rotating
 // platform's rider carry). No effect until the aim is initialized.

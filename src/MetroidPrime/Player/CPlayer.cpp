@@ -579,7 +579,12 @@ void CPlayer::UpdateGunState(const CFinalInput& input, CStateManager& mgr) {
       needsDraw = true;
     }
 
-    if (x3b8_grappleState != kGS_None ||
+#ifdef TARGET_PC
+    const bool grappleHolsters = x3b8_grappleState != kGS_None && !PortDebug::GrappleShoot();
+#else
+    const bool grappleHolsters = x3b8_grappleState != kGS_None;
+#endif
+    if (grappleHolsters ||
         mgr.GetPlayerState()->GetCurrentVisor() == CPlayerState::kPV_Scan ||
         mgr.GetPlayerState()->GetTransitioningVisor() == CPlayerState::kPV_Scan) {
       needsDraw = false;
@@ -926,10 +931,18 @@ bool CPlayer::MouseLookIsFree(const CStateManager& mgr) const {
 
 bool CPlayer::PortLockFreeAim(const CStateManager& mgr) const {
   // Scan locks and grapples still aim through the centre.
-  return PortDebug::LockOnFreeAim() && MouseControlsAllowed(mgr) &&
+  if (!MouseControlsAllowed(mgr) ||
+      mgr.GetPlayerState()->GetCurrentVisor() == CPlayerState::kPV_Scan) {
+    return false;
+  }
+  // Under pointer aim an empty lock always frees the pointer: Trilogy's Z with nothing
+  // targeted holds the view and leaves the cursor free. A target lock follows the setting.
+  if (x304_orbitState == kOS_OrbitPoint && PortDebug::PointerAim()) {
+    return true;
+  }
+  return PortDebug::LockOnFreeAim() &&
          (x304_orbitState == kOS_OrbitObject || x304_orbitState == kOS_OrbitPoint ||
-          x304_orbitState == kOS_OrbitCarcass || x304_orbitState == kOS_ForcedOrbitObject) &&
-         mgr.GetPlayerState()->GetCurrentVisor() != CPlayerState::kPV_Scan;
+          x304_orbitState == kOS_OrbitCarcass || x304_orbitState == kOS_ForcedOrbitObject);
 }
 
 // The port's free-aim crosshair. On a Trilogy disc with the Classic style, Trilogy's aiming
@@ -972,9 +985,11 @@ void CPlayer::UpdateMouseAim(CStateManager& mgr) {
   // (issue #190).
   const bool scanPointHold = x304_orbitState == kOS_OrbitPoint &&
                              mgr.GetPlayerState()->GetCurrentVisor() == CPlayerState::kPV_Scan;
+  const bool lockFree = PortLockFreeAim(mgr);
+  const bool emptyLock = lockFree && x304_orbitState == kOS_OrbitPoint && PortDebug::PointerAim();
   if (PortDebug::UpdateMouseAim(active, !MouseLookIsFree(mgr),
                                forward.GetX(), forward.GetY(), forward.GetZ(),
-                               PortLockFreeAim(mgr), scanPointHold)) {
+                               lockFree, scanPointHold, emptyLock)) {
     SetTransform(CQuaternion::ZRotation(CRelAngle(PortDebug::AimYaw()))
                      .BuildTransform4f(GetTransform().GetTranslation()));
   }
@@ -3844,6 +3859,6 @@ void CPlayer::PortApplyDeferredRiderCarry(uint tick) {
 void CPlayer::PortEndMovementTick(uint tick) {
   PortApplyDeferredRiderCarry(tick);
   // DecayRiderFrameCount (PostSimulation): a rider set this tick carries next tick.
-  xa3c_rider.Decay();
+  xa3c_rider.Decay(PortDebug::TickPeriod() * 60.f);
 }
 #endif

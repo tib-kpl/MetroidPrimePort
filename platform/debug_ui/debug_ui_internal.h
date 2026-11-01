@@ -71,12 +71,18 @@ extern PortDebug::EAspectMode sAspectMode;
 extern bool sHudWide;
 extern bool sStretchMenus;
 extern bool sCinemaBars;
+extern bool sBallBars;
 extern bool sPhazonShell;
 extern bool sSharpScanWindow;
 extern bool sGeneratedBallLooks;
 extern bool sAutoAim;
 extern int sScanSpeed;
 extern int sHintDelay;
+extern int sMusicBoost;
+extern int sSfxBoost;
+// Hands both boosts (percent / 100) to the mixers: the MusyX voices in hw_pc.c and the AI DMA
+// stream's own gain. Called once the file and environment are read, and by the Audio rows.
+void ApplyVolumeBoosts();
 extern bool sSecondaryCrosshairs;
 extern bool sMenuStandardButtons;
 extern std::atomic< int > sPromptGlyphs; // index into kPromptGlyphs

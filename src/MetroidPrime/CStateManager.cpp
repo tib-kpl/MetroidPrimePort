@@ -15,6 +15,7 @@
 #include "port_hold_toggle.h"
 #include "port_livesplit.h"
 #include "port_log.h"
+#include "port_motion_watch.h"
 #include "port_room_env.h"
 #include "port_room_geo.h"
 #include "port_room_liquid.h"
@@ -1847,9 +1848,9 @@ void CStateManager::Update(float dt) {
 }
 
 #ifdef TARGET_PC
-// Toggle lock-on, the Grapple key, sticky charge and Toggle Spider Ball (F1
-// Input, pause Options > Controller). Edges come from the combined digital/analog
-// state, since a GameCube trigger passes the analog threshold and clicks on
+// Toggle lock-on, the Grapple key and Toggle Grapple, sticky charge and Toggle
+// Spider Ball (F1 Input, pause Options > Controller). Edges come from the
+// combined digital/analog state, since a GameCube trigger passes the analog threshold and clicks on
 // different ticks and would toggle twice.
 static void ApplyHoldToggle(CFinalInput& input, const CStateManager& mgr, const CPlayer* player,
                             const CPlayerState* playerState, bool enabled) {
@@ -1859,6 +1860,8 @@ static void ApplyHoldToggle(CFinalInput& input, const CStateManager& mgr, const 
   static PortHoldToggle::Toggle sSpider;
   static PortHoldToggle::Grace sSpiderOn;
   static bool sPrevL = false;
+  static bool sSwallowL = false; // an L press the grapple took, until released
+  static float sDebounceL = 0.f;
   static bool sPrevGrapple = false;
   static bool sPrevGrappleL = false;
   static bool sPrevJump = false;
@@ -1870,17 +1873,34 @@ static void ApplyHoldToggle(CFinalInput& input, const CStateManager& mgr, const 
   const CPlayer::EPlayerOrbitState orbit =
       player != nullptr ? player->GetOrbitState() : CPlayer::kOS_NoOrbit;
 
+  const bool padL = input.DL() || input.DLTrigger();
+  const bool pressPadL = padL && !sPrevL;
+  sPrevL = padL;
+  sDebounceL = sDebounceL > input.Time() ? sDebounceL - input.Time() : 0.f;
+
   // The Grapple key stands in for L at a grapple point: the next target while
-  // not orbiting, the orbited one while the lock turns into a grapple.
+  // not orbiting, the orbited one while the lock turns into a grapple. Under
+  // Toggle Grapple an L press there does the same.
   const bool grappleKey = PortDebug::GrappleHeld();
   const bool grapplePress = grappleKey && !sPrevGrapple;
   sPrevGrapple = grappleKey;
+  const bool pressToggleL = unmorphed && pressPadL && PortDebug::GrappleToggle();
   bool atPoint = false;
-  if (unmorphed && (grapplePress || sGrapple.Taken())) {
+  if (unmorphed && (grapplePress || pressToggleL || sGrapple.Taken())) {
     const TUniqueId target =
         orbit == CPlayer::kOS_NoOrbit ? player->GetOrbitNextTargetId() : player->GetOrbitTargetId();
     atPoint = TCastToConstPtr< CScriptGrapplePoint >(mgr.GetObjectById(target)) != nullptr;
   }
+  // An L press taken for the grapple stays hidden from Toggle Lock-On and the
+  // game until L is released; a press within kDebounce of the last one is
+  // trigger bounce and is only hidden.
+  bool grapplePressL = false;
+  if (pressToggleL && (atPoint || sGrapple.Taken() || orbit == CPlayer::kOS_Grapple)) {
+    sSwallowL = true;
+    grapplePressL = sDebounceL <= 0.f;
+    sDebounceL = PortHoldToggle::Toggle::kDebounce;
+  }
+  sSwallowL = sSwallowL && padL;
   // A jump that lets go of the grapple only lets go: the game's grapple release
   // already throws Samus, and the press would otherwise spend her double jump.
   const bool jumpHeld = ControlMapper::GetDigitalInput(ControlMapper::kC_JumpOrBoost, input);
@@ -1888,24 +1908,26 @@ static void ApplyHoldToggle(CFinalInput& input, const CStateManager& mgr, const 
   sPrevJump = jumpHeld;
   const bool grappleTaken = sGrapple.Taken();
   const bool grappleL = sGrapple.Update(unmorphed && !PortDebug::OriginalExperience(),
-                                        grapplePress, jumpPress, atPoint,
+                                        grapplePress || grapplePressL, jumpPress, atPoint,
                                         orbit == CPlayer::kOS_Grapple, input.Time());
   sSwallowJump = jumpHeld && (sSwallowJump || (grappleTaken && !grappleL && jumpPress));
   if (sSwallowJump && ControlMapper::GetPressInput(ControlMapper::kC_JumpOrBoost, input)) {
     input.PortSetB(input.DB(), false);
   }
 
-  const bool padL = input.DL() || input.DLTrigger();
-  const bool pressPadL = padL && !sPrevL;
-  sPrevL = padL;
   // Only a lock on an object counts: a killed target leaves the player orbiting
   // its carcass, and a lost look angle a fixed point, both of which hold the aim
-  // in place for as long as L is held.
-  const bool locked = orbit == CPlayer::kOS_OrbitObject ||
-                      orbit == CPlayer::kOS_ForcedOrbitObject || orbit == CPlayer::kOS_Grapple;
-  const PortHoldToggle::Output outL =
-      sLockOn.Update(unmorphed && PortDebug::LockOnToggle(), padL, pressPadL, locked,
-                     input.Time());
+  // in place for as long as L is held. A grapple point doesn't either: grapples
+  // latch under Toggle Grapple, not Toggle Lock-On.
+  const bool lockToggle = unmorphed && PortDebug::LockOnToggle();
+  bool locked = false;
+  if (lockToggle &&
+      (orbit == CPlayer::kOS_OrbitObject || orbit == CPlayer::kOS_ForcedOrbitObject)) {
+    locked = TCastToConstPtr< CScriptGrapplePoint >(
+                 mgr.GetObjectById(player->GetOrbitTargetId())) == nullptr;
+  }
+  const PortHoldToggle::Output outL = sLockOn.Update(lockToggle, padL && !sSwallowL,
+                                                     pressPadL && !sSwallowL, locked, input.Time());
   // The Grapple key's L joins after Toggle Lock-On, which would otherwise latch
   // it and keep the grapple after the key lets go.
   const bool heldL = outL.held || grappleL;
@@ -2023,6 +2045,9 @@ void CStateManager::UpdateAreaSounds() {
 void CStateManager::ApplyDamage(const TUniqueId damagerId, const TUniqueId damageeId,
                                 const TUniqueId radiusSender, const CDamageInfo& info,
                                 const CMaterialFilter& filter, const CVector3f& knockbackVec) {
+#ifdef TARGET_PC
+  const PortMotionWatch::DamagerScope motionDamager(*this, damagerId);
+#endif
   const CEntity* damagerEnt = GetObjectById(damagerId);
   CEntity* damageeEnt = ObjectById(damageeId);
   const CActor* const damager = TCastToConstPtr< CActor >(damagerEnt);
@@ -2277,6 +2302,9 @@ const bool CStateManager::TestRayDamage(const CVector3f& pos, const CActor& dama
 
 void CStateManager::ApplyRadiusDamage(const CActor& damager, const CVector3f& pos, CActor& damagee,
                                       const CDamageInfo& info) {
+#ifdef TARGET_PC
+  const PortMotionWatch::DamagerScope motionDamager(*this, damager.GetUniqueId());
+#endif
   CVector3f delta = damagee.GetTranslation() - pos;
   if (!(delta.MagSquared() < info.GetRadius() * info.GetRadius())) {
     if (!damagee.GetTouchBounds()) {
@@ -2464,6 +2492,9 @@ void CStateManager::KnockBackPlayer(CPlayer& player, const CVector3f& dir, float
   float angle = CVector3f::GetAngleDiff(dir, -player.GetVelocityWR()) * 0.5f;
   usePower *= 1.f - angle / M_PIF;
 
+#ifdef TARGET_PC
+  PortMotionWatch::NoteKnockback(dir, usePower);
+#endif
   player.ApplyImpulseWR(dir * usePower, CAxisAngle::Identity());
   player.UseCollisionImpulses();
   player.SetAccelerationChangeTimer(0.25f);

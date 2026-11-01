@@ -370,7 +370,8 @@
   person behind the transition filter.
 - Toggle Lock-On (Controls > Options and pause Options > Controller, persisted as
   `lock_on_toggle`, off by default): a press of L that locks on (target, scan
-  point, grapple point) latches it held and the next press lets go. With nothing
+  point; grapple points follow Toggle Grapple) latches it held and the next press
+  lets go. With nothing
   to lock on, L is a plain hold (strafe while held). The latch also lets go by
   itself when its lock ends (target dead or out of range). Sticky
   Charge (`sticky_charge`, off by default, needs the Charge Beam): holding fire
@@ -384,6 +385,17 @@
   latch lets go by itself when the ball leaves the track for more than 0.15 s; the
   moment a hit knocks the ball off does not count. Morph ball only; off under
   Original Experience. Console: `spidertoggle`.
+- Shoot While Grappling (Controls > Options > Buttons and pause Options > Controller,
+  persisted as `grapple_shoot`, on by default, issue #243): the arm cannon stays out
+  while the grapple beam holds a grapple point, so it can fire mid-swing. Off, the
+  cannon is put away as in the original game. Off under Original Experience.
+  Console: `grappleshoot`.
+- Toggle Grapple (Controls > Options > Buttons and pause Options > Controller,
+  persisted as `grapple_toggle`, off by default, issue #243): an L press at a grapple
+  point grapples as the Grapple key does, held until the next L press or a jump,
+  independent of Toggle Lock-On. A settings file from before it takes its value from
+  `lock_on_toggle`, which used to latch grapples too. Off under Original Experience.
+  Console: `grappletoggle`.
 - Aim Lock-On (Controls > Options and pause Options > Controller, persisted as
   `aim_lock_on`, off by default, issue #236): lock-on picks the target nearest
   the crosshair, measured as an angle (screen x weighed by the aspect ratio).
@@ -537,6 +549,9 @@
 - `MP_CINEMA_BARS=0|1` (Video > Display "Cutscene black bars", persisted as `cinema_bars`,
   default off): the scripted 16:9 cutscene letterbox. Off, cutscenes narrower than 16:9
   show the cinematic camera's full shot (Vert+); elevator rides and credits keep theirs.
+- `MP_BALL_BARS=0|1` (Video > Display "Morph ball black bars", persisted as `ball_bars`,
+  default off): the morph ball view's narrowed viewport (tweak `BallViewportYReduction`).
+  Off, the world fills the screen in ball mode. Original Experience turns both bar options on.
 - `MP_SHARP_SCAN_WINDOW=0|1` (Video > Display "Sharp scan window", persisted as
   `sharp_scan_window`, default off; off under Original experience): the scan visor's
   magnifier renders the world a second time through a zoomed camera instead of
@@ -575,7 +590,15 @@
   kept in `generated/suit-colours/<suit>/` in the user folder (remade when the picks, the
   generator or the disc change). A texture a mod brings (the Remastered import) is left as
   it is. With "Suit-coloured morph balls" off, a suit that borrows another's ball shows
-  that suit's colours on it.
+  that suit's colours on it. While the Dread Samus import is on (DREAD_SAMUS.md), the list
+  also has its four suits, `suit_colour_dread_power` (primary, secondary, white),
+  `suit_colour_dread_gravity` (primary, secondary, accent, white), `suit_colour_dread_varia`
+  (primary, secondary, white) and `suit_colour_dread_phazon` (the Metroid Suit; primary,
+  accent): they recolour the import's own body, cannon and ball textures the same way. The
+  white slot takes the light, unsaturated parts (the white plates; the retail suits have
+  none): they take the picked hue, keeping their shading. Kept in `generated/suit-colours/dread_<suit>/`
+  (remade when the picks or the import change). The Phazon Suit's Dread cannon is Gravity's,
+  so it takes Gravity's colours.
 - `MP_HUD_WIDE=0|1` (Video > Display, persisted as `hud_wide`, default on): widescreen HUD. The
   aspect-matched in-game HUD frames keep each element's shape but move it away
   from the screen centre, so edge elements (scan panels, energy bar, map) reach
@@ -779,6 +802,11 @@
   default 0 = Game default): caps the wait before a hint first shows, also for
   hints already waiting in a loaded save. Needs the in-game hint system on. Game
   default under Original experience.
+- Music / sound effects boost (Game > Audio, the volume sliders past 100%;
+  `music_boost`, `sfx_boost`, `MP_MUSIC_BOOST`, `MP_SFX_BOOST`, 100-200, default
+  100): amplifies the mix once the game's own volume is full. Music covers the
+  sequenced music voices, streamed music and movie audio; sound effects the
+  effect voices. High values can clip. Kept under Original experience.
 - Show current hint (Game > Cutscenes button; console `hint show`): shows the hint
   the game would show next. A hint already on screen comes back with its map
   marker; otherwise the waiting hint due soonest shows now. Needs the in-game
@@ -1285,7 +1313,9 @@ other `X:\Users\<name>`: `X:\Users\<user>`); the
   earlier turned the view at twice the set speed). The mouse
   sensitivity slider scales the pointer speed for every input (the default follows the
   cursor), on top of the stick aim, gyro and touch aim speeds; Invert X/Y do not apply. The crosshair is always shown. Lock-on, scanning and grappling
-  re-centre the pointer and aim as before; auto-aim does not bend pointer shots.
+  re-centre the pointer and aim as before; auto-aim does not bend pointer shots. An
+  empty lock (L with nothing targeted, outside the Scan Visor) holds the view and leaves
+  the pointer free, as Trilogy's Z does, whatever Lock-on free aim says.
   Lock-on owns the camera while held; releasing it resumes at the actual locked
   direction rather than at accumulated mouse angles. Jump/fall auto-pitch is
   bypassed during free mouse aim. Capture/UI transitions cancel held charges and

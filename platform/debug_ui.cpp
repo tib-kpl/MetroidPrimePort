@@ -85,12 +85,15 @@ PortDebug::EAspectMode sAspectMode = PortDebug::kAspect_Window;
 bool sHudWide = true;
 bool sStretchMenus = false;
 bool sCinemaBars = false;
+bool sBallBars = false;
 bool sPhazonShell = true;
 bool sSharpScanWindow = false;
 bool sGeneratedBallLooks = true;
 bool sAutoAim = true;
 int sScanSpeed = 100;
 int sHintDelay = 0;
+int sMusicBoost = PortDebug::kVolumeBoostDefault;
+int sSfxBoost = PortDebug::kVolumeBoostDefault;
 bool sSecondaryCrosshairs = true;
 // A remapped pad drives menus and the map with its standard buttons (issue #57).
 bool sMenuStandardButtons = true;
@@ -527,6 +530,7 @@ void EnsureInitialized() {
   }
   sHudWide = port::EnvFlag("MP_HUD_WIDE", sHudWide);
   sCinemaBars = port::EnvFlag("MP_CINEMA_BARS", sCinemaBars);
+  sBallBars = port::EnvFlag("MP_BALL_BARS", sBallBars);
   sSharpScanWindow = port::EnvFlag("MP_SHARP_SCAN_WINDOW", sSharpScanWindow);
   sGeneratedBallLooks = port::EnvFlag("MP_POWER_SPIDER_BALL", sGeneratedBallLooks);
   sAutoAim = port::EnvFlag("MP_AUTO_AIM", sAutoAim);
@@ -534,6 +538,11 @@ void EnsureInitialized() {
                           PortDebug::kScanSpeedMax);
   sHintDelay = std::clamp(port::EnvInt("MP_HINT_DELAY", sHintDelay), PortDebug::kHintDelayMin,
                           PortDebug::kHintDelayMax);
+  sMusicBoost = std::clamp(port::EnvInt("MP_MUSIC_BOOST", sMusicBoost), PortDebug::kVolumeBoostMin,
+                           PortDebug::kVolumeBoostMax);
+  sSfxBoost = std::clamp(port::EnvInt("MP_SFX_BOOST", sSfxBoost), PortDebug::kVolumeBoostMin,
+                         PortDebug::kVolumeBoostMax);
+  ApplyVolumeBoosts();
   sSecondaryCrosshairs = port::EnvFlag("MP_SECONDARY_CROSSHAIRS", sSecondaryCrosshairs);
   if (const char* style = std::getenv("MP_CROSSHAIR_STYLE")) {
     if (std::strcmp(style, "classic") == 0) {
