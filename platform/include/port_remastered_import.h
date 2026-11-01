@@ -113,7 +113,8 @@ namespace ImportStage {
 // 89: 353d6547 draws as kind 29; 74c655e4 as kind 43 with the CCH1 tint and dual-source output.
 // 90: 54b4021f (Crystal) draws as kind 48.
 // 91: the skinned twins f07e9761 (of 98f0556d) and 3ef54cc4, 35acebd7 (of 4bc890c1) route to their family.
-inline constexpr int kConverter = 91;
+// 92: LambertFx lights with the baked probe x BLCM like VFX_Model_Base, not the flat (zero) ambient.
+inline constexpr int kConverter = 92;
 // What a converted texture holds: port_remastered_image/txtr/dds/astc, and Converter's Get and
 // Cube. Each converted texture is kept across imports under its tag and this number, so a
 // kConverter bump re-imports the models without converting their textures again.
@@ -152,7 +153,10 @@ inline constexpr int kTextures = 5;
 //     an ANCS binding one pair in several characters is rebound in the named one only.
 // 28: retail CMDL 119683F6 (Monitor Station's spinner bridge, ANCS 2220567B) is in the table,
 //     paired with 96b2cc02, the skinned model of its CHPR.
-inline constexpr int kModels = 28;
+// 29: the Puffer (E7CDBAF2) is paired with its CHPR's plain skin 5a42cd1b, not Metal.Skin 36d02b0c.
+// 30: the Puffer's Metal.Skin is imported as variant 1 of its ANCS (8DC8052E), for the Tower of
+//     Light's puffers.
+inline constexpr int kModels = 30;
 // 63: ELPS reads its CNST surface flag; the system tween is 0 only at a 0x1000000 lifetime.
 // 62: NEGT, CRCV, SPEV, ELPS, ROTV, PNCV, KEYF, SLTW, CRLN octaves, KESP, one-stop GRAD, PAP0/9,
 //     ADV9 and IAV0..3 are converted; PLNV counts come from MAXP.

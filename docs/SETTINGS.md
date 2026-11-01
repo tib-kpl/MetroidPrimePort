@@ -377,6 +377,13 @@
   for 0.35 s or more keeps the charge held after letting go, and the next press
   fires it; shorter taps shoot as usual. Both are off in morph ball and while
   input is disabled. The console's `status` prints the game's L/A and the charge.
+- Toggle Spider Ball (Controls > Options > Morph ball and pause Options > Controller,
+  persisted as `spider_toggle`, off by default, issue #243): an R press that attaches
+  the spider ball to a track latches it held and the next press lets go. Away from a
+  track R is a plain hold (it latches if the ball attaches while it is held). The
+  latch lets go by itself when the ball leaves the track for more than 0.15 s; the
+  moment a hit knocks the ball off does not count. Morph ball only; off under
+  Original Experience. Console: `spidertoggle`.
 - Aim Lock-On (Controls > Options and pause Options > Controller, persisted as
   `aim_lock_on`, off by default, issue #236): lock-on picks the target nearest
   the crosshair, measured as an angle (screen x weighed by the aspect ratio).
@@ -384,6 +391,21 @@
   threshold even when it is off to the side, and weighs screen offset only
   between targets at about the same distance. Grapple points and the scan visor
   keep retail's pick. Off under Original Experience.
+- Dodge (Controls > Move and aim, binding `dodge`, unbound by default, issue #236):
+  pressed on the ground while strafing (strafe at least as strong as forward/back),
+  it dashes. Locked on, it does what a jump tapped while strafing does: retail's
+  dash around the target. Not locked on, it does the same dash (same hop, speed,
+  length, sound and rumble) straight sideways along the facing at the press, with
+  mouse/stick look free during it. A press is kept for 0.12 s, so pressing just
+  before the strafe works. Like any digital action it can be added as a touch
+  button in the touch layout editor. Off under Original Experience; the jump-tap
+  dash is unchanged.
+- Grapple (Controls > Move and aim, binding `grapple`, unbound by default, issue #243):
+  pressed while a grapple point is the lock-on target (its reticle shows), it grapples
+  as L would and holds on without the key held: press again, or press jump, to let go
+  (the jump press only lets go, as releasing L would; it doesn't spend a double jump).
+  A press with no grapple point in reach does nothing, so the key never strafes or
+  locks onto an enemy. Toggle Lock-On doesn't change it. Also a touch button. Off under Original Experience. Console: `grapple`.
 - Remastered charge (Controls > Options, "Remastered charge (rapid fire)", persisted as
   `rapid_charge`, off by default, `MP_RAPID_CHARGE=<0|1>`): as in Remastered, holding
   fire fires a few shots before charging (3 in all with Power, 2 with Wave or Plasma,
@@ -741,6 +763,11 @@
   scales their alpha (the defaults leave them as on the Wii), the size slider scales them under
   direct aim, and `remastered` draws the Remastered cursor where the aiming cursor is, without
   the old crosshair.
+- Crosshair in X-Ray and Crosshair in Thermal (Video > Display, `crosshair_xray` and
+  `crosshair_thermal`, default off, issue #241): off fades the aiming crosshair out in
+  that visor as the game does in the Scan Visor, whatever the crosshair style (on a
+  Trilogy disc, the aiming cursor too). Lock-on and next-target reticles are unchanged.
+  On under Original experience.
 - Secondary crosshairs (Video > Display, `secondary_crosshairs`, `MP_SECONDARY_CROSSHAIRS`,
   default on): off hides the next-target reticles: the combat visor's seeker and the
   X-ray ring and thermal crosshair on the target Lock-On would pick. The lock-on
@@ -1274,6 +1301,11 @@ other `X:\Users\<name>`: `X:\Users\<user>`); the
   locked target. Under pointer aim with
   gyro aim, the twin stick moves the crosshair too while locked, so either or both
   can aim. Scan locks and grapples still aim through the centre.
+- Hand on cannon when still (Controls > Options > Aiming, `hand_on_cannon`, default
+  on; needs Mouse aim, Twin stick or the modern touch layout), as in Trilogy and
+  PrimeHack: after a second standing on the ground without walking, Samus rests her
+  left hand on the cannon (the GameCube R free-look pose) and keeps it while she turns,
+  aims and fires. Walking, jumping, a lock-on, a grapple or the morph ball drops it.
 - `MP_DISABLE_AI_AUDIO=1`: start streamed AI audio muted. It can subsequently be
   enabled from the overlay. MusyX mute is independent.
 - `MP_FAST_BOOT=1`, `MP_SKIP_CUTSCENES=1`, `MP_CUTSCENE_SPEED=8`,
@@ -1372,8 +1404,9 @@ other `X:\Users\<name>`: `X:\Users\<user>`); the
 - `remastered_performance=<0|1>` (Mods > Prime Remastered > Performance mode;
   default 1): faster Remastered drawing that is no longer exact (glass copy
   every second frame, quarter-size exposure measure, blended volumetric fog,
-  arm cannon depth laid first); see `docs/MODS.md`. Console `roomgeo perf
-  [mask]` sets single shortcuts (1 glass, 2 measure, 4 fog, 8 gun), not saved.
+  arm cannon depth laid first, room models' coarser levels at half the
+  distance); see `docs/MODS.md`. Console `roomgeo perf [mask]` sets single
+  shortcuts (1 glass, 2 measure, 4 fog, 8 gun, 16 LOD), not saved.
 - `phazon_shell=<0|1>` (Mods > Prime Remastered > Phazon Suit aura; default 1):
   the Phazon Suit wears Remastered's aura, its silhouette shell (on Samus, the
   third-person body and the pause screen's doll). Off: the suit draws the

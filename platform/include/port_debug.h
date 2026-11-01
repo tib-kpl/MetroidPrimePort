@@ -276,6 +276,10 @@ bool ConsumeShowHintRequest();
 // The next-target reticles (combat seeker, X-ray ring, thermal crosshair). Off hides them;
 // lock-on and scan reticles stay. On under Original experience.
 bool SecondaryCrosshairs();
+// Whether the crosshair (and Trilogy's aiming cursor) shows in a visor (a
+// CPlayerState::EPlayerVisor). Combat and Scan follow the game; X-Ray and Thermal
+// can be turned off (issue #241). On under Original experience.
+bool CrosshairInVisor(int visor);
 // Menus and the map read a remapped pad's standard buttons (F1 Controls > Remap).
 bool MenuStandardButtons();
 void SetMenuStandardButtons(bool enabled);
@@ -656,6 +660,10 @@ void SetFastMorph(bool enabled);
 // apply only unmorphed, in gameplay (port_hold_toggle.h).
 bool LockOnToggle();
 void SetLockOnToggle(bool enabled);
+// Toggle Spider Ball (issue #243): an R press that attaches the spider ball
+// latches until pressed again or the ball leaves its track; morph ball only.
+bool SpiderToggle();
+void SetSpiderToggle(bool enabled);
 // Aim Lock-On: lock onto the target nearest the crosshair instead of retail's
 // pick, which prefers a nearer target (CPlayer::FindBestOrbitableObject).
 bool AimLockOn();
@@ -749,6 +757,9 @@ int PointerAimTurn();
 // without pointer aim (no edge turn: the lock owns the view). CPlayer::PortLockFreeAim
 // reads it.
 bool LockOnFreeAim();
+// Hand on cannon: under direct aim, standing still rests the left hand on the cannon
+// (CPlayerGun::UpdateGunIdle reads it).
+bool HandOnCannon();
 // The pointer (-1..1 of the half view, right/down positive) as of the last tick;
 // false (and centre) unless it steered that tick's free look.
 bool PointerAimPosition(float& x, float& y);
@@ -853,6 +864,17 @@ bool BeamRequested(int beam);
 // save-state hotkeys (1 save, 2 load; F5/F9 send the same).
 void RequestSpringBall();
 bool SpringBallRequested();
+// Issue #236: the Dodge action, a sideways dash without a lock-on target. The
+// request lasts a short window; CPlayer takes it once (false under Original
+// experience).
+void RequestDodge();
+bool TakeDodgeRequest();
+// Issue #243: the Grapple action's state, set by the input routing each frame;
+// HoldGrapple holds it for a time (console). CStateManager turns it into L at a
+// grapple point (port_hold_toggle.h GrappleKey).
+void SetGrappleHeld(bool held);
+void HoldGrapple(float seconds);
+bool GrappleHeld();
 void RequestSaveStateHotkey(int which);
 bool TouchMapTap();
 void SetTouchMapTap(bool on);

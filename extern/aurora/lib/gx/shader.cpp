@@ -1046,6 +1046,7 @@ struct PbrGen {
   void buildSource();
   void patchSource();
   void patchSceneHdr();
+  void foldStatic();
 };
 
 
@@ -1244,8 +1245,9 @@ void PbrGen::layerPrologue() {
       // 32768 = the vertex shader's procedural wind (Remastered's USE_PROCEDURAL_WIND_ANIMATION);
       // the fragment ignores it.
       // 65536 = the opacity is the vertex alpha alone (495899e7: o0.w = v5.w * DIFC.a, DIFC.a = 1).
-      // 262144 = flat ambient only: no baked lobes, grid volume or lightmap, and no BLCM (4bc890c1
-      // LambertFx, whose perms sample none of them and seed the light sum with the flat constant).
+      // 262144 = flat ambient only: no baked lobes, grid volume or lightmap, and no BLCM (the
+      // flat perms of LambertFx 7126ca03 042-057; the converter no longer emits it, since rooms
+      // with probe data take the BLPD / volume perms instead).
       // 524288 = the vertex colour is used raw (premultiplied glass 941068bf / bcc73459, whose
       // vertex shader has no log2/exp2 decode).
       // The mode word is a whole number (CCubeModel strips 32 and 64, which the shader never sees).
@@ -3049,9 +3051,17 @@ void PbrGen::buildSource() {
       // a roughness of 1 samples. The probe is the display-referred scene, x is 0 then.
       let pbr_hdr = ubuf.pbr_cube.x;
       let pbr_lod = select({7}.0, ubuf.pbr_cube.y, pbr_hdr > 0.0);
-      // The LOD takes the roughness unfloored, as Remastered's does (only the BRDF floors it).
-      let pbr_cubed = textureSampleLevel(pbr_cube, pbr_cube_samp, pbr_pd, saturate(pbr_orm.g) * pbr_lod).rgb;
-      let pbr_cubel = select(srgb_dec(pbr_cubed), pbr_cubed * pbr_hdr, pbr_hdr > 0.0);
+      // Reflection occlusion (w of probe rows 1 and 2, GXSetPBRProbeEx) on a room cube: the
+      // cube is reflected, not the volume's lobes (below).
+      let pbr_cubeocc = pbr_hdr > 0.0 && ubuf.pbr_probe[0].w > 0.0 && ubuf.pbr_probe[2].w > 0.0;
+      // The cube is read only where something shows it: an ambient volume without that occlusion
+      // reflects its lobes instead.
+      var pbr_cubel = vec3f(0.0);
+      if (ubuf.pbr_probe[0].w > 0.0 && (ubuf.pbr_volume[3].w <= 0.0 || pbr_cubeocc)) {{
+          // The LOD takes the roughness unfloored, as Remastered's does (only the BRDF floors it).
+          let pbr_cubed = textureSampleLevel(pbr_cube, pbr_cube_samp, pbr_pd, saturate(pbr_orm.g) * pbr_lod).rgb;
+          pbr_cubel = select(srgb_dec(pbr_cubed), pbr_cubed * pbr_hdr, pbr_hdr > 0.0);
+      }}
       var pbr_envspec = pbr_cubel * min(ubuf.pbr_probe[0].w, 1.0);
       var pbr_ambd = pbr_amb;
       // The baked mean without the modulation (the BLPD record's mean, or the grid's mean
@@ -3098,24 +3108,24 @@ R"""(          let pbr_vn = vec3f(dot(ubuf.pbr_volume[3].xyz, pbr_n), dot(ubuf.p
           let pbr_vs = vec3f(pbr_vr.a, pbr_vg.a, pbr_vb.a);
           pbr_ambd = max(pbr_vmean - pbr_vlobe + 2.0 * pbr_vlobe * (1.0 + pbr_vs) * pow(pbr_vq, 1.0 + 2.0 * pbr_vs),
                          vec3f(0.0)) * ubuf.pbr_volume[3].w * pbr_blcm;
-          // The same lobes along the reflection stand in for the environment: unlike a cube
-          // for the room, they are dark where this spot is.
-          let pbr_vrn = vec3f(dot(ubuf.pbr_volume[3].xyz, pbr_refl), dot(ubuf.pbr_volume[4].xyz, pbr_refl),
-                              dot(ubuf.pbr_volume[5].xyz, pbr_refl));
-          let pbr_vrq = clamp(vec3f(dot(pbr_vrn, pbr_vr.xyz * 2.0 - 1.0), dot(pbr_vrn, pbr_vg.xyz * 2.0 - 1.0),
-                                    dot(pbr_vrn, pbr_vb.xyz * 2.0 - 1.0)) * 0.5 + 0.5, vec3f(0.0), vec3f(1.0));
           pbr_bmean = pbr_vmean * ubuf.pbr_volume[3].w;
           pbr_bmeanok = true;
-          pbr_envspec = max(pbr_vmean - pbr_vlobe + 2.0 * pbr_vlobe * (1.0 + pbr_vs) * pow(pbr_vrq, 1.0 + 2.0 * pbr_vs),
-                            vec3f(0.0)) * ubuf.pbr_volume[3].w;
-          // With a room cube and Remastered's reflection occlusion (w of probe rows 1 and 2,
-          // GXSetPBRProbeEx), the cube is reflected instead, darkened where the baked light
-          // is weak: mix(min, 1, saturate(brightest channel of the mean x the modulation's
-          // luminance / max)).
-          if (pbr_hdr > 0.0 && ubuf.pbr_probe[0].w > 0.0 && ubuf.pbr_probe[2].w > 0.0) {{
+          // With a room cube and Remastered's reflection occlusion, the cube is reflected,
+          // darkened where the baked light is weak: mix(min, 1, saturate(brightest channel of
+          // the mean x the modulation's luminance / max)).
+          if (pbr_cubeocc) {{
               let pbr_vocc = clamp(max(pbr_vmean.r, max(pbr_vmean.g, pbr_vmean.b)) *
                                    dot(pbr_blcm, vec3f(0.2126, 0.7152, 0.0722)) * ubuf.pbr_probe[2].w, 0.0, 1.0);
               pbr_envspec = pbr_cubel * mix(ubuf.pbr_probe[1].w, 1.0, pbr_vocc);
+          }} else {{
+              // Otherwise the same lobes along the reflection stand in for the environment:
+              // unlike a cube for the room, they are dark where this spot is.
+              let pbr_vrn = vec3f(dot(ubuf.pbr_volume[3].xyz, pbr_refl), dot(ubuf.pbr_volume[4].xyz, pbr_refl),
+                                  dot(ubuf.pbr_volume[5].xyz, pbr_refl));
+              let pbr_vrq = clamp(vec3f(dot(pbr_vrn, pbr_vr.xyz * 2.0 - 1.0), dot(pbr_vrn, pbr_vg.xyz * 2.0 - 1.0),
+                                        dot(pbr_vrn, pbr_vb.xyz * 2.0 - 1.0)) * 0.5 + 0.5, vec3f(0.0), vec3f(1.0));
+              pbr_envspec = max(pbr_vmean - pbr_vlobe + 2.0 * pbr_vlobe * (1.0 + pbr_vs) * pow(pbr_vrq, 1.0 + 2.0 * pbr_vs),
+                                vec3f(0.0)) * ubuf.pbr_volume[3].w;
           }}
           // Diagnostics (w of row 5): 1 the texture coordinates, 2 the light alone, 3 the
           // normal.
@@ -3448,7 +3458,7 @@ void PbrGen::patchSource() {
           // modulation's luminance / REFP max)). It replaces the volume's occlusion, not adds to
           // it. Without those parameters the raw level stands in, from 0 to 1.
           let pbr_lmax = max(pbr_l0.r, max(pbr_l0.g, pbr_l0.b));
-          if (pbr_hdr > 0.0 && ubuf.pbr_probe[0].w > 0.0 && ubuf.pbr_probe[2].w > 0.0) {
+          if (pbr_cubeocc) {
               pbr_envspec = pbr_cubel * mix(ubuf.pbr_probe[1].w, 1.0,
                   clamp(pbr_lmax * dot(pbr_blcm, vec3f(0.2126, 0.7152, 0.0722)) * ubuf.pbr_probe[2].w, 0.0, 1.0));
           } else {
@@ -3462,6 +3472,41 @@ void PbrGen::patchSource() {
     cut("if (ubuf.pbr_volume[3].w > 0.0) {", "if (false) {");
   } else if (costTest == 4) {
     cut("textureSampleLevel(pbr_cube, pbr_cube_samp, pbr_pd, saturate(pbr_orm.g) * pbr_lod).rgb", "vec3f(0.2)");
+  } else if (costTest == 16) {
+    // The volume's math on fixed texels: what its five reads cost.
+    for (const char* t : {"pbr_vol_mean", "pbr_vol_lobe", "pbr_vol_r", "pbr_vol_g", "pbr_vol_b"}) {
+      cut(fmt::format("textureSampleLevel({}, pbr_cube_samp, pbr_vuv, 0.0)", t), "(vec4f(0.3, 0.2, 0.6, 0.5) + pbr_vuv.xyzx * 0.01)");
+    }
+  }
+}
+
+// ShaderConfig::pbrPlain and pbrNoDebug (pbr_static_flags): the runtime tests they stand for become
+// constants, so the compiler drops the branches. On an iGPU that is about 1 ms of the main pass
+// (build/s-pbrspec-20261031). Compound tests go first, before their parts.
+void PbrGen::foldStatic() {
+  std::vector<std::pair<std::string_view, std::string_view>> folds;
+  if (config.pbrPlain) {
+    folds.insert(folds.end(), {
+        {"ubuf.pbr_tone[1].x > 0.0 && ubuf.pbr_tone[0].w > 0.0", "true"},
+        {"ubuf.pbr_tone[1].x > 0.0", "true"},
+        {"ubuf.pbr_tone[1].x <= 0.0", "false"},
+        {"ubuf.pbr_light_scale.z > 0.0", "true"},
+        {"ubuf.pbr_up.w > 0.0", "true"},
+    });
+  }
+  if (config.pbrNoDebug) {
+    folds.insert(folds.end(), {
+        {"ubuf.pbr_volume[5].w > 1.5 && ubuf.pbr_volume[5].w < 2.5", "false"},
+        {"ubuf.pbr_volume[5].w < 1.5", "true"},
+        {"ubuf.pbr_volume[5].w > 0.5", "false"},
+        {"ubuf.pbr_volume[5].w > 2.5", "false"},
+        {"ubuf.pbr_layer.w > 0.5", "false"},
+    });
+  }
+  for (const auto& [what, with] : folds) {
+    for (size_t at = source.find(what); at != std::string::npos; at = source.find(what, at + with.size())) {
+      source.replace(at, what.size(), with);
+    }
   }
 }
 
@@ -3648,6 +3693,7 @@ auto pbr_func(const ShaderConfig& config, const ShaderInfo& info, std::string& v
   g.buildSource();
   g.patchSource();
   g.patchSceneHdr();
+  g.foldStatic();
   return std::move(g.source);
 }
 

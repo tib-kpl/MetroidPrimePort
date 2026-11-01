@@ -2705,6 +2705,50 @@ void CmdAimLockOn() {
   Finish();
 }
 
+// As the Dodge action's press: the player takes it within its window, on the
+// ground while strafing (hold one with `press sx:<n>`).
+void CmdDodge() {
+  PortDebug::RequestDodge();
+  Out(PortDebug::OriginalExperience() ? "dodge requested (off under original experience)"
+                                      : "dodge requested");
+  Finish();
+}
+
+// A press of the Grapple action, held for `seconds` (default 1): it grapples
+// when a grapple point is the lock-on target, and the next press lets go.
+void CmdGrapple() {
+  float seconds = 1.f;
+  if (sCmd.args.size() > 2 || (sCmd.args.size() == 2 && !ParseFloat(sCmd.args[1], seconds)) ||
+      seconds < 0.f) {
+    return Finish("usage: grapple [seconds]");
+  }
+  PortDebug::HoldGrapple(seconds);
+  Out(PortDebug::OriginalExperience() ? "grapple held (off under original experience)"
+                                      : "grapple held");
+  Finish();
+}
+
+// `<name> [0|1]` for a boolean setting: sets it, then prints it.
+void BoolSettingCmd(const char* name, bool (*get)(), void (*set)(bool)) {
+  if (sCmd.args.size() > 1) {
+    const std::string& v = sCmd.args[1];
+    if (sCmd.args.size() > 2 || (v != "0" && v != "1")) {
+      return Finish((std::string("usage: ") + name + " [0|1]").c_str());
+    }
+    set(v == "1");
+  }
+  Out("%s %d", name, get() ? 1 : 0);
+  Finish();
+}
+
+void CmdSpiderToggle() {
+  BoolSettingCmd("spidertoggle", PortDebug::SpiderToggle, PortDebug::SetSpiderToggle);
+}
+
+void CmdLockToggle() {
+  BoolSettingCmd("locktoggle", PortDebug::LockOnToggle, PortDebug::SetLockOnToggle);
+}
+
 void CmdRadial() {
   const auto& a = sCmd.args;
   if (a.size() == 2 && a[1] == "release") {
@@ -3431,7 +3475,7 @@ void CmdRoomGeo() {
       if (sCmd.args.size() > 2) {
         GXPortSetPerformance(u32(std::strtoul(sCmd.args[2].c_str(), nullptr, 0)));
       }
-      Out("performance shortcuts: 0x%x (glass 0x1, measure 0x2, fog 0x4, gun 0x8; 0 exact)",
+      Out("performance shortcuts: 0x%x (glass 0x1, measure 0x2, fog 0x4, gun 0x8, lod 0x10; 0 exact)",
           unsigned(GXPortGetPerformance()));
       return Finish();
     } else if (arg == "script") {
@@ -4275,9 +4319,9 @@ const CommandSpec kCommands[] = {
     {"shadow", CmdShadow, nullptr,
      "shadow [casters on|off]   the sun's shadow map last frame: direction, colour, box, casters, and the room's suns"},
     {"roomgeo", nullptr, nullptr,
-     "roomgeo perf [mask]       performance-mode shortcuts (bits: 1 glass every 2nd frame, 2 quarter-size measure, 4 blended fog;\n"
-     "                          0 exact); no mask prints them\n"
-     "roomgeo costtest <n>      PBR shading cost test: 0 off, 1 flat, 2 no lights, 3 no volume, 4 no cube, 5 no normal maps, 6 no ORM/emissive, 7 maps only, 8 no aniso, 9 no aniso or mip blend, 10 no post-processing, 11 no screen copies"},
+     "roomgeo perf [mask]       performance-mode shortcuts (bits: 1 glass every 2nd frame, 2 quarter-size measure, 4 blended fog,\n"
+     "                          8 gun depth first, 16 half LOD distance; 0 exact); no mask prints them\n"
+     "roomgeo costtest <n>      PBR shading cost test: 0 off, 1 flat, 2 no lights, 3 no volume, 4 no cube, 5 no normal maps, 6 no ORM/emissive, 7 maps only, 8 no aniso, 9 no aniso or mip blend, 10 no post-processing, 11 no screen copies, 16 volume reads fixed"},
     {"gpuselftest", CmdGpuSelfTest, nullptr,
      "gpuselftest               render known patterns offscreen, compare the readback, log PASS/FAIL per case"},
     {"gputimes", CmdGpuTimes, nullptr,
@@ -4407,6 +4451,14 @@ const CommandSpec kCommands[] = {
      "stackbeams [0|1]           every shot also fires the other owned beams' projectiles (stack_beams)"},
     {"aimlockon", CmdAimLockOn, nullptr,
      "aimlockon [0|1]            lock-on picks the target nearest the crosshair (aim_lock_on)"},
+    {"dodge", CmdDodge, nullptr,
+     "dodge                      a Dodge press (sideways dash, locked on or not; needs a strafe held)"},
+    {"grapple", CmdGrapple, nullptr,
+     "grapple [seconds]          presses the Grapple action, held that long (default 1 s): grapples at a grapple point, or lets go"},
+    {"spidertoggle", CmdSpiderToggle, nullptr,
+     "spidertoggle [0|1]         an R press holds the spider ball on its track until the next (spider_toggle)"},
+    {"locktoggle", CmdLockToggle, nullptr,
+     "locktoggle [0|1]           an L press holds a lock-on until the next (lock_on_toggle)"},
     {"radial", CmdRadial, nullptr,
      "radial [beam|visor [x y] | release]  holds a radial menu with its selection (x right, y up); radial_menus"},
     {"walkspeed", CmdWalkSpeed, nullptr,

@@ -59,6 +59,7 @@ struct Settings {
   bool radialMenus = false;  // Trilogy discs: the Wii's radial beam and visor menus
   bool fastMorph = false;
   bool lockOnToggle = false;
+  bool spiderToggle = false;
   bool aimLockOn = false;
   bool stickyCharge = false;
   bool rapidCharge = false;
@@ -138,6 +139,9 @@ struct Settings {
   // shots follow it while the lock steers the view (any direct aim, with or without
   // pointer aim).
   bool lockOnFreeAim = false;
+  // Hand on cannon (Trilogy, PrimeHack): standing still under direct aim rests Samus's
+  // left hand on the cannon (R's free-look pose).
+  bool handOnCannon = true;
   // Radians per count; shown on the Source scale. Defaults to 3.0 there
   // (PortMouse::kDefaultSensitivity).
   float mouseSensitivity = 0.00115192f;

@@ -209,6 +209,8 @@ bool ApplySetting(std::string_view keyView, std::string_view valueView) {
     }
   } else if (key == "lock_on_free_aim") {
     s.lockOnFreeAim = ParseBool(value);
+  } else if (key == "hand_on_cannon") {
+    s.handOnCannon = ParseBool(value);
   } else if (key == "crosshair_size") {
     const int v = std::atoi(value.c_str());
     if (v >= kCrosshairSizeMin && v <= kCrosshairSizeMax) {
@@ -271,6 +273,8 @@ bool ApplySetting(std::string_view keyView, std::string_view valueView) {
     s.fastMorph = ParseBool(value);
   } else if (key == "lock_on_toggle") {
     s.lockOnToggle = ParseBool(value);
+  } else if (key == "spider_toggle") {
+    s.spiderToggle = ParseBool(value);
   } else if (key == "aim_lock_on") {
     s.aimLockOn = ParseBool(value);
   } else if (key == "sticky_charge") {
@@ -336,6 +340,7 @@ void WriteControlSettings(std::ostream& out) {
 void WriteGameplaySettings(std::ostream& out) {
   const Settings& s = Get();
   out << "lock_on_toggle=" << (s.lockOnToggle ? 1 : 0) << '\n';
+  out << "spider_toggle=" << (s.spiderToggle ? 1 : 0) << '\n';
   out << "aim_lock_on=" << (s.aimLockOn ? 1 : 0) << '\n';
   out << "sticky_charge=" << (s.stickyCharge ? 1 : 0) << '\n';
   out << "rapid_charge=" << (s.rapidCharge ? 1 : 0) << '\n';
@@ -396,6 +401,7 @@ void WriteAimSettings(std::ostream& out) {
   out << "pointer_aim_box=" << s.pointerAimBox << '\n';
   out << "pointer_aim_turn=" << s.pointerAimTurn << '\n';
   out << "lock_on_free_aim=" << (s.lockOnFreeAim ? 1 : 0) << '\n';
+  out << "hand_on_cannon=" << (s.handOnCannon ? 1 : 0) << '\n';
 }
 
 void WriteSettings(std::ostream& out) {
