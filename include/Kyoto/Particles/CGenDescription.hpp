@@ -7,6 +7,7 @@
 #include "Kyoto/Particles/CPortParticleVars.hpp"
 #include "Kyoto/Particles/CSpawnSystemKeyframeData.hpp"
 #include "Kyoto/Particles/IElement.hpp"
+#include "Kyoto/Math/CVector3f.hpp"
 #include "Kyoto/TToken.hpp"
 
 #include "rstl/optional_object.hpp"
@@ -60,7 +61,10 @@ struct CPortVfxMat {
   Src src[11];
   float modulate = 1.f, depthSoften = 0.f;
   float opacityGain = 1.f, opacityBias = 0.f; // v3 tail; v2 keeps the identity
+  float alphaGamma = 0.f; // v4 tail: the colour map's alpha is |a|^alphaGamma; 0 = as sampled
+  bool litPerVertex = false; // v5 flags bit 0: ParticleLit lights the vertices, not the pixels
   u32 spriteCenter = 0; // 0..8, a row of the sprite pivot table
+  bool Supported() const { return version >= 2 && version <= 5; } // a VMAT the port draws
 };
 
 // XFMD (build/mpr/vfx/RESOLVED-xfmd.md): how the emitter's transform reaches the particles.
@@ -72,6 +76,30 @@ struct CPortVfxData {
   CPortVfxMat mat;
   std::vector< CRealElement* > vtmt; // n x 6 (A B C D E F)
   u32 vtmtCount = 0;
+  // VTRS: a header sprite's TEXR TRST (x, y, sx, sy, rot in degrees), or all null.
+  CRealElement* vtrs[5] = {};
+  // VATX: a header sprite's TEXR ATEX as Remastered's CUVEAnimTexture, its tile rects (x0 y0 x1 y1
+  // per tile, none without one), cycle frames and loop.
+  std::vector< float > atexRects;
+  float atexCycle = 0.f;
+  bool atexLoop = false;
+  // VAT2: an ATX2's cycle, evaluated per particle frame in place of atexCycle; null for VATX.
+  CIntElement* atexCycleElem = nullptr;
+  // VTP2: a header sprite's TEXR TXP2 as CUVETexturePalette, its cols x rows tiles in atexRects
+  // and the index, a real picking tile clamp(index·count, 0, count - 1) with no time term.
+  CRealElement* txp2Index = nullptr;
+  // VATF: a header sprite's TEXR ATFB as Remastered's CUVEAnimFlipBookTexture, a texture array's
+  // layer count (0 without one), loop, and the duration in frames, an int element read as a real.
+  u32 atfbLayers = 0;
+  bool atfbLoop = false;
+  CIntElement* atfbCycle = nullptr;
+  // VTFB: a header sprite's TEXR TXFB as CUVEFlipBookTexture, a texture array's layer count (0
+  // without one) and the index, a real picking layer clamp(index·layers, 0, layers - 1).
+  u32 txfbLayers = 0;
+  CRealElement* txfbIndex = nullptr;
+  // VTRT: a header sprite's ANTH TRST (x, y, sx, sy, rot in degrees) for the thresholding map's
+  // UV (set 1), or all null.
+  CRealElement* vtrt[5] = {};
   std::vector< CPortVfxElem > vpmt;
   std::vector< CPortVfxElem > vsmt;
   CRealElement* ssze = nullptr;
@@ -181,6 +209,17 @@ public:
   u8 xPortNestedLightFalloff = 3;
   // port-only PLIX: Remastered's LIXP, LINT at the static inverse exposure (PortRoomEnv::ParticleLightGain)
   bool xPortNestedLightInverseExposure = false;
+  // port-only PLSP: Remastered's LSPS, the light's specular roughness widen (CLight::SetPortHdrWiden)
+  float xPortNestedLightWiden = 0.f;
+  // port-only PLON: Remastered builds this generator's light once (CParticleLight::Create
+  // 0x2def58, from the ctor) and never updates it, as every tick mode but TickSystem_Light does.
+  bool xPortLightOnce = false;
+  // port-only PFXB: Remastered's fixed system bounds (CBoundsFixedEval), a box in the system's
+  // space that replaces the particles' bounds; PFXC: children's bounds are left out (FXBI).
+  bool xPortFixedBounds = false;
+  bool xPortBoundsNoChildren = false;
+  CVector3f xPortFixedBoundsMin = CVector3f(0.f, 0.f, 0.f);
+  CVector3f xPortFixedBoundsMax = CVector3f(0.f, 0.f, 0.f);
   // port-only PINS: Remastered's INTS, the system scale in place of the external one (EXTS still
   // reads the external scale; CElementGen::PortSystemScale). Owned here; null = the external scale.
   CVectorElement* xPortIntScale = nullptr;
@@ -189,6 +228,9 @@ public:
   // the external ones; CElementGen::PortApplyIntFrame). Owned here; null = the external one.
   CVectorElement* xPortIntRotation = nullptr;
   CVectorElement* xPortIntTranslation = nullptr;
+  // port-only POVC: Remastered's OVEC (desc+0x388), a sprite's vector orientation axis in the
+  // port's space, evaluated per particle at birth and before each move. Owned here.
+  CVectorElement* xPortOvec = nullptr;
   // port-only PVRT: Remastered particle variables (names, types, defaults)
   std::unique_ptr< CPortVarTable > xPortVars;
   // port-only: the PKPR elements (per-particle KPIN latches), latched at birth in this order;
@@ -237,12 +279,22 @@ public:
   // port-only PISV: Remastered's ISVF, the factor of the system's per-tick translation change
   // (PEMV's delta, no time step) added to a new particle's velocity. Owned here; null = none.
   CRealElement* xPortInheritVel = nullptr;
+  // port-only PITN: the ITEN of a model generator drawn by its CMDL's own materials (no VMAT),
+  // evaluated into CParticle::xPortIten; part of that draw's DIFC (CElementGen::RenderModels).
+  // Owned here; null = not such a generator (retail draws, no DIFC).
+  CRealElement* xPortModelIten = nullptr;
   // port-only PITP: Remastered's ITPE 1: with several particles born in a tick and a moving system,
   // their positions are spread back along the change of translation (CreateNewParticles 0x24a630).
   bool xPortSpread = false;
   // port-only PDBS: Remastered's DBIS (desc+0xd4), the depth bias in world units, negative toward the
   // camera (CPortParticleDepthBias). 0 = none.
   float xPortDepthBias = 0.f;
+  // port-only PDBO: Remastered's DBSO 0 (desc+0x6b bit 2, on by default), the depth bias no longer
+  // scales by the depth range's span (CParticleSceneNode::ConstructDepthBias 0x2b1004).
+  bool xPortDepthBiasUsesDepthRange = true;
+  // port-only PSBS: Remastered's SBIS (desc+0xd8, GetSortBias 0x288248), world units added to the
+  // translucent sort depth (SortFarToNear 0x1f3000); positive sorts farther. 0 = none.
+  float xPortSortBias = 0.f;
   // port-only PSHM: Remastered's SHTM, what a shutdown does (CParticleGen::DoShutdownBehavior
   // 0x27b88c): 0 stops emission, 1 also destroys the live particles. Other values do neither.
   u8 xPortShutdownMode = 0;
@@ -252,6 +304,13 @@ public:
   // port-only PISD 0: Remastered's ISDT (desc+0x6c bit 1), on by default. On, a shutdown reaches the
   // children as DoShutdownBehavior(mode) (their own SHTM at once, no SHTT); off, as ShutdownEffect.
   bool xPortChildShutdownByMode = true;
+  // port-only POSD 0: Remastered's OSDM (desc+0x6c bit 0), on by default. On, each child the system
+  // constructs takes the system's live shutdown mode in place of its own SHTM
+  // (ConstructChildParticleSystem 0x27b1c0, CParticleGen ctor 0x279784); off, each keeps its own.
+  bool xPortChildInheritsShutdownMode = true;
+  // port-only PBOR: Remastered's ORTC; a model particle turns with the system orientation it was
+  // born under (CreateNewParticles 0x24a8d8), not the current one, unless PMOV or a PMRQ base applies.
+  bool xPortBirthOrientation = false;
   // port-only PBLT 1: Remastered's BLIT (static-state bit 0x4000). A lit sprite takes the room's baked
   // probe only with it (CParticleSceneNode::AppendBakedLightingIfRequested 0x2b12a8).
   bool xPortBakedLighting = false;
@@ -265,6 +324,13 @@ public:
     int frame;
   };
   std::vector< PortExtraSwoosh > xPortExtraSwooshes;
+  // port-only PSPS/PSMX: Remastered's per-particle child system (desc+0x200) and the most of
+  // them alive at once (desc+0x208; absent = ceil(MAXP * 1.1)), run by CElementGen::PortPsps*.
+  rstl::optional_object< TCachedToken< CGenDescription > > xPortPsps;
+  // ... or a swoosh per particle (PSPS SWHC id; the Switch builds any system type there).
+  rstl::optional_object< TCachedToken< CSwooshDescription > > xPortPspsSwoosh;
+  bool PortHasPsps() const { return xPortPsps || xPortPspsSwoosh; }
+  CIntElement* xPortPsmx = nullptr;
   // port-only PKSM: Remastered's spawn tables as its CSpawnSystemKeyframeData keeps them
   // (ctor 0x293350; run by CElementGen::PortSpawnTables). Replaces KSSM when present.
   struct PortKssmSpawn {

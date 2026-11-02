@@ -81,6 +81,13 @@ bool ApplySetting(std::string_view keyView, std::string_view valueView) {
     }
   } else if (key == "stick_aim_split") {
     s.stickAimSplit = ParseBool(value);
+  } else if (key == "flick_stick") {
+    s.flickStick = ParseBool(value);
+  } else if (key == "flick_stick_outer_deadzone") {
+    const float f = ParseFloat(value);
+    if (std::isfinite(f) && f >= 0.f && f <= kFlickOuterDeadZoneMax) {
+      s.flickOuterDeadZone = f;
+    }
   } else if (key == "stick_aim_rate_y") {
     const float f = ParseFloat(value);
     if (std::isfinite(f) && f >= 50.f && f <= 10000.f) {
@@ -152,6 +159,8 @@ bool ApplySetting(std::string_view keyView, std::string_view valueView) {
     s.touchClassic = ParseBool(value);
   } else if (key == "touch_twin_stick") {
     s.touchTwinStick = ParseBool(value);
+  } else if (key == "touch_flick_stick") {
+    s.touchFlickStick = ParseBool(value);
   } else if (key == "touch_wheels") {
     s.touchWheels = ParseBool(value);
   } else if (key == "touch_visor_tap_scan") {
@@ -375,6 +384,8 @@ void WriteAimSettings(std::ostream& out) {
   out << "stick_aim_rate=" << s.stickAimRate << '\n';
   out << "stick_aim_split=" << (s.stickAimSplit ? 1 : 0) << '\n';
   out << "stick_aim_rate_y=" << s.stickAimRateY << '\n';
+  out << "flick_stick=" << (s.flickStick ? 1 : 0) << '\n';
+  out << "flick_stick_outer_deadzone=" << s.flickOuterDeadZone << '\n';
   out << "gyro_mode=" << s.gyroMode << '\n';
   out << "gyro_source=" << s.gyroSource << '\n';
   out << "gyro_sensitivity=" << s.gyroSensitivity << '\n';
@@ -400,7 +411,10 @@ void WriteAimSettings(std::ostream& out) {
   out << "touch_map_tap=" << (s.touchMapTap ? 1 : 0) << '\n';
   out << "touch_classic_gc=" << (s.touchClassic ? 1 : 0) << '\n';
   out << "touch_twin_stick=" << (s.touchTwinStick ? 1 : 0) << '\n';
-  out << "touch_wheels=" << (s.touchWheels ? 1 : 0) << '\n';
+  out << "touch_flick_stick=" << (s.touchFlickStick ? 1 : 0) << '\n';
+  if (s.touchWheels) {
+    out << "touch_wheels=1\n"; // not migrated yet
+  }
   out << "touch_visor_tap_scan=" << (s.touchVisorTapScan ? 1 : 0) << '\n';
   out << "mouse_invert_x=" << (s.mouseInvertX ? 1 : 0) << '\n';
   out << "mouse_invert_y=" << (s.mouseInvertY ? 1 : 0) << '\n';
@@ -439,6 +453,12 @@ void ApplyEnvOverrides() {
   }
   if (port::EnvFlag("MP_TWIN_STICK")) {
     s.twinStick = true;
+  }
+  if (port::EnvFlag("MP_FLICK_STICK")) {
+    s.flickStick = true;
+  }
+  if (port::EnvFlag("MP_TOUCH_FLICK_STICK")) {
+    s.touchFlickStick = true;
   }
   if (port::EnvFlag("MP_MOUSE_INVERT_X")) {
     s.mouseInvertX = true;

@@ -96,6 +96,7 @@ public:
 #ifdef TARGET_PC
   void ShutdownEffect() override;
   void PortDoShutdownBehavior(u32 mode) override;
+  u32 PortOwnShutdownMode() const override;
   void PortSetSpawnSpread(const CVector3f& spread, const CVector3f& origin) override;
   uint PortFxAsset() const override;
   bool PortIsRemastered() const;
@@ -193,6 +194,13 @@ private:
   CColor x20c_moduColor;
 
 #ifdef TARGET_PC
+public:
+  // The seed a Remastered parent gives the converted swoosh it constructs next; consumed by
+  // that ctor (CElementGen::PortSeedSwooshChild).
+  static uint sPortChildSeed;
+  static bool sPortChildSeedSet;
+
+private:
   CPortVarMemory xPortVars; // PVRT variables, initialised from the description's defaults
   CVector3f xPortSpawnSpread{1.f, 1.f, 1.f}; // PortSetSpawnSpread
   CVector3f xPortSpawnOrigin{0.f, 0.f, 0.f};
@@ -226,6 +234,9 @@ private:
   std::vector< SPortVfxPoint > xPortVfxPts;
   // Remastered's EMRV (CVEVelocityCalc 0x2a288c): the translation one step back, for PRAZ.
   CVector3f xPortRazyPrev = CVector3f(0.f, 0.f, 0.f);
+  // Remastered's +0x17c: points created since construction or the last DestroyParticles (TXUP).
+  int xPortCreated = 0;
+  float PortTexUScroll() const;
   CTransform4f PortRazyOrientation(const CVector3f& motion) const;
   CTransform4f PortRotZOrientation() const;
   bool PortVfxSwoosh() const;

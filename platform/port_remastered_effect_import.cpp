@@ -1247,12 +1247,14 @@ public:
       }
       return m_black != 0 ? FlipbookAtlas{m_black, 1, 1, 1} : FlipbookAtlas{};
     }
-    const std::optional<uint32_t> retail = EffectRetailId(stored);
-    if (retail && m_io.retailId(*retail)) {
-      return FlipbookAtlas{*retail, 1, 1, 1};
-    }
+    // Remastered's own file under a carried-over id comes first: it is an sRGB texture its
+    // shaders sample decoded, where the disc's GC texture holds the encoded bytes.
     const EffectGuid id = Swap(stored);
     if (m_io.typeOf(id) != kTxtr) {
+      const std::optional<uint32_t> retail = EffectRetailId(stored);
+      if (retail && m_io.retailId(*retail)) {
+        return FlipbookAtlas{*retail, 1, 1, 1};
+      }
       return {};
     }
     int width = 0, height = 0, layers = 0;
@@ -1333,8 +1335,25 @@ public:
     io.flipbook = [&](const EffectGuid& stored) { return Flipbook(Swap(stored)); };
     io.materialData = [&](const EffectGuid& material) { return MaterialData(material); };
     io.vfxTexture = [&](const EffectGuid& stored) { return VfxTexture(stored); };
+    // The top mip's size, as GetFullTextureWidth/Height.
+    io.textureSize = [&](const EffectGuid& stored, uint32_t& width, uint32_t& height) {
+      int w = 0, h = 0;
+      std::vector<uint8_t> rgba;
+      std::string error;
+      if (!m_io.texture || !m_io.texture(Swap(stored), w, h, rgba, error) || w <= 0 || h <= 0) {
+        return false;
+      }
+      width = uint32_t(w);
+      height = uint32_t(h);
+      return true;
+    };
     if (m_io.modelMesh) {
       io.modelMesh = [&](uint32_t model) { return m_io.modelMesh(model); };
+    }
+    if (m_io.modelAnimatesUv) {
+      io.modelAnimatesUv = [&](const EffectGuid& stored, bool& animatesUv) {
+        return m_io.modelAnimatesUv(Swap(stored), animatesUv);
+      };
     }
     return io;
   }

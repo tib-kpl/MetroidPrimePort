@@ -475,8 +475,8 @@ CVector3f EulerDegreesFromQuaternion(const CQuaternion& rotation) {
 } // namespace
 
 CVEPortRotationFromAxis::CVEPortRotationFromAxis(CVectorElement* first, CVectorElement* second,
-                                                 CVectorElement* fallback)
-: mFirst(first), mSecond(second), mFallback(fallback) {}
+                                                 CVectorElement* fallback, bool firstIsY)
+: mFirst(first), mSecond(second), mFallback(fallback), mFirstIsY(firstIsY) {}
 
 CVEPortRotationFromAxis::~CVEPortRotationFromAxis() {
   delete mFirst;
@@ -490,7 +490,8 @@ bool CVEPortRotationFromAxis::GetValue(int frame, CVector3f& valOut) const {
   mFirst->GetValue(frame, first);
   mSecond->GetValue(frame, second);
   CVector3f x, y, z;
-  if (PortParticleMath::RotationFromAxisZY(first, second, x, y, z)) {
+  if (mFirstIsY ? PortParticleMath::RotationFromAxisYZ(first, second, x, y, z)
+                : PortParticleMath::RotationFromAxisZY(first, second, x, y, z)) {
     valOut = EulerDegreesFromMatrix(CMatrix3f(x.GetX(), y.GetX(), z.GetX(), x.GetY(), y.GetY(),
                                               z.GetY(), x.GetZ(), y.GetZ(), z.GetZ()));
     return false;
@@ -577,15 +578,15 @@ bool CVEPortSystemVector::GetValue(int, CVector3f& valOut) const {
   } break;
   case 'CMRT': {
     // CERotationFromCamera 0x29d180: FromMatrix of GetCameraTransform's camera-to-world matrix
-    // (the view matrix), as EXTR in Remastered's particle space.
-    const CQuaternion q = CQuaternion::FromMatrix(CGraphics::GetViewMatrix());
+    // (the game camera), as EXTR in Remastered's particle space.
+    const CQuaternion q = CQuaternion::FromMatrix(CParticleGlobals::PortCameraTransform());
     valOut = EulerDegreesFromQuaternion(
         CQuaternion(q.GetScalar(), CVector3f(-q.AxisX(), q.AxisZ(), q.AxisY())));
   } break;
   case 'CMPS':
-    // CVECameraPositionInWorldSpace 0x2a23ec: GetCameraTransform 0x27b304's translation; the view
-    // matrix is camera-to-world.
-    valOut = CGraphics::GetViewMatrix().GetTranslation();
+    // CVECameraPositionInWorldSpace 0x2a23ec: GetCameraTransform 0x27b304's translation (the
+    // game camera, camera-to-world).
+    valOut = CParticleGlobals::PortCameraTransform().GetTranslation();
     break;
   default: {
     // CPSS: CVECameraPositionInSystemSpace 0x2a24fc, the world camera position taken into the
@@ -594,8 +595,8 @@ bool CVEPortSystemVector::GetValue(int, CVector3f& valOut) const {
     CQuaternion q;
     gen.PortGlobalFrame(t, q, s);
     valOut = PortParticleMath::CameraPositionInSystemSpace(
-        CGraphics::GetViewMatrix().GetTranslation(), t, q.GetScalar(), q.AxisX(), q.AxisY(),
-        q.AxisZ(), s);
+        CParticleGlobals::PortCameraTransform().GetTranslation(), t, q.GetScalar(), q.AxisX(),
+        q.AxisY(), q.AxisZ(), s);
   } break;
   }
   return false;
@@ -908,10 +909,19 @@ bool CVEPortRotateVector::GetValue(int frame, CVector3f& valOut) const {
       q = {r.GetScalar(), -r.AxisX(), r.AxisZ(), r.AxisY()};
     }
   } break;
+  case 'INTR': {
+    // INTR and RLCL: the system rotation var (GetRotationElement 0x25d59c, AddRefVar(ctx 0,
+    // rotation, 0xb)), INTR's when authored, else the external one.
+    CParticleGlobals::SParticleSystem* sys = CParticleGlobals::GetCurrentParticleSystem();
+    if (CParticleGlobals::xPortSwooshEval == nullptr && sys != nullptr && sys->x4_system != nullptr) {
+      const CQuaternion r = sys->x4_system->PortSystemRotation();
+      q = {r.GetScalar(), -r.AxisX(), r.AxisZ(), r.AxisY()};
+    }
+  } break;
   case 'CMRT': {
     // CMRT: CERotationFromCamera 0x29d180, CQuaternion::FromMatrix of the camera transform
-    // (CVECameraPositionInWorldSpace's matrix, the view matrix), in Remastered's space.
-    const CQuaternion r = CQuaternion::FromMatrix(CGraphics::GetViewMatrix());
+    // (CVECameraPositionInWorldSpace's matrix, the game camera), in Remastered's space.
+    const CQuaternion r = CQuaternion::FromMatrix(CParticleGlobals::PortCameraTransform());
     q = {r.GetScalar(), -r.AxisX(), r.AxisZ(), r.AxisY()};
   } break;
   default:

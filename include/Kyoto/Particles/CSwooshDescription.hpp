@@ -67,6 +67,12 @@ public:
   bool xPortXfmdMover = false;
   // port-only PIRN: a converted Remastered swoosh, whose COLR runs over the live points
   bool xPortIrnd = false;
+  // port-only PSED: Remastered's SEED (desc+0x204); nonzero replaces the system's seed
+  uint xPortSeed = 0;
+  // port-only PGID: the first word of the swoosh's GUID (CElementGen::PortChildSeed)
+  u32 xPortGuidWord = 0;
+  // port-only PTXU: Remastered's TXUP (desc+0x22c bit 0x80); u scrolls back one TSPN step per point created
+  bool xPortTexUScroll = false;
   // port-only PDFG: Remastered's DFOG 1, drawn without volumetric fog (CGenDescription::xPortUnfogged)
   bool xPortUnfogged = false;
   // port-only PZTS: Remastered's ZTES 0, the depth test passes everywhere (compare ALWAYS)
@@ -76,6 +82,11 @@ public:
   // port-only PSHM: Remastered's SHTM (CParticleGen::DoShutdownBehavior 0x27b88c); 1 = a shutdown
   // also destroys the live segments (CParticleSwoosh::DestroyParticles 0x27f744)
   u8 xPortShutdownMode = 0;
+  // port-only DVVN/IEXP: Remastered's exposure policy (desc+0x22c bit 0x2000, CreateSWSH 0x2dceac
+  // and 0x2dd1b4); DVVN defaults it to DVVN == 1, a later IEXP sets it. UpdateRenderData_Swoosh
+  // 0x2b6820 then scales ITEN by the inverse exposure.
+  bool xPortExposurePolicy = false;
+  bool xPortInverseExposure = false;
   // port-only PVRT: Remastered particle variables (names, types, defaults)
   std::unique_ptr< CPortVarTable > xPortVars;
   // port-only: the PKPR elements (per-point KPIN latches), latched at a point's birth in this

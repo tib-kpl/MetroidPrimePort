@@ -23,11 +23,16 @@
 #include "port_debug.h"
 #include <climits>
 #include "port_fx_debug.h"
+#include "port_room_env.h"
 #include "port_swoosh_ring.h"
 #include "port_vfx_particles.h"
 #endif
 
 uint CParticleSwoosh::mSwooshAliveCount = 0;
+#ifdef TARGET_PC
+uint CParticleSwoosh::sPortChildSeed = 0;
+bool CParticleSwoosh::sPortChildSeedSet = false;
+#endif
 static float kFrameTime = 1.f / 60.f;
 
 #pragma sym on
@@ -76,6 +81,18 @@ CParticleSwoosh::CParticleSwoosh(const TToken< CSwooshDescription > desc, const 
   // The generator that builds this swoosh, for SPA*/DPV*/TPV*.
   xPortVars.SetParent(CPortVarGlobals::sCurrent);
   CPortVarScope portVarScope(&xPortVars);
+  const bool portChildSeed = sPortChildSeedSet;
+  sPortChildSeedSet = false;
+  if (x1c_desc->xPortIrnd) {
+    // Remastered reads CRND and drops it (CreateSWSH 0x2dc4cc). The CParticleGen ctor seeds the
+    // system from its parms (0x279724: 99 by default, ctor 0x2af2e0; a parent's child seed), and
+    // a nonzero SEED (desc+0x204) replaces that (CParticleSwoosh ctor 0x27c6bc).
+    uint seed = portChildSeed ? sPortChildSeed : 99;
+    if (x1c_desc->xPortSeed != 0) {
+      seed = x1c_desc->xPortSeed;
+    }
+    x1c0_rand.SetSeed(seed);
+  }
 #endif
   CGlobalRandom _(x1c0_rand);
   mSwooshAliveCount++;
@@ -257,6 +274,9 @@ const bool CParticleSwoosh::Update(double dt) {
         x1c_desc->x40_TSPN->GetValue(x28_curFrame, tspn);
       }
       x1cc_TSPN = tspn;
+#ifdef TARGET_PC
+      ++xPortCreated; // CreateNewParticle 0x27d128
+#endif
     } else if (x15c_swooshes[x158_curParticle].mActive) {
       x1ac_particleCount = rstl::max_val(0, x1ac_particleCount - 1);
       x15c_swooshes[x158_curParticle].mActive = false;
@@ -556,7 +576,8 @@ bool CParticleSwoosh::IsSystemDeletable() const {
 void CParticleSwoosh::Render() {
 #ifdef TARGET_PC
   PortFx::RenderScope fxScope(x1c_desc->xPortUnfogged);
-  CPortParticleDepthBias portDepthBias(*this, x1c_desc->xPortDepthBias);
+  // CreateSWSH never reads DBSO: a swoosh keeps CParticleDescription's default (0x288314), on.
+  CPortParticleDepthBias portDepthBias(*this, x1c_desc->xPortDepthBias, true);
   if (PortFx::gMuteActive && PortFx::IsMuted(*this)) {
     return;
   }
@@ -761,7 +782,24 @@ static inline float fast_cosine(float x);
 
 bool CParticleSwoosh::PortVfxSwoosh() const {
   const CPortVfxData* vfx = x1c_desc->xPortVfx.get();
-  return vfx != nullptr && (vfx->mat.version == 2 || vfx->mat.version == 3) && x1b8_SIDE >= 2 && !x1c_desc->x44_29_WIRE;
+  return vfx != nullptr && vfx->mat.Supported() && x1b8_SIDE >= 2 && !x1c_desc->x44_29_WIRE;
+}
+
+// TXUP (UpdateRenderState 0x27e6b0): with a live point, the uv rect's u bounds move back by
+// (created % n) / n, n = TSPN, else max(ring size - 1, 1), so the texture stays put along the trail
+// as points are added.
+float CParticleSwoosh::PortTexUScroll() const {
+  if (!x1c_desc->xPortTexUScroll || x1ac_particleCount < 1) {
+    return 0.f;
+  }
+  int n = 0;
+  if (x1c_desc->x40_TSPN) {
+    x1c_desc->x40_TSPN->GetValue(x28_curFrame, n);
+  }
+  if (n <= 0) {
+    n = rstl::max_val(static_cast< int >(x15c_swooshes.size()) - 1, 1);
+  }
+  return static_cast< float >(xPortCreated % n) / static_cast< float >(n);
 }
 
 // RenderNSidedSpline's geometry through the swoosh's VFX material (VMAT). The base uv is
@@ -808,6 +846,18 @@ void CParticleSwoosh::PortRenderVfx() {
   if (xPortVfxPts.size() != size_t(x15c_swooshes.capacity())) {
     return; // not updated yet
   }
+  // DVVN/IEXP: UpdateRenderData_Swoosh 0x2b6820 scales ITEN by the context's inverse exposure
+  // (ctx+0x18, resolve_inverse_exposure 0x20eba0: auto when blended, static when opaque); the
+  // tonemap's frame exposure undoes it, not the GX tone's inherited w.
+  float exposureGain = 1.f;
+  if (x1c_desc->xPortExposurePolicy) {
+    desc.alreadyExposed = false;
+    desc.exposureOverride = PortVfxFrameExposureOverride();
+    if (x1c_desc->xPortInverseExposure) {
+      exposureGain =
+          PortRoomEnv::ParticleInverseExposure(vfx.mat.blend != uint32_t(aurora::gfx::vfx::Blend::Opaque));
+    }
+  }
   if (x1c_desc->x40_TSPN) {
     x1c_desc->x40_TSPN->GetValue(x28_curFrame, x1ec_TSPN);
   }
@@ -815,6 +865,7 @@ void CParticleSwoosh::PortRenderVfx() {
     x1ec_TSPN = x15c_swooshes.size() - 1;
   }
   const float uvSpan = x1ec_TSPN > 0 ? 1.f / x1ec_TSPN : 1.f;
+  const float uScroll = PortTexUScroll();
   CPortVfxUvXf uvXf;
   uvXf.Eval(vfx, x28_curFrame);
   const float modu[4] = {x20c_moduColor.GetRed(), x20c_moduColor.GetGreen(), x20c_moduColor.GetBlue(),
@@ -904,7 +955,7 @@ void CParticleSwoosh::PortRenderVfx() {
     const SPortVfxPoint& pa = xPortVfxPts[curIdx];
     const SPortVfxPoint& pb = xPortVfxPts[prevIdx];
     auto pointAt = [&](float t, float color[4], float extra[4][4]) {
-      const float iten = pa.iten + (pb.iten - pa.iten) * t;
+      const float iten = (pa.iten + (pb.iten - pa.iten) * t) * exposureGain;
       const float* ca = pa.color;
       const float* cb = pb.color;
       for (int c = 0; c < 4; ++c) {
@@ -915,7 +966,7 @@ void CParticleSwoosh::PortRenderVfx() {
       }
     };
 
-    float uMin = (x1ec_TSPN > 0 ? i % x1ec_TSPN : i) * uvSpan;
+    float uMin = (x1ec_TSPN > 0 ? i % x1ec_TSPN : i) * uvSpan - uScroll;
     const float segUvSpan = uvSpan / (x1b0_SPLN + 1);
     for (int splineIdx = 0; splineIdx < x1b0_SPLN + 1; ++splineIdx) {
       const float t0 = splineIdx / static_cast< float >(x1b0_SPLN + 1);
@@ -1757,8 +1808,10 @@ bool CParticleSwoosh::GetParticleEmission() const { return x1d0_24_emitting; }
 // The retail DestroyParticles stays empty.
 void CParticleSwoosh::ShutdownEffect() { PortDoShutdownBehavior(0xff); }
 
+u32 CParticleSwoosh::PortOwnShutdownMode() const { return x1c_desc->xPortShutdownMode; }
+
 void CParticleSwoosh::PortDoShutdownBehavior(u32 mode) {
-  const u32 use = mode == 0xff ? x1c_desc->xPortShutdownMode : (mode & 0xff);
+  const u32 use = mode == 0xff ? PortShutdownMode() : (mode & 0xff);
   if (use >= 2) {
     return;
   }
@@ -1766,6 +1819,7 @@ void CParticleSwoosh::PortDoShutdownBehavior(u32 mode) {
   if (use == 1) {
     x158_curParticle = 0;
     x1ac_particleCount = 0;
+    xPortCreated = 0;
     for (int i = 0; i < x15c_swooshes.capacity(); ++i) {
       x15c_swooshes.data()[i].mActive = false;
     }

@@ -114,6 +114,7 @@
 #include "Kyoto/Graphics/CCubeMaterial.hpp"
 #include "Kyoto/Graphics/CGX.hpp"
 #include <dolphin/gx/GXExtra.h>
+#include "aurora/vfx.hpp"
 #include <stdlib.h>
 #include <algorithm>
 #include <map>
@@ -129,6 +130,7 @@
 #include "Kyoto/Math/CUnitVector3f.hpp"
 #include "Kyoto/Streams/CMemoryInStream.hpp"
 #include "Kyoto/Particles/CParticleElectric.hpp"
+#include "Kyoto/Particles/CParticleGlobals.hpp"
 #include "MetaRender/CCubeRenderer.hpp"
 #include "Weapons/CDecal.hpp"
 #include "WorldFormat/CPVSAreaSet.hpp"
@@ -769,6 +771,7 @@ CStateManager::~CStateManager() {
   if (PortDebug::StateManager() == this) {
     PortDebug::SetStateManager(nullptr);
   }
+  CParticleGlobals::PortSetCameraTransform(nullptr);
   if (gpGameState != nullptr) {
     PortLiveSplit::GameSessionEnd(gpGameState->GetTotalPlayTime());
   }
@@ -2914,6 +2917,8 @@ void CStateManager::PreRender() {
   const CTransform4f curCamXf =
       PortFreeCam::View(x870_cameraManager->GetCurrentCameraTransform(*this));
 #ifdef TARGET_PC
+  // CDisplayManager::Update 0xafded0: the camera the particle elements read, once per frame.
+  CParticleGlobals::PortSetCameraTransform(&curCamXf);
   const float curRenderFov = PortFreeCam::PresentedFovOverride() > 0.f
                                  ? CGameCamera::VertPlusFov(PortFreeCam::PresentedFovOverride(), curCam.GetAspectRatio())
                                  : curCam.GetRenderFov();
@@ -3373,6 +3378,7 @@ void CStateManager::PortCaptureProbeFace() const {
       PortRoomEnv::SetAreaLayers(area.GetAreaAssetId(), active);
     }
   }
+  PortRoomEnv::UpdateLightHints();
   if (x8cc_nextAreaId != kInvalidAreaId) {
     PortRoomEnv::SetViewArea(x850_world->GetArea(x8cc_nextAreaId)->GetAreaAssetId());
   }
@@ -3591,6 +3597,15 @@ void CStateManager::PortCaptureProbeFace() const {
 
 #ifdef TARGET_PC
 bool CStateManager::sPortSceneHdrRequest = false;
+// Set by an HDR, non-thermal world pass that left its visor effects for PortDrawVisorEffects.
+static bool sPortVisorEffectsDeferred = false;
+
+namespace {
+bool PortIsVisorEffect(const CActor& actor) {
+  const CHUDBillboardEffect* const fx = TCastToConstPtr< CHUDBillboardEffect >(&actor);
+  return fx != nullptr && fx->PortIsVisorEffect();
+}
+} // namespace
 float CStateManager::sPortViewZoom = 1.f;
 // Frames performance mode's gun-first pass stays off after a world screen copy (DrawWorld).
 static int sPortGunFirstHold = 0;
@@ -4177,12 +4192,20 @@ void CStateManager::DrawWorld() const {
   if (!portZoomed)
     PortViewModel::Draw(*this);
 #endif
+#ifdef TARGET_PC
+  // Remastered draws its visor effects after the post (RenderAfterPostFX 0xf9fa6c, but not in
+  // thermal), reading a copy of the post output: CMFGame calls PortDrawVisorEffects there.
+  const bool portDeferVisorEffects = CCubeMaterial::sPortSceneHdr && !thermal;
+  sPortVisorEffectsDeferred = portDeferVisorEffects;
+#endif
   if (!renderLast.empty()) {
     CGraphics::SetDepthRange(0.015625f, 0.03125f);
     for (const TUniqueId* it = renderLast.begin(); it != renderLast.end(); ++it) {
       if (const CActor* actor = static_cast< const CActor* >(GetObjectById(*it))) {
         if (!thermal || (actor->GetThermalFlags() & 2) != 0) {
 #ifdef TARGET_PC
+          if (portDeferVisorEffects && PortIsVisorEffect(*actor))
+            continue;
           CPortActorRenderScope presented(*actor);
 #endif
           actor->Render(*this);
@@ -4218,6 +4241,38 @@ void CStateManager::DrawWorld() const {
   DrawE3DeathEffect();
   DrawAdditionalFilters();
 }
+
+#ifdef TARGET_PC
+void CStateManager::PortDrawVisorEffects() const {
+  if (!sPortVisorEffectsDeferred)
+    return;
+  sPortVisorEffectsDeferred = false;
+  const rstl::reserved_vector< TUniqueId, 20 >& renderLast =
+      x86c_stateManagerContainer->xf39c_renderLast;
+  bool any = false;
+  for (const TUniqueId* it = renderLast.begin(); it != renderLast.end() && !any; ++it) {
+    const CActor* actor = static_cast< const CActor* >(GetObjectById(*it));
+    any = actor != nullptr && PortIsVisorEffect(*actor);
+  }
+  // RenderVisorEffects returns before its copy when there are no visor effect commands.
+  if (!any || !aurora::gfx::vfx::begin_visor_effects())
+    return;
+  const CViewport backupViewport = CGraphics::GetViewport();
+  const CTransform4f backupViewMatrix = CGraphics::GetViewMatrix();
+  SetupViewForDraw(backupViewport);
+  CGraphics::SetDepthRange(0.015625f, 0.03125f);
+  for (const TUniqueId* it = renderLast.begin(); it != renderLast.end(); ++it) {
+    const CActor* actor = static_cast< const CActor* >(GetObjectById(*it));
+    if (actor != nullptr && PortIsVisorEffect(*actor)) {
+      CPortActorRenderScope presented(*actor);
+      actor->Render(*this);
+    }
+  }
+  CGraphics::SetDepthRange(0.125f, 1.f);
+  aurora::gfx::vfx::end_visor_effects();
+  ResetViewAfterDraw(backupViewport, backupViewMatrix);
+}
+#endif
 
 void CStateManager::ResetViewAfterDraw(const CViewport& backupViewport,
                                        const CTransform4f& backupViewMatrix) const {

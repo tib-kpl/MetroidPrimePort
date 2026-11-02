@@ -192,6 +192,18 @@ bool CParticleSwooshDataFactory::CreateWPSM(CSwooshDescription* swoosh, CInputSt
       CParticleDataFactory::GetClassID(in);
       swoosh->xPortDepthBias = in.ReadFloat();
       break;
+    // Port-only: Remastered's DVVN (GetDefaultInverseExposure 0x29c118: DVVN == 1) and IEXP,
+    // kept in stream order.
+    case 'DVVN':
+      CParticleDataFactory::GetClassID(in);
+      swoosh->xPortExposurePolicy = true;
+      swoosh->xPortInverseExposure = in.ReadLong() == 1;
+      break;
+    case 'IEXP':
+      CParticleDataFactory::GetClassID(in);
+      swoosh->xPortExposurePolicy = true;
+      swoosh->xPortInverseExposure = in.ReadLong() != 0;
+      break;
     // Port-only Remastered transform mode; only 3 (xPortXfmdFollow) and 4 (xPortXfmdMover) are written.
     case 'XFMD': {
       CParticleDataFactory::GetClassID(in);
@@ -209,6 +221,20 @@ bool CParticleSwooshDataFactory::CreateWPSM(CSwooshDescription* swoosh, CInputSt
     case 'PIRN':
       CParticleDataFactory::GetClassID(in);
       swoosh->xPortIrnd = in.ReadLong() != 0;
+      break;
+    // Port-only Remastered SEED (xPortSeed) and GUID word (xPortGuidWord).
+    case 'PSED':
+      CParticleDataFactory::GetClassID(in);
+      swoosh->xPortSeed = in.ReadLong();
+      break;
+    case 'PGID':
+      CParticleDataFactory::GetClassID(in);
+      swoosh->xPortGuidWord = in.ReadLong();
+      break;
+    // Port-only Remastered TXUP (xPortTexUScroll).
+    case 'PTXU':
+      CParticleDataFactory::GetClassID(in);
+      swoosh->xPortTexUScroll = in.ReadLong() != 0;
       break;
     // Port-only Remastered material, as a PART's.
     case 'VMAT':

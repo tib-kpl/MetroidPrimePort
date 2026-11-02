@@ -45,6 +45,20 @@ int main() {
   ApplySetting("stick_aim_rate_y", "20000");
   REQUIRE_MSG(Get().stickAimRateY == 450.f, "stick_aim_rate_y above range");
   ApplySetting("stick_aim_split", "0");
+  REQUIRE_MSG(!PortInput::Settings{}.flickStick, "flick_stick defaults off");
+  REQUIRE_MSG(ApplySetting("flick_stick", "1") && Get().flickStick, "flick_stick");
+  ApplySetting("flick_stick", "0");
+  REQUIRE_MSG(PortInput::Settings{}.flickOuterDeadZone == 10.f, "flick_stick_outer_deadzone defaults to 10");
+  ApplySetting("flick_stick_outer_deadzone", "25");
+  ApplySetting("flick_stick_outer_deadzone", "51");
+  REQUIRE_MSG(Get().flickOuterDeadZone == 25.f &&
+                  Text().find("flick_stick_outer_deadzone=25\n") != std::string::npos,
+              "flick_stick_outer_deadzone");
+  ApplySetting("flick_stick_outer_deadzone", "10");
+  REQUIRE_MSG(!PortInput::Settings{}.touchFlickStick, "touch_flick_stick defaults off");
+  REQUIRE_MSG(ApplySetting("touch_flick_stick", "1") && Get().touchFlickStick && !Get().flickStick,
+              "touch_flick_stick is its own switch");
+  ApplySetting("touch_flick_stick", "0");
   REQUIRE_MSG(!Get().mouseSensitivitySplit && !Get().touchAimSplit && !Get().gyroSplit, "vertical splits default off");
   // 3.0 on the Source scale (issue #210), both axes.
   REQUIRE_MSG(std::fabs(PortInput::Settings{}.mouseSensitivity - PortMouse::kDefaultSensitivity) < 1e-8f &&

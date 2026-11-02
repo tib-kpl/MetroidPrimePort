@@ -16,6 +16,7 @@
 #include "Kyoto/TToken.hpp"
 
 class CGenDescription;
+class CSwooshDescription;
 class CModVectorElement;
 
 #pragma cpp_extensions on
@@ -80,6 +81,7 @@ public:
     float xPortVpmt[4][4]; // VPMT rows
     CVector3f xPortLaunchDir; // unit launch velocity (zero if it launched at rest), for VORN 1
     SPortKeep xPortKeep;      // KPIN values latched at birth (CREPortKeep)
+    CVector3f xPortOvec;      // POVC's value (the quad's vector orientation axis), port space
 #endif
 
     CParticle()
@@ -95,6 +97,7 @@ public:
     , xPortVpmt{}
     , xPortLaunchDir(CVector3f::Zero())
     , xPortKeep{}
+    , xPortOvec(CVector3f::Zero())
 #endif
     {}
   };
@@ -123,9 +126,12 @@ public:
   virtual void SetParticleEmission(const bool emission) override;
 #ifdef TARGET_PC
   // SHTM/SHTT (PSHM/PSHT). ShutdownEffect starts the countdown if the description has one, else
-  // acts at once; PortDoShutdownBehavior(0xff) uses the description's mode.
+  // acts at once; PortDoShutdownBehavior(0xff) uses the live mode (PortShutdownMode).
   void ShutdownEffect() override;
   void PortDoShutdownBehavior(u32 mode) override;
+  u32 PortOwnShutdownMode() const override;
+  // OSDM: a child this system constructs takes its live shutdown mode.
+  void PortInheritShutdownMode(CParticleGen* child) const;
   void PortSetSpawnSpread(const CVector3f& spread, const CVector3f& origin) override;
   // SDTR: the countdown's remaining over its total, 1 when none is running.
   float PortShutdownTimeRemaining() const;
@@ -346,6 +352,14 @@ private:
   TLockedToken< CGenDescription > x1c_genDesc;
   CGenDescription* x28_loadedGenDesc;
   EModelOrientationType x2c_orientType;
+  // x50_parentMatrices holds each particle's birth orientation: retail's kMOT_One, or PBOR.
+  bool PortParentMatrices() const {
+#ifdef TARGET_PC
+    return x2c_orientType == kMOT_One || x28_loadedGenDesc->xPortBirthOrientation;
+#else
+    return x2c_orientType == kMOT_One;
+#endif
+  }
   rstl::vector< CParticle > x30_particles;
   rstl::vector< CVector3f > x40;
   rstl::vector< CMatrix3f > x50_parentMatrices;
@@ -476,13 +490,34 @@ private:
   float xPortNestedHdrColor[4];
   float xPortNestedHdrInnerRadius, xPortNestedHdrOuterRadius;
   bool xPortNestedHdrRadiiValid;
+  // The light parameters were evaluated once; a PLON light keeps them (UpdateLightParameters).
+  bool xPortLightEvaluated;
   // A converted Remastered system keeps its seed as 32 bits (x94 is 16): the SEED value, else the
   // seed it was built with (sPortChildSeed for a Remastered child, else sSeed).
   uint xPortSeed;
   // The seed a Remastered parent gives the child it constructs next; consumed by that ctor.
   static uint sPortChildSeed;
   static bool sPortChildSeedSet;
-  uint PortChildSeed(const CGenDescription& child) const;
+  uint PortChildSeed(u32 childGuidWord) const {
+    return PortChildSeed(childGuidWord, x290_activePartChildren.size());
+  }
+  uint PortChildSeed(u32 childGuidWord, uint siblings) const;
+  // Remastered's per-particle child systems (PSPS; gen+0x1a8, capacity gen+0x1a4): each follows
+  // its particle until the particle dies (index -1), then lives on where it is. Kept apart from
+  // x290 because the transform setters (MPT_Set*) never reach them.
+  struct PortPspsChild {
+    int particle;
+    CParticleGen* sys;
+  };
+  std::vector< PortPspsChild > xPortPsps;
+  int xPortPspsCap = 0;
+  bool xPortPspsTrim = false;
+  void PortPspsSpawn(int index, const CVector3f& pos);
+  void PortPspsUpdate(double dt);
+  void PortPspsTrim();
+  void PortPspsRemoved(int removed, int countBefore);
+  // Hands a converted swoosh child its seed (CParticleSwoosh::sPortChildSeed).
+  void PortSeedSwooshChild(TToken< CSwooshDescription > child) const;
   // Remastered's CElementGen::SpawnChildSystems (0x249bd8) for a converted effect, and its
   // spawn tables (PKSM); xPortKssmPeriods are the tables' period slots (their CVars).
   std::vector< int > xPortKssmPeriods;
@@ -543,6 +578,7 @@ public:
   // PZTS (Remastered ZTES 0): the depth test passes everywhere (static render state compare 1 = ALWAYS)
   bool PortNoZTest() const { return x28_loadedGenDesc->xPortNoZTest; }
   u8 PortWaterSort() const { return x28_loadedGenDesc->xPortWaterSort; }
+  float PortSortBias() const { return x28_loadedGenDesc->xPortSortBias; }
 
 private:
   bool PortHasMover() const;

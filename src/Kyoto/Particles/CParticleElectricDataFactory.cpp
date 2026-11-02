@@ -208,6 +208,9 @@ bool CParticleElectricDataFactory::CreateELSM(CElectricDescription* desc, CInput
       desc->xPortXfmdFollow = in.ReadLong() == 3;
       break;
     }
+    case 'IEXP':
+      desc->xPortInverseExposure = CParticleDataFactory::GetBool(in);
+      break;
     case 'LLRD':
       desc->xPortLLRD = CParticleDataFactory::GetBool(in);
       break;

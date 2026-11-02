@@ -34,6 +34,8 @@ constexpr float kGyroSensitivityMin = 0.1f;
 constexpr float kGyroSensitivityMax = 10.f;
 // Gyro smoothing/tightening thresholds, deg/s.
 constexpr float kGyroThresholdMax = 50.f;
+// Flick stick's outer deadzone, percent.
+constexpr float kFlickOuterDeadZoneMax = 50.f;
 // Gyro pointer aim: degrees of pad turn that sweep the pointer across the screen.
 constexpr float kGyroCursorAngleMin = 5.f;
 constexpr float kGyroCursorAngleMax = 180.f;
@@ -77,6 +79,12 @@ struct Settings {
   // stickAimRate only the horizontal; off, stickAimRate drives both.
   bool stickAimSplit = false;
   float stickAimRateY = 900.f;
+  // Twin stick's right stick as Flick Stick: it turns the view to face the way
+  // it points and turns with it, yaw only (PortFlickStick).
+  bool flickStick = false;
+  // Flick stick's outer deadzone, in percent of travel: the stick counts as fully tilted
+  // this far from its edge (pads that don't reach the circle still flick).
+  float flickOuterDeadZone = 10.f;
   // Gyro aiming: off / hold to aim / always / hold to pause / toggle to aim, auto / controller /
   // phone, and how far the camera turns per turn of the pad (1 = the same angle).
   int gyroMode = 0;
@@ -117,9 +125,10 @@ struct Settings {
   bool touchAimSplit = false;
   float touchAimSpeedY = 2.25f;
   bool touchMapTap = true;
-  bool touchWheels = true;
+  bool touchWheels = false; // retired touch_wheels, until the overlay migrates it (port_debug.h)
   bool touchClassic = false;       // classic GameCube layout
   bool touchTwinStick = false;     // exclusive with touchClassic; classic wins on load
+  bool touchFlickStick = false;    // the twin-stick layout's right stick as Flick Stick
   bool touchVisorTapScan = false;
   // Read from the Android UI thread.
   std::atomic< float > touchSideMargin{kTouchSideMarginDefault};

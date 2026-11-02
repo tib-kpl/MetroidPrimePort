@@ -550,9 +550,9 @@ void CGraphics::LoadLight(ERglLight light, const CLight& info) {
     MTXMultVec(mCameraMtx, reinterpret_cast< VecPtr >(&hdrPos), reinterpret_cast< VecPtr >(&hdrPos));
     const f32 viewPos[3] = {hdrPos.GetX(), hdrPos.GetY(), hdrPos.GetZ()};
     GXSetPBRLightHdr(lightId, info.GetPortHdrColor(), viewPos, info.GetPortHdrR0(),
-                     info.GetPortHdrR1(), info.GetPortHdrFalloff());
+                     info.GetPortHdrR1(), info.GetPortHdrFalloff(), info.GetPortHdrWiden());
   } else {
-    GXSetPBRLightHdr(lightId, nullptr, nullptr, 0.f, 0.f, 0);
+    GXSetPBRLightHdr(lightId, nullptr, nullptr, 0.f, 0.f, 0, 0.f);
   }
 #endif
 }
@@ -1551,7 +1551,7 @@ void CGraphics::FlushProjection() {
 }
 
 #ifdef TARGET_PC
-void CGraphics::PortSetProjectionDepthBias(float bias, float depth) {
+void CGraphics::PortSetProjectionDepthBias(float bias, float depth, float rangeSpan) {
   if (bias == 0.f) {
     FlushProjection();
     return;
@@ -1560,12 +1560,14 @@ void CGraphics::PortSetProjectionDepthBias(float bias, float depth) {
   if (mProj.IsPerspective()) {
     MTXFrustum(mtx, mProj.GetTop(), mProj.GetBottom(), mProj.GetLeft(), mProj.GetRight(),
                mProj.GetNear(), mProj.GetFar());
-    mtx[2][2] = PortParticleMath::DepthBiasedProjM22(mtx[2][2], mtx[2][3], mtx[3][2], mtx[3][3], depth, bias);
+    mtx[2][2] = PortParticleMath::DepthBiasedProjM22(mtx[2][2], mtx[2][3], mtx[3][2], mtx[3][3], depth, bias,
+                                                     rangeSpan);
     GXSetProjection(mtx, GX_PERSPECTIVE);
   } else {
     MTXOrtho(mtx, mProj.GetTop(), mProj.GetBottom(), mProj.GetLeft(), mProj.GetRight(),
              mProj.GetNear(), mProj.GetFar());
-    mtx[2][2] = PortParticleMath::DepthBiasedProjM22(mtx[2][2], mtx[2][3], mtx[3][2], mtx[3][3], depth, bias);
+    mtx[2][2] = PortParticleMath::DepthBiasedProjM22(mtx[2][2], mtx[2][3], mtx[3][2], mtx[3][3], depth, bias,
+                                                     rangeSpan);
     GXSetProjection(mtx, GX_ORTHOGRAPHIC);
   }
 }

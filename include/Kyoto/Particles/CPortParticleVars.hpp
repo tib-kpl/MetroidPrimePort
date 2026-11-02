@@ -180,6 +180,10 @@ public:
   int SysInt(u32 slot) const {
     return slot < x_sys[1].size() ? static_cast< int >(x_sys[1][slot][0]) : 0;
   }
+  CVector3f SysVector(u32 slot) const {
+    return slot < x_sys[3].size() ? CVector3f(x_sys[3][slot][0], x_sys[3][slot][1], x_sys[3][slot][2])
+                                  : CVector3f::Zero();
+  }
   // The system that built this one (CVarContext 0x24f06c: ctx+0x48 = the parent's), or null.
   void SetParent(const CPortVarMemory* parent) { x_parent = parent != this ? parent : nullptr; }
   const CPortVarMemory* Parent() const { return x_parent; }
@@ -375,12 +379,37 @@ public:
   }
 };
 
+// PSYV (port-only; a vector PSAn, GetVectorElement 0x251a44): the current system's vector slot.
+class CVEPortSysVar : public CVectorElement {
+  u32 x4_slot;
+
+public:
+  explicit CVEPortSysVar(u32 slot) : x4_slot(slot) {}
+  ~CVEPortSysVar() override {}
+  bool GetValue(int, CVector3f& out) const override {
+    out = CPortVarGlobals::sCurrent != nullptr ? CPortVarGlobals::sCurrent->SysVector(x4_slot)
+                                               : CVector3f::Zero();
+    return false;
+  }
+};
+
 // PSDT (port-only; Remastered's SDTR, CREShutdownTimeRemaining 0x2999e0): the current system's
 // shutdown countdown remaining over its total (SHTT), 1 when none is running.
 class CREPortShutdownRemaining : public CRealElement {
 public:
   CREPortShutdownRemaining() {}
   ~CREPortShutdownRemaining() override {}
+  bool GetValue(int frame, float& out) const override;
+};
+
+// PDML (port-only; one component of Remastered's DOML vector, CVEDominantLightDirectionInWorldSpace
+// 0x2a40e8): the dominant light direction LightHints set (PortRoomEnv::DominantLight), world space.
+class CREPortDominantLight : public CRealElement {
+  u32 x4_component;
+
+public:
+  explicit CREPortDominantLight(u32 component) : x4_component(component) {}
+  ~CREPortDominantLight() override {}
   bool GetValue(int frame, float& out) const override;
 };
 

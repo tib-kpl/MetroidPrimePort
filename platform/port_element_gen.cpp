@@ -186,6 +186,7 @@ void CElementGen::PortCollectNestedLightSnapshots(
     PortSetNestedHdrCarrier(light, xPortNestedHdrColor, intensity, xPortNestedHdrInnerRadius,
                             xPortNestedHdrOuterRadius,
                             x28_loadedGenDesc->xPortNestedLightFalloff);
+    light.SetPortHdrWiden(x28_loadedGenDesc->xPortNestedLightWiden);
     out.push_back({this, PortSystemOrigin(), light});
   }
 
@@ -212,12 +213,38 @@ void CElementGen::PortFxDescribe(PortFxInfo& out) const {
   for (AUTO(it, x290_activePartChildren.begin()); it != x290_activePartChildren.end(); ++it) {
     out.children.push_back(*it);
   }
+  for (size_t i = 0; i < xPortPsps.size(); ++i) {
+    if (xPortPsps[i].sys != nullptr) {
+      out.children.push_back(xPortPsps[i].sys);
+    }
+  }
   const CGenDescription& desc = *x28_loadedGenDesc;
   char buf[64];
   if (const CPortVfxData* vfx = desc.xPortVfx.get()) {
-    out.vfx = (vfx->mat.version == 2 || vfx->mat.version == 3) ? "VMAT" : "VMAT(unsupported)";
+    out.vfx = vfx->mat.Supported() ? "VMAT" : "VMAT(unsupported)";
     if (vfx->vtmtCount != 0) {
       std::snprintf(buf, sizeof(buf), " VTMT*%u", vfx->vtmtCount);
+      out.vfx += buf;
+    }
+    if (vfx->vtrs[0] != nullptr) {
+      out.vfx += " VTRS";
+    }
+    if (vfx->vtrt[0] != nullptr) {
+      out.vfx += " VTRT";
+    }
+    if (vfx->txfbLayers != 0) {
+      std::snprintf(buf, sizeof(buf), " VTFB*%u", vfx->txfbLayers);
+      out.vfx += buf;
+    }
+    if (!vfx->atexRects.empty()) {
+      std::snprintf(buf, sizeof(buf), " %s*%zu", vfx->txp2Index != nullptr       ? "VTP2"
+                                                    : vfx->atexCycleElem != nullptr ? "VAT2"
+                                                                                    : "VATX",
+                    vfx->atexRects.size() / 4);
+      out.vfx += buf;
+    }
+    if (vfx->atfbLayers > 0) {
+      std::snprintf(buf, sizeof(buf), " VATF*%u", vfx->atfbLayers);
       out.vfx += buf;
     }
     if (!vfx->vpmt.empty()) {
@@ -237,6 +264,9 @@ void CElementGen::PortFxDescribe(PortFxInfo& out) const {
     if (vfx->vorn != 0) {
       std::snprintf(buf, sizeof(buf), " VORN%u", vfx->vorn);
       out.vfx += buf;
+    }
+    if (desc.xPortOvec != nullptr) {
+      out.vfx += " OVEC";
     }
     if (vfx->meshTris != 0) {
       std::snprintf(buf, sizeof(buf), " VMSH(%u tris)", vfx->meshTris);

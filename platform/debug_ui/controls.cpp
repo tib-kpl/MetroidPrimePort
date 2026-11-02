@@ -27,6 +27,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstring>
 
 namespace PortDebug {
 
@@ -234,6 +235,8 @@ void DrawControlsKeyboardMouse() {
     MarkDirty();
   }
   ImGui::TextDisabled("Also switches on Twin stick, so a controller's right stick aims too.");
+  ItemHelp("While a controller is in use with twin stick and gyro off, it plays the classic "
+           "GameCube way (R to look) and the mouse aims again once you press a key or click.");
   // Shown on the Quake/Source/Apex scale (0.022 degrees a count per unit), stored in radians.
   float sourceSensitivity = PortMouse::SourceFromRadians(sInput.mouseSensitivity);
   if (ImGui::SliderFloat("Sensitivity", &sourceSensitivity, 0.3f, 30.f, "%.3f",
@@ -295,6 +298,25 @@ void DrawControlsKeyboardMouse() {
   ImGui::TextDisabled("Mouse buttons are bound in Controls > Remap (Keyboard & mouse).");
 }
 
+// Flick stick turns only left and right; say so when nothing aims up and down.
+static void DrawFlickStickWarning() {
+  const char* warning = nullptr;
+  if (sInput.gyroMode == 0) {
+    warning = "Flick stick only turns left and right: turn on Gyro aim (Controls > Touch & gyro) to "
+              "aim up and down.";
+  } else if (std::strcmp(GyroStatus(), "no gyro found") == 0) {
+    warning = "No gyro found: flick stick only turns left and right, so nothing aims up and down.";
+  } else if (PointerAim()) {
+    warning = "Under Pointer aim the right stick flicks only while the gyro is aiming; otherwise it "
+              "moves the pointer.";
+  }
+  if (warning != nullptr) {
+    ImGui::PushStyleColor(ImGuiCol_Text, ThemeWarnColor());
+    ImGui::TextWrapped("%s", warning);
+    ImGui::PopStyleColor();
+  }
+}
+
 void DrawControlsController() {
   ImGui::SeparatorText("Stick aim");
   bool twinStick = sInput.twinStick;
@@ -310,8 +332,27 @@ void DrawControlsController() {
   }
   ItemHelp("Moves as in Remastered and PrimeHack: even diagonal speed and a smooth jump arc. Off: "
            "GameCube movement. Classic controls always use GameCube movement.");
-  // Shown only with twin stick on, as the pause menu's Stick Aim Speed row.
   if (sInput.twinStick) {
+    bool flickStick = sInput.flickStick;
+    if (ImGui::Checkbox("Flick stick", &flickStick)) {
+      SetFlickStick(flickStick);
+    }
+    ItemHelp("Tilting the right stick turns you to face that way (right: a quarter turn, down: turn "
+             "around); rotating the held stick turns with it. Left and right only: aim up and down with "
+             "gyro aim.");
+    if (sInput.flickStick) {
+      DrawFlickStickWarning();
+      float outer = sInput.flickOuterDeadZone;
+      if (ImGui::SliderFloat("Flick outer deadzone", &outer, 0.f, PortInput::kFlickOuterDeadZoneMax, "%.0f%%")) {
+        sInput.flickOuterDeadZone = std::clamp(outer, 0.f, PortInput::kFlickOuterDeadZoneMax);
+        MarkDirty();
+      }
+      ItemHelp("How far from its edge the right stick counts as fully tilted. Raise it if flicks need "
+               "the stick pushed hard into its rim, or don't fire on the diagonals.");
+    }
+  }
+  // Shown only with twin stick on, as the pause menu's Stick Aim Speed row; flick stick has no speed.
+  if (sInput.twinStick && !sInput.flickStick) {
     float stickRate = sInput.stickAimRate;
     if (ImGui::SliderFloat("Stick aim speed", &stickRate, 100.f, 8100.f, "%.0f px/s")) {
       SetStickAimRate(stickRate);
@@ -416,7 +457,20 @@ void DrawControlsTouchGyro() {
   ItemHelp("Default: GameCube buttons, drag the screen to aim, Visor and Beam wheels.\n"
            "Classic GameCube: adds the C-stick and D-pad.\n"
            "Twin stick (Remastered): a right stick aims; Jump, Fire, Morph, Missile, LT Lock; "
-           "D-pad for visors, Y + D-pad for beams.");
+           "D-pad for visors, Y + D-pad for beams.\n"
+           "Any layout takes Visor and Beam wheels as buttons: Edit layout, Add a button.");
+  ImGui::BeginDisabled(!sInput.touchTwinStick);
+  bool touchFlickStick = sInput.touchFlickStick;
+  if (ImGui::Checkbox("Flick stick##touch", &touchFlickStick)) {
+    SetTouchFlickStick(touchFlickStick);
+  }
+  ItemHelp("Twin stick layout: pushing the right stick to its edge turns you to face that way (right: "
+           "a quarter turn, down: turn around); circling it turns with it. Left and right only: aim up "
+           "and down with gyro aim.");
+  if (sInput.touchTwinStick && sInput.touchFlickStick) {
+    DrawFlickStickWarning();
+  }
+  ImGui::EndDisabled();
 #endif
   ImGui::BeginDisabled(!sInput.touchClassic);
   bool touchAim = sInput.touchAim;
@@ -431,21 +485,11 @@ void DrawControlsTouchGyro() {
     SetTouchMapTap(touchMapTap);
   }
   ItemHelp("Tap the minimap to open the map. Replaces the Z button.");
-  ImGui::BeginDisabled(!sInput.touchClassic && !sInput.touchTwinStick);
-  bool touchWheels = sInput.touchWheels;
-  if (ImGui::Checkbox("Beam and visor wheels", &touchWheels)) {
-    SetTouchWheels(touchWheels);
-  }
-  ItemHelp("Replaces the D-pad with Visor and Beam buttons: hold, slide to one, let go. "
-           "Let go in the middle to cancel.");
-  ImGui::EndDisabled();
-  ImGui::BeginDisabled(!((!sInput.touchClassic && !sInput.touchTwinStick) || sInput.touchWheels));
   bool touchVisorTapScan = sInput.touchVisorTapScan;
   if (ImGui::Checkbox("Tap Visor for Scan Visor", &touchVisorTapScan)) {
     SetTouchVisorTapScan(touchVisorTapScan);
   }
-  ItemHelp("A quick tap on Visor switches to the Scan Visor.");
-  ImGui::EndDisabled();
+  ItemHelp("A quick tap on the Visor wheel button switches to the Scan Visor.");
   ImGui::BeginDisabled(!(!sInput.touchClassic || sInput.touchAim));
   float touchAimSpeed = sInput.touchAimSpeed;
   if (ImGui::SliderFloat("Touch aim speed", &touchAimSpeed, 0.5f, 10.f, "%.2f px/dp")) {

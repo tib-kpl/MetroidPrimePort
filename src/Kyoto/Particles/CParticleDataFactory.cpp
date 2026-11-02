@@ -461,6 +461,12 @@ void CParticleDataFactory::LoadGPSMTokens(CGenDescription* desc) {
   for (auto& extra : desc->xPortExtraSwooshes) {
     extra.swoosh.ForceCache();
   }
+  if (desc->xPortPsps) {
+    desc->xPortPsps->ForceCache();
+  }
+  if (desc->xPortPspsSwoosh) {
+    desc->xPortPspsSwoosh->ForceCache();
+  }
   if (desc->xPortKssm) {
     for (auto& table : desc->xPortKssm->tables) {
       for (auto& entry : table.entries) {
@@ -687,6 +693,11 @@ bool CParticleDataFactory::CreateGPSM(CGenDescription* desc, CInputStream& in,
       delete desc->xPortIntTranslation;
       desc->xPortIntTranslation = GetVectorElement(in);
       break;
+    // Port-only Remastered OVEC (CGenDescription::xPortOvec).
+    case SBIG('POVC'):
+      delete desc->xPortOvec;
+      desc->xPortOvec = GetVectorElement(in);
+      break;
     // Port-only Remastered PMRB/PMCF model rotation frame (CGenDescription::xPortPmrqFrame).
     case SBIG('PMRF'): {
       GetClassID(in);
@@ -799,6 +810,33 @@ bool CParticleDataFactory::CreateGPSM(CGenDescription* desc, CInputStream& in,
     case SBIG('PLIX'):
       GetClassID(in);
       desc->xPortNestedLightInverseExposure = in.ReadLong() != 0;
+      break;
+    case SBIG('PLSP'):
+      GetClassID(in);
+      desc->xPortNestedLightWiden = in.ReadFloat();
+      break;
+    case SBIG('PLON'):
+      GetClassID(in);
+      desc->xPortLightOnce = in.ReadLong() != 0;
+      break;
+    // Port-only: Remastered's fixed system bounds (FXBR/FXBM/FXBO), min then max.
+    case SBIG('PFXB'): {
+      GetClassID(in);
+      if (in.ReadLong() != 6) {
+        return false;
+      }
+      float bounds[6];
+      for (int i = 0; i < 6; ++i) {
+        bounds[i] = in.ReadFloat();
+      }
+      desc->xPortFixedBounds = true;
+      desc->xPortFixedBoundsMin = CVector3f(bounds[0], bounds[1], bounds[2]);
+      desc->xPortFixedBoundsMax = CVector3f(bounds[3], bounds[4], bounds[5]);
+      break;
+    }
+    case SBIG('PFXC'):
+      GetClassID(in);
+      desc->xPortBoundsNoChildren = in.ReadLong() != 0;
       break;
     case SBIG('POR0'):
       delete desc->xPortNestedLightOuterRadius;
@@ -952,6 +990,11 @@ bool CParticleDataFactory::CreateGPSM(CGenDescription* desc, CInputStream& in,
       desc->xPortInheritVel = GetRealElement(in);
       break;
     }
+    // Port-only: an own-material model generator's ITEN (xPortModelIten).
+    case SBIG('PITN'):
+      delete desc->xPortModelIten;
+      desc->xPortModelIten = GetRealElement(in);
+      break;
     // Port-only: Remastered's ITPE 1 (xPortSpread), with PEMV's mode word.
     case SBIG('PITP'): {
       GetClassID(in);
@@ -971,6 +1014,14 @@ bool CParticleDataFactory::CreateGPSM(CGenDescription* desc, CInputStream& in,
     case SBIG('PISD'):
       GetClassID(in);
       desc->xPortChildShutdownByMode = in.ReadLong() != 0;
+      break;
+    case SBIG('POSD'):
+      GetClassID(in);
+      desc->xPortChildInheritsShutdownMode = in.ReadLong() != 0;
+      break;
+    case SBIG('PBOR'):
+      GetClassID(in);
+      desc->xPortBirthOrientation = in.ReadLong() != 0;
       break;
     case SBIG('PBLT'):
       GetClassID(in);
@@ -995,6 +1046,33 @@ bool CParticleDataFactory::CreateGPSM(CGenDescription* desc, CInputStream& in,
       delete desc->xPortShutdownTime;
       desc->xPortShutdownTime = GetIntElement(in);
       break;
+    case SBIG('PSPS'): {
+      // CNST id: a child GENP; SWHC id: a child swoosh.
+      desc->xPortPsps = rstl::optional_object_null();
+      desc->xPortPspsSwoosh = rstl::optional_object_null();
+      const FourCC clsId = GetClassID(in);
+      if (clsId == SBIG('NONE')) {
+        break;
+      }
+      const CAssetId id = in.Get< CAssetId >();
+      if (clsId == SBIG('SWHC')) {
+        if (id != 0) {
+          desc->xPortPspsSwoosh =
+              TCachedToken< CSwooshDescription >(pool->GetObj(SObjectTag(SBIG('SWHC'), id)));
+        }
+      } else if (id != 0) {
+        rstl::optional_object< TToken< CGenDescription > > child(
+            GetChildGeneratorDesc(id, pool, resources));
+        if (child) {
+          desc->xPortPsps = TCachedToken< CGenDescription >(*child);
+        }
+      }
+      break;
+    }
+    case SBIG('PSMX'):
+      delete desc->xPortPsmx;
+      desc->xPortPsmx = GetIntElement(in);
+      break;
     case SBIG('PMOV'):
       delete desc->xPortPmov;
       desc->xPortPmov = GetVectorElement(in);
@@ -1013,11 +1091,28 @@ bool CParticleDataFactory::CreateGPSM(CGenDescription* desc, CInputStream& in,
       GetClassID(in);
       desc->xPortDepthBias = in.ReadFloat();
       break;
+    // Port-only: Remastered's DBSO 0 (xPortDepthBiasUsesDepthRange).
+    case SBIG('PDBO'):
+      GetClassID(in);
+      desc->xPortDepthBiasUsesDepthRange = in.ReadLong() != 0;
+      break;
+    // Port-only: Remastered's SBIS (xPortSortBias), a constant real.
+    case SBIG('PSBS'):
+      GetClassID(in);
+      desc->xPortSortBias = in.ReadFloat();
+      break;
     // Port-only Remastered particle material (build/mpr/vfx/DESIGN.md section 1).
     case SBIG('VMAT'):
     case SBIG('VMSH'):
     case SBIG('VPRM'):
     case SBIG('VTMT'):
+    case SBIG('VTRS'):
+    case SBIG('VATX'):
+    case SBIG('VAT2'):
+    case SBIG('VTP2'):
+    case SBIG('VATF'):
+    case SBIG('VTFB'):
+    case SBIG('VTRT'):
     case SBIG('VPMT'):
     case SBIG('VSMT'):
     case SBIG('SSZE'):
@@ -1371,6 +1466,11 @@ CRealElement* CParticleDataFactory::GetRealElement(CInputStream& in) {
   // Port-only PSDT: the system's shutdown countdown fraction left (SDTR).
   case SBIG('PSDT'):
     return rs_new CREPortShutdownRemaining();
+  // Port-only PDML: a component (0-2) of the dominant light direction (Remastered's DOML).
+  case SBIG('PDML'): {
+    const u32 component = in.ReadLong();
+    return component < 3 ? rs_new CREPortDominantLight(component) : nullptr;
+  }
   // Port-only PSYR: a PSYS real slot of the system being evaluated.
   case SBIG('PSYR'):
     return rs_new CREPortSysVar(in.ReadLong());
@@ -1688,6 +1788,10 @@ CVectorElement* CParticleDataFactory::GetVectorElement(CInputStream& in) {
   case SBIG('VARV'):
     ret = rs_new CVEPortVar(in.ReadLong());
     break;
+  // Port-only PSYV: a PSYS vector slot of the system being evaluated.
+  case SBIG('PSYV'):
+    ret = rs_new CVEPortSysVar(in.ReadLong());
+    break;
   // ABS_ (CVEAbsoluteValue 0x29e254): one vector child.
   case SBIG('ABS_'): {
     CVectorElement* value = GetVectorElement(in);
@@ -1846,11 +1950,12 @@ CVectorElement* CParticleDataFactory::GetVectorElement(CInputStream& in) {
   case SBIG('BSSC'):
     ret = rs_new CVEPortBasis(GetVectorElement(in), clsId == SBIG('BSSC'));
     break;
-  case SBIG('PRZY'): {
+  case SBIG('PRZY'):
+  case SBIG('PRYZ'): {
     CVectorElement* first = GetVectorElement(in);
     CVectorElement* second = GetVectorElement(in);
     CVectorElement* fallback = GetVectorElement(in);
-    ret = rs_new CVEPortRotationFromAxis(first, second, fallback);
+    ret = rs_new CVEPortRotationFromAxis(first, second, fallback, clsId == SBIG('PRYZ'));
     break;
   }
   case SBIG('PEMV'): {
@@ -2468,6 +2573,24 @@ CUVElement* CParticleDataFactory::GetTextureElement(CInputStream& in, CSimplePoo
     TToken< CTexture > tex = id == 0 ? TToken< CTexture >(CreateTexture(-1))
                                      : TToken< CTexture >(resPool->GetObj(SObjectTag(SBIG('TXTR'), id)));
     ret = rs_new CUVEAtlasTexture(tex, cols, rows, count, mode, flipX);
+    break;
+  }
+  case SBIG('PAFB'): {
+    // 'CNST' <TXTR id>, then cols, rows, count, loop, flipX and the cycle as int elements
+    CAssetId id = 0;
+    FourCC subId = GetClassID(in);
+    if (subId != SBIG('NONE')) {
+      id = in.ReadLong();
+    }
+    CIntElement* cols = GetIntElement(in);
+    CIntElement* rows = GetIntElement(in);
+    CIntElement* count = GetIntElement(in);
+    CIntElement* loop = GetIntElement(in);
+    CIntElement* flipX = GetIntElement(in);
+    CIntElement* cycle = GetIntElement(in);
+    TToken< CTexture > tex = id == 0 ? TToken< CTexture >(CreateTexture(-1))
+                                     : TToken< CTexture >(resPool->GetObj(SObjectTag(SBIG('TXTR'), id)));
+    ret = rs_new CUVEAtlasTexture(tex, cols, rows, count, loop, flipX, cycle);
     break;
   }
 #endif

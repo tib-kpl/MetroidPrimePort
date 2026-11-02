@@ -148,6 +148,24 @@
   a C-stick held from the keyboard is not consumed, so keyboard beam keys still
   pick beams, and an L from a key or mouse button stays lock-on. Fire
   stays on whatever is bound to A; remap it in Controls > Remap.
+- `MP_FLICK_STICK=1` (Controls > Options "Flick stick" under twin stick, persisted
+  as `flick_stick`, off by default): the twin-stick right stick as Flick Stick.
+  Its tilt runs from the C-stick deadzone to an outer deadzone ("Flick outer
+  deadzone" under it, `flick_stick_outer_deadzone`, 0-50% of travel, 10 by
+  default; the touch overlay's flick stick uses it too), with the deadzones
+  round, so circling the stick turns evenly.
+  Tilting it past 90% turns the view to face that direction relative to the
+  current view (right 90 degrees, down 180) over 0.1 s; rotating the held stick
+  turns the view by the same angle, small rotations smoothed (fully below
+  180 deg/s, none above 360 deg/s); it flicks again once let go below 75%. Only
+  yaw: nothing aims up and down without gyro aim, which F1 warns about, and the
+  stick speed settings do not apply (F1 and the pause menu hide them). The
+  touch overlay's twin-stick layout has its own switch,
+  `MP_TOUCH_FLICK_STICK=1` (Controls > Touch & gyro "Flick stick" under Layout,
+  persisted as `touch_flick_stick`, off by default), used while touch is active.
+  Off while a radial menu or a lock-on with free aim takes the stick; under
+  pointer aim it flicks only while the gyro drives the aim, and otherwise moves
+  the pointer as before.
 - Gyro aim (Controls > Touch & gyro): tilting the pad or phone aims through the
   same free aim as the mouse, so it needs mouse aim, twin stick or the touch
   controls. `gyro_mode` is 0 off, 1 hold to aim (aims while the "Gyro aim" action
@@ -278,8 +296,13 @@
   `CInGameGuiManager`) presses Z for one poll, which opens the map; the GameCube
   layout's Z pill is hidden while it is on. Console: `minimap` prints the rect,
   `maptap` sends the tap.
-  **Beam and visor wheels** (Android, `touch_wheels`, on by default; F1 > Controls > Touch & gyro): in both layouts the D-pad is replaced by two round buttons,
-  Visor and Beam. Holding one opens a 4-sector wheel centred on the press
+  **Beam and visor wheels** (touch overlays): two round buttons, Visor and Beam,
+  stock in the Default layout; any layout takes them as added buttons (Edit
+  layout > Add a button > Visor wheel / Beam wheel, keys `visor_wheel` and
+  `beam_wheel`, which only the overlay reads). The retired `touch_wheels` setting
+  put the stock pair in the classic and twin layouts in place of the D-pad; a
+  layout saved with it on becomes added wheel buttons where they were, without
+  the D-pad, on its first draw, and the setting is dropped. Holding one opens a 4-sector wheel centred on the press
   (clamped on screen) in the stock directions (visors up Combat, right X-Ray,
   down Thermal, left Scan; beams up Power, right Wave, down Ice, left Plasma);
   sliding lights the sector, release picks it, release in the centre cancels.
