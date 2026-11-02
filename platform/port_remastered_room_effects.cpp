@@ -34,12 +34,14 @@ constexpr uint8_t kRetailEffect = 7;
 // A retail effect no object matched, with an added one this near, is the one it replaces.
 constexpr double kReplaceDistance = 5.0;
 
+constexpr double kDeg = 3.14159265358979323846 / 180.0;
+// Remastered's local axis that GameCube local axis j is (column j of RetailFrame's matrix).
+constexpr int kAxis[3] = {0, 2, 1};
+
 // Rz * Ry * Rx of Remastered's angles in GameCube axes (the room geometry's `place`), then
-// the area's rotation, as retail's editor angles in degrees.
-void RetailAngles(const Vec3& rot, const Mat34& xf, float out[3]) {
-  constexpr int kAxis[3] = {0, 2, 1};
+// the area's rotation: column j is where Remastered's local axis kAxis[j] points in the world.
+void RetailFrame(const Vec3& rot, const Mat34& xf, double w[3][3]) {
   constexpr double kSign[3] = {-1, 1, 1};
-  constexpr double kDeg = 3.14159265358979323846 / 180.0;
   double s[3], k[3];
   for (int i = 0; i < 3; ++i) {
     s[i] = std::sin(rot[size_t(i)] * kDeg);
@@ -50,7 +52,7 @@ void RetailAngles(const Vec3& rot, const Mat34& xf, float out[3]) {
       {s[2] * k[1], s[2] * s[1] * s[0] + k[2] * k[0], s[2] * s[1] * k[0] - k[2] * s[0]},
       {-s[1], k[1] * s[0], k[1] * k[0]},
   };
-  double g[3][3], w[3][3];
+  double g[3][3];
   for (int row = 0; row < 3; ++row) {
     for (int col = 0; col < 3; ++col) {
       g[row][col] = kSign[row] * kSign[col] * m[kAxis[row]][kAxis[col]];
@@ -61,6 +63,12 @@ void RetailAngles(const Vec3& rot, const Mat34& xf, float out[3]) {
       w[row][col] = xf[size_t(row)][0] * g[0][col] + xf[size_t(row)][1] * g[1][col] + xf[size_t(row)][2] * g[2][col];
     }
   }
+}
+
+// RetailFrame as retail's editor angles in degrees.
+void RetailAngles(const Vec3& rot, const Mat34& xf, float out[3]) {
+  double w[3][3];
+  RetailFrame(rot, xf, w);
   const double sy = std::clamp(-w[2][0], -1.0, 1.0);
   double x, z;
   if (std::fabs(sy) > 0.99999) {
@@ -233,7 +241,6 @@ bool ActorEffect(const Room& room, const Component& c, const Area& area, uint32_
   e.name += genp != f.end() && genp->second.size == 16 ? UuidText(room.Bytes(genp->second)) : std::string("without a GENP");
   const Vec3 w = Apply(area.xf, MulR2G(pos));
   world = w;
-  constexpr int kAxis[3] = {0, 2, 1};
   for (size_t i = 0; i < 3; ++i) {
     e.pos[i] = float(w[i]);
     e.scale[i] = float(scale[size_t(kAxis[i])]);
@@ -274,17 +281,313 @@ bool ActorEffect(const Room& room, const Component& c, const Area& area, uint32_
   return true;
 }
 
+// AmbientParticleEffect (kb topic/ambient-particle-effect.md): SLdrAmbientParticleEffect::Load
+// 0x4b8624 and its constructor's defaults 0x4b8448.
+constexpr uint32_t kAmbientParticleEffect = 0xcbe2042d;
+constexpr uint32_t kEffectProxyMP1 = 0xe12aae70;
+constexpr uint32_t kPropAmbientShapes = 0xa411bbc7;   // the shapes the points must fall in
+constexpr uint32_t kPropAmbientDensity = 0x7fbe0d2c;  // +0xd8
+constexpr uint32_t kPropAmbientLife = 0x89d67bfb;     // +0xdc
+constexpr uint32_t kPropAmbientSpawn = 0x01ed34eb;    // the camera-space sphere the points come from
+constexpr uint32_t kPropAmbientWeights = 0xab7ac437;  // per link index
+constexpr uint32_t kLinkAmbientEmitter = 0x2c283df0;
+constexpr uint32_t kShapeBox = 0xcef3fcf1;       // COBBoxShapeData
+constexpr uint32_t kShapeCylinder = 0x06c7e0ae;  // CCappedCylinderShapeData
+constexpr uint32_t kShapeSphere = 0x6ede23e6;    // CSphereShapeData
+
+// One typed shape (u32 type, u16 size, property list) at `b`; `used` its size.
+struct ShapeProps {
+  uint32_t type = 0;
+  std::map<uint32_t, std::pair<const uint8_t*, size_t>> props;
+};
+bool ReadShape(const uint8_t* b, size_t n, ShapeProps& out, size_t& used) {
+  if (n < 6 || n - 6 < ReadLE16(b + 4)) {
+    return false;
+  }
+  out.type = ReadLE32(b);
+  const size_t size = ReadLE16(b + 4);
+  std::vector<Prop> props;
+  if (!PropList(b + 6, size, &props)) {
+    return false;
+  }
+  for (const Prop& p : props) {
+    out.props[p.id] = {b + 6 + p.data.start, p.data.size};
+  }
+  used = 6 + size;
+  return true;
+}
+bool ShapeVec(const ShapeProps& s, uint32_t id, const Vec3& fallback, Vec3& out) {
+  const auto it = s.props.find(id);
+  if (it == s.props.end()) {
+    out = fallback;
+    return true;
+  }
+  if (it->second.second != 12) {
+    return false;
+  }
+  for (size_t k = 0; k < 3; ++k) {
+    out[k] = ReadLEFloat(it->second.first + 4 * k);
+  }
+  return true;
+}
+bool ShapeReal(const ShapeProps& s, uint32_t id, double fallback, double& out) {
+  const auto it = s.props.find(id);
+  if (it == s.props.end()) {
+    out = fallback;
+    return true;
+  }
+  if (it->second.second != 4) {
+    return false;
+  }
+  out = ReadLEFloat(it->second.first);
+  return true;
+}
+
+// The ambient record of an AmbientParticleEffect, its emitters the effects (`effectOf`, by
+// entity) of the EffectProxyMP1s it links; false with `why` when it cannot be exact.
+bool AmbientRecord(const Room& room, const Component& c, const Mat34& xf, const std::map<int, uint32_t>& effectOf,
+                   PortRoomEffects::Ambient& out, const char*& why) {
+  const std::vector<Component>& comps = room.Components();
+  out = PortRoomEffects::Ambient{};
+  why = "unreadable";
+  Vec3 pos, rot, scale;
+  if (!room.Xform(c, pos, rot, scale)) {
+    return false;
+  }
+  // The shapes are in the entity's space, which is the room's in every one shipped.
+  for (size_t k = 0; k < 3; ++k) {
+    if (pos[k] != 0.0 || rot[k] != 0.0 || scale[k] != 1.0) {
+      why = "a placed entity";
+      return false;
+    }
+  }
+  const auto own = effectOf.find(c.entity);
+  if (own == effectOf.end()) {
+    why = "its effect not added";
+    return false;
+  }
+  out.owner = own->second;
+  const auto f = room.Flat(c);
+  const auto real = [&](uint32_t id, float fallback, float& v) {
+    const auto it = f.find(id);
+    if (it == f.end()) {
+      v = fallback;
+      return true;
+    }
+    v = it->second.size == 4 ? ReadLEFloat(room.Bytes(it->second)) : 0.f;
+    return it->second.size == 4;
+  };
+  float density = 0.f, life = 0.f;
+  if (!real(kPropAmbientDensity, 1e-5f, density) || !real(kPropAmbientLife, 4.f, life)) {
+    return false;
+  }
+  // The spawn sphere (CAmbientParticleEffectGOC::Init): its volume, in float as the game has it.
+  const auto spawn = f.find(kPropAmbientSpawn);
+  ShapeProps sphere;
+  size_t used = 0;
+  Vec3 center{};
+  double radius = 0;
+  if (spawn == f.end() || !ReadShape(room.Bytes(spawn->second), spawn->second.size, sphere, used) ||
+      used != spawn->second.size || sphere.type != kShapeSphere || !ShapeVec(sphere, 0x1d62d49d, {}, center) ||
+      !ShapeReal(sphere, 0x9988156a, 0.5, radius)) {
+    why = "no spawn sphere";
+    return false;
+  }
+  const float r = float(radius);
+  const float volume = ((r * 1.3333334f) * r) * r * 3.1415927f;
+  out.rate = std::fabs(life) < 1e-5f ? 0.f : volume * density / life;
+  const Vec3 offset = MulR2G(center);
+  for (size_t k = 0; k < 3; ++k) {
+    out.offset[k] = float(offset[k]);
+  }
+  out.radius = r;
+  const auto weights = f.find(kPropAmbientWeights);
+  if (weights == f.end() || weights->second.size < 4) {
+    why = "no weights";
+    return false;
+  }
+  const uint8_t* wb = room.Bytes(weights->second);
+  const uint32_t count = ReadLE32(wb);
+  if (count > PortRoomEffects::kMaxAmbientWeights || weights->second.size != 4 + 4 * size_t(count)) {
+    why = "bad weights";
+    return false;
+  }
+  for (uint32_t k = 0; k < count; ++k) {
+    out.weights.push_back(int32_t(ReadLE32(wb + 4 + 4 * k)));
+  }
+  // SpawnParticlesAtPositions 0x4bb0a0: every proxy linked with the index, a link to an entity
+  // meaning its proxies (CLinkedComponentRange::next_item 0x47bb2c). The link data is an empty
+  // property list in every one shipped: index 0.
+  for (const EntityLink& l : ReadEntityLinkData(room, size_t(&c - comps.data()))) {
+    if (l.id != kLinkAmbientEmitter) {
+      continue;
+    }
+    if (l.payload.size != 2 || ReadLE16(room.Bytes(l.payload)) != 0 || l.target < 0) {
+      why = "an unknown link";
+      return false;
+    }
+    std::vector<int> proxies;
+    if (comps[size_t(l.target)].type == kEffectProxyMP1) {
+      proxies.push_back(l.target);
+    } else if (comps[size_t(l.target)].type == kEntity) {
+      for (size_t k = 0; k < comps.size(); ++k) {
+        if (comps[k].type == kEffectProxyMP1 && comps[k].entity == l.target) {
+          proxies.push_back(int(k));
+        }
+      }
+    }
+    for (int p : proxies) {
+      const auto effect = effectOf.find(comps[size_t(p)].entity);
+      if (effect == effectOf.end()) {
+        why = "a linked effect not added";
+        return false;
+      }
+      if (out.emitters.size() >= PortRoomEffects::kMaxAmbientEmitters) {
+        why = "too many links";
+        return false;
+      }
+      out.emitters.push_back({0, effect->second});
+    }
+  }
+  // With no weights nothing is ever spawned (0x4bb0a0).
+  if (out.emitters.empty() || out.weights.empty()) {
+    why = "no emitter";
+    return false;
+  }
+  const auto shapes = f.find(kPropAmbientShapes);
+  if (shapes == f.end() || shapes->second.size < 4) {
+    why = "no shapes";
+    return false;
+  }
+  const uint8_t* sb = room.Bytes(shapes->second);
+  const size_t sn = shapes->second.size;
+  const uint32_t shapeCount = ReadLE32(sb);
+  if (shapeCount > PortRoomEffects::kMaxAmbientShapes) {
+    why = "too many shapes";
+    return false;
+  }
+  size_t at = 4;
+  for (uint32_t k = 0; k < shapeCount; ++k) {
+    ShapeProps s;
+    if (!ReadShape(sb + at, sn - at, s, used)) {
+      return false;
+    }
+    at += used;
+    PortRoomEffects::AmbientShape shape;
+    Vec3 sc{}, sr{}, ext{};
+    double sradius = 0, height = 0;
+    bool ok;
+    if (s.type == kShapeBox) {
+      shape.type = PortRoomEffects::kAmbientBox;
+      ok = ShapeVec(s, 0x7199772e, {}, sc) && ShapeVec(s, 0x2a65c84b, {}, sr) &&
+           ShapeVec(s, 0xd4fe58a9, {1, 1, 1}, ext);
+    } else if (s.type == kShapeCylinder) {
+      shape.type = PortRoomEffects::kAmbientCylinder;
+      ok = ShapeVec(s, 0x4a515a01, {}, sc) && ShapeVec(s, 0x25d57772, {}, sr) &&
+           ShapeReal(s, 0x042a3629, 0.5, sradius) && ShapeReal(s, 0x5abbfd19, 1.0, height);
+    } else if (s.type == kShapeSphere) {
+      shape.type = PortRoomEffects::kAmbientSphere;
+      ok = ShapeVec(s, 0x1d62d49d, {}, sc) && ShapeReal(s, 0x9988156a, 0.5, sradius);
+    } else {
+      why = "an unknown shape";
+      return false;
+    }
+    if (!ok) {
+      return false;
+    }
+    const Vec3 wc = Apply(xf, MulR2G(sc));
+    double w[3][3];
+    RetailFrame(sr, xf, w);
+    for (size_t i = 0; i < 3; ++i) {
+      shape.center[i] = float(wc[i]);
+      for (size_t j = 0; j < 3; ++j) {
+        shape.axes[j][i] = float(w[i][j]);
+      }
+    }
+    if (shape.type == PortRoomEffects::kAmbientBox) {
+      for (size_t j = 0; j < 3; ++j) {
+        shape.half[j] = float(std::fabs(ext[size_t(kAxis[j])]) * 0.5);
+      }
+    } else if (shape.type == PortRoomEffects::kAmbientCylinder) {
+      // Its axis is Remastered's local Y, GameCube's local Z.
+      for (size_t i = 0; i < 3; ++i) {
+        shape.axes[0][i] = float(w[i][2]);
+      }
+      shape.half[0] = float(std::fabs(height) * 0.5);
+      shape.half[1] = float(std::fabs(sradius));
+    } else {
+      shape.half[0] = float(std::fabs(sradius));
+    }
+    out.shapes.push_back(shape);
+  }
+  if (at != sn) {
+    return false;
+  }
+  return true;
+}
+
+// The entities with an EffectMP1 component.
+std::set<int> EffectEntities(const Room& room) {
+  std::set<int> out;
+  for (const Component* c : room.Of(kEffectMP1)) {
+    if (c->entity >= 0) {
+      out.insert(c->entity);
+    }
+  }
+  return out;
+}
+
+// A connection addressed to another component of an effect's entity (a Boolean's c53a2e78 to
+// its AmbientParticleEffect) with an action neither CEffectMP1GOC nor IMP1EntityBaseGOC
+// translates (0xd9c9e4, 0xc51ea4: 0xffff, no message) never reaches the effect, so it neither
+// connects nor drives it. Nor does one on Default, which is never sent (NeverSent).
+bool MissesEffect(const Room& room, const std::set<int>& effects, const Connection& c, int t) {
+  const Component& target = room.Components()[size_t(t)];
+  if (NeverSent(room.Components()[c.sender].type, c.event)) {
+    return true;
+  }
+  return target.type != kEntity && target.type != kEffectMP1 && effects.count(target.entity) != 0 &&
+         EffectAct(c.action) == 0 && !IsEntityBaseAction(c.action);
+}
+
 }  // namespace
 
 std::set<int> ConnectedEntities(const Room& room) {
   const std::vector<Component>& comps = room.Components();
+  const std::set<int> effects = EffectEntities(room);
   std::set<int> out;
   for (const Connection& c : ReadConnections(room)) {
     const int t = room.ByGuid(c.target);
-    if (t >= 0) {
+    if (t >= 0 && !MissesEffect(room, effects, c, t)) {
       out.insert(comps[size_t(t)].type == kEntity ? t : comps[size_t(t)].entity);
     }
   }
+  return out;
+}
+
+std::set<int> DrivableEntities(const Room& room) {
+  const std::vector<Component>& comps = room.Components();
+  const std::set<int> effects = EffectEntities(room);
+  std::set<int> connected, refused;
+  for (const Connection& c : ReadConnections(room)) {
+    const int t = room.ByGuid(c.target);
+    if (t < 0 || MissesEffect(room, effects, c, t)) {
+      continue;
+    }
+    const int entity = comps[size_t(t)].type == kEntity ? t : comps[size_t(t)].entity;
+    connected.insert(entity);
+    // An ObjectFollowLocator's Play names what it follows and moves (a follow), never sent. The
+    // events SpecialFunctionSends knows are retail's or never fire; the walk sorts out which.
+    if (comps[c.sender].type == kSpecialFunction &&
+        !(c.event == kEventSpecialFunctionPlay && IsFollowLocator(room, comps[c.sender])) &&
+        SpecialFunctionSends(room, comps[c.sender], c.event, true) == SpecialFunctionSend::kUnknown &&
+        SpecialFunctionSends(room, comps[c.sender], c.event, false) == SpecialFunctionSend::kUnknown) {
+      refused.insert(entity);
+    }
+  }
+  std::set<int> out;
+  std::set_difference(connected.begin(), connected.end(), refused.begin(), refused.end(),
+                      std::inserter(out, out.end()));
   return out;
 }
 
@@ -915,8 +1218,13 @@ Id16 SlotGenp(const Room& room, const Component& c, const uint32_t (&path)[4], s
 
 }  // namespace
 
-std::string WriteRoomEffects(const std::string& name, const Room& room, uint32_t mrea, const Area& area,
-                             const SceneryScripts& scripts, const RoomIO& io) {
+namespace {
+// One pass of WriteRoomEffects. An effect sender (kSenderEffect) in notSenders is taken as one
+// that is not added; one a drive names that is not added after all goes in missing, and then
+// nothing is written.
+std::string WriteRoomEffectsOnce(const std::string& name, const Room& room, uint32_t mrea, const Area& area,
+                                 const SceneryScripts& scripts, const RoomIO& io, const std::set<int>& notSenders,
+                                 std::set<int>& missing) {
   const std::vector<const Component*> effects = room.Of(kEffectMP1);
   if (!io.effect || !io.write) {
     return {};
@@ -939,7 +1247,7 @@ std::string WriteRoomEffects(const std::string& name, const Room& room, uint32_t
   if (effects.empty() && enemies.empty() && !slotted) {
     return {};
   }
-  char line[768];
+  char line[1024];
   const std::vector<ScriptObject>& objects = area.objects;
   if (objects.empty()) {
     return "  " + name + ": no retail objects, its effect actors left out";
@@ -980,9 +1288,253 @@ std::string WriteRoomEffects(const std::string& name, const Room& room, uint32_t
   std::set<uint32_t> skips;
   std::vector<PortRoomEffects::Override> overrides;
   std::vector<Vec3> added;
+  std::map<int, uint32_t> addedIds;  // the effects added, by entity
   std::set<int> seen;
+  std::map<std::string, size_t> connectedWhy;  // connected ones left out, by cause
+  std::map<std::string, std::string> connectedWho;  // their entities' guids, by cause (MP_REMASTERED_MISS)
   size_t connectedCount = 0, noPart = 0, noLayer = 0, kept = 0, keptOwn = 0, overridden = 0, full = 0, badVars = 0;
+  size_t drivenCount = 0;  // connected ones added, with drives
+  std::vector<PortRoomEffects::Drive> allDrives;
+  const std::set<int> drivable = DrivableEntities(room);
+  // The Remastered timers that can be retail CScriptTimer add-ons (PortRoomEffects::Timer): every
+  // connection into them traced to retail messages, on a known layer, and every timer they hear
+  // from one too (until nothing more drops out). The same for the TriggerMP1s that can be retail
+  // CScriptTrigger add-ons (PortRoomEffects::Trigger), which timers may drive and be driven by, and
+  // for the ScriptRelayMP1s that become retail CScriptRelay add-ons (PortRoomEffects::Relay).
+  std::set<int> timersOk, triggersOk, relaysOk;
+  const auto addOnOk = [&](int entity, bool baseLayer, const std::vector<PortRoomGeo::Link>& links) {
+    return scripts.unresolved.count(entity) == 0 && (baseLayer || scripts.layer.count(entity) != 0) &&
+           std::all_of(links.begin(), links.end(), [](const PortRoomGeo::Link& l) {
+             return (l.action & kLinkMessage) != 0 && l.delay >= 0.f && l.delay <= PortRoomEffects::kMaxDriveDelay;
+           });
+  };
+  for (const auto& [t, timer] : scripts.timers) {
+    if (addOnOk(t, timer.baseLayer, timer.links)) {
+      timersOk.insert(t);
+    }
+  }
+  for (const auto& [t, trigger] : scripts.triggers) {
+    if (addOnOk(t, trigger.baseLayer, trigger.links)) {
+      triggersOk.insert(t);
+    }
+  }
+  for (const auto& [r, relay] : scripts.relays) {
+    if (addOnOk(r, relay.baseLayer, relay.links)) {
+      relaysOk.insert(r);
+    }
+  }
+  const auto addOnSenderOk = [&](const PortRoomGeo::Link& l) {
+    return IsTimerSender(l.sender)     ? timersOk.count(int(l.sender & ~kSenderTimer)) != 0
+           : IsTriggerSender(l.sender) ? triggersOk.count(int(l.sender & ~kSenderTrigger)) != 0
+           : IsRelaySender(l.sender)   ? relaysOk.count(int(l.sender & ~kSenderRelay)) != 0
+           : IsEffectSender(l.sender)  ? notSenders.count(int(l.sender & ~kSenderEffect)) == 0
+                                       : true;
+  };
+  for (bool dropped = true; dropped;) {
+    dropped = false;
+    const auto prune = [&](std::set<int>& ok, const auto& addOns) {
+      for (auto it = ok.begin(); it != ok.end();) {
+        const std::vector<PortRoomGeo::Link>& links = addOns.at(*it).links;
+        if (std::all_of(links.begin(), links.end(), addOnSenderOk)) {
+          ++it;
+        } else {
+          it = ok.erase(it);
+          dropped = true;
+        }
+      }
+    };
+    prune(timersOk, scripts.timers);
+    prune(triggersOk, scripts.triggers);
+    prune(relaysOk, scripts.relays);
+  }
+  // The GeneratorMP1s that copy effects, kept where they are exact (PortRoomEffects::Generator):
+  // every connection into them traced, one template, no Follow targets, a spawn count in range.
+  struct GeneratorPlan {
+    bool ok = false;
+    PortRoomEffects::Generator record;  // templates filled as the effect is added
+    uint32_t count = 1;
+    int index = -1;  // in generators, once written
+    const char* why = "its links";  // why it is not exact, for the log
+  };
+  std::map<int, GeneratorPlan> generatorPlans;  // by generator entity
+  for (const auto& [effect, by] : scripts.generatedBy) {
+    for (int g : by) {
+      generatorPlans[g];
+    }
+  }
+  if (!generatorPlans.empty()) {
+    const std::vector<Component>& comps = room.Components();
+    const std::vector<Connection> conns = ReadConnections(room);
+    for (auto& [g, plan] : generatorPlans) {
+      const Component* comp = nullptr;
+      for (const Component* c : room.Of(kGeneratorMP1)) {
+        if (c->entity == g) {
+          comp = c;
+          break;
+        }
+      }
+      const auto links = scripts.links.find(g);
+      if (comp == nullptr || drivable.count(g) == 0 || links == scripts.links.end() || scripts.unresolved.count(g) != 0 ||
+          !std::all_of(links->second.begin(), links->second.end(), [&](const PortRoomGeo::Link& l) {
+            return (l.action == PortRoomGeo::kGenerate || l.action == PortRoomGeo::kShow ||
+                    l.action == PortRoomGeo::kHide || l.action == PortRoomGeo::kToggle) &&
+                   l.delay >= 0.f && l.delay <= PortRoomEffects::kMaxDriveDelay && addOnSenderOk(l);
+          })) {
+        plan.why = comp == nullptr ? "not a generator" : "its links";
+        continue;
+      }
+      size_t generates = 0;
+      bool follows = false, sound = false;
+      for (const Connection& c : conns) {
+        if (comps[c.sender].type != kGeneratorMP1 || comps[c.sender].entity != g || c.event != kEventGeneratorZero) {
+          continue;
+        }
+        generates += c.action == kActionGenerate ? 1 : 0;
+        // SetToZero (0xf442f8) always takes a SoundMP1 template over the others, as retail does.
+        const int t = room.ByGuid(c.target);
+        if (c.action == kActionGenerate && t >= 0) {
+          const int te = comps[size_t(t)].type == kEntity ? t : comps[size_t(t)].entity;
+          for (const Component* s : room.Of(kSoundMP1)) {
+            sound = sound || s->entity == te;
+          }
+        }
+        follows = follows || c.action == kActionGeneratorFollow;
+      }
+      const auto f = room.Flat(*comp);
+      const auto count = f.find(kPropGeneratorCount);
+      if (count != f.end()) {
+        plan.count = count->second.size == 4 ? ReadLE32(room.Bytes(count->second)) : 0;
+      }
+      Vec3 offset{0, 0, 0};
+      const auto off = f.find(kPropGeneratorOffset);
+      if (off != f.end() && off->second.size == 12) {
+        const uint8_t* b = room.Bytes(off->second);
+        const Vec3 w = Apply(area.xf, MulR2G({ReadLEFloat(b), ReadLEFloat(b + 4), ReadLEFloat(b + 8)}));
+        const Vec3 o = Apply(area.xf, Vec3{0, 0, 0});
+        offset = {w[0] - o[0], w[1] - o[1], w[2] - o[2]};
+      }
+      const auto noInherit = f.find(kPropGeneratorNoInheritXf);
+      plan.record.flags = (room.Active(*comp) ? PortRoomEffects::kGeneratorActive : 0u) |
+                          (noInherit != f.end() && noInherit->second.size >= 1 && room.Bytes(noInherit->second)[0] != 0
+                               ? PortRoomEffects::kGeneratorNoInheritXf
+                               : 0u);
+      for (int i = 0; i < 3; ++i) {
+        plan.record.offset[i] = float(offset[size_t(i)]);
+      }
+      plan.ok = generates == 1 && !follows && plan.count >= 1 && plan.count <= PortRoomEffects::kMaxGeneratorTemplates &&
+                std::isfinite(plan.record.offset[0]) && std::isfinite(plan.record.offset[1]) &&
+                std::isfinite(plan.record.offset[2]);
+      plan.why = generates != 1 && sound ? "a sound template wins"
+                 : generates != 1        ? "not one generate"
+                 : follows      ? "it follows"
+                 : plan.ok      ? ""
+                                : "its count or offset";
+    }
+  }
+  // The unmatched ObjectFollowLocators that move effects, as retail SpecialFunctions where exact:
+  // exactly two Play connections, Activate to an actor a retail object matched, Deactivate to the
+  // effect (the messages their targets' GOCs translate the actions to), nothing connected to the
+  // function itself (it never changes), on a known layer, with a locator name.
+  struct FollowPlan {
+    bool ok = false;
+    int follower = -1;      // the effect's entity
+    uint32_t followerId = 0;  // its retail or add-on id, once known
+    PortRoomEffects::Follow record;
+    uint32_t layer = 0;
+    const char* why = "not a follow locator";  // why it is left out, for the log
+  };
+  std::map<int, FollowPlan> followPlans;  // by SpecialFunctionMP1 entity
+  if (!scripts.followedBy.empty()) {
+    const std::vector<Component>& comps = room.Components();
+    const std::vector<Connection> conns = ReadConnections(room);
+    const auto entityOf = [&](int t) { return comps[size_t(t)].type == kEntity ? t : comps[size_t(t)].entity; };
+    for (const auto& [effect, by] : scripts.followedBy) {
+      for (int sf : by) {
+        followPlans[sf];
+      }
+    }
+    for (auto& [sf, plan] : followPlans) {
+      const Component* comp = nullptr;
+      for (const Component* c : room.Of(kSpecialFunction)) {
+        if (c->entity == sf && IsFollowLocator(room, *c)) {
+          comp = c;
+        }
+      }
+      if (comp == nullptr || scripts.retail.count(sf) != 0) {
+        plan.why = comp == nullptr ? "not a follow locator" : "a retail object";
+        continue;
+      }
+      int followed = -1, follower = -1;
+      size_t activates = 0, deactivates = 0;
+      bool exact = true;
+      for (const Connection& c : conns) {
+        const int t = room.ByGuid(c.target);
+        if (t >= 0 && entityOf(t) == sf) {
+          exact = false;  // something drives the function
+        }
+        if (comps[c.sender].entity != sf) {
+          continue;
+        }
+        const uint32_t message = t < 0 ? 0 : FollowMessage(comps[size_t(t)].type, c.action);
+        if (c.event != kEventSpecialFunctionPlay || message == 0) {
+          exact = false;
+          continue;
+        }
+        (message == 1 ? followed : follower) = entityOf(t);
+        ++(message == 1 ? activates : deactivates);
+        if (message == 4 && comps[size_t(t)].type != kEffectMP1) {
+          exact = false;
+        }
+      }
+      const auto matched = scripts.retail.find(followed);
+      const auto layer = scripts.layer.find(sf);
+      const auto f = room.Flat(*comp);
+      const auto locator = f.find(kPropSpecialFunctionLocator);
+      std::string name;
+      if (!exact || activates != 1 || deactivates != 1 || matched == scripts.retail.end() ||
+          (!comp->baseLayer && layer == scripts.layer.end()) || locator == f.end() || locator->second.size != 8 ||
+          !room.String(ReadLE32(room.Bytes(locator->second)), ReadLE32(room.Bytes(locator->second) + 4), name)) {
+        plan.why = !exact || activates != 1 || deactivates != 1          ? "other connections"
+                   : matched == scripts.retail.end()                     ? "unmatched followed actor"
+                   : !comp->baseLayer && layer == scripts.layer.end() ? "unknown layer"
+                                                                       : "no locator name";
+        continue;
+      }
+      // The pool's strings may carry their NUL.
+      name = name.substr(0, name.find('\0'));
+      const auto by = scripts.followedBy.find(follower);
+      if (name.empty() || name.size() > PortRoomEffects::kMaxLocatorName ||
+          std::any_of(name.begin(), name.end(), [](char ch) { return ch < 0x21 || ch > 0x7e; }) ||
+          by == scripts.followedBy.end() || std::find(by->second.begin(), by->second.end(), sf) == by->second.end()) {
+        plan.why = "bad locator name or follower";
+        continue;
+      }
+      plan.ok = true;
+      plan.follower = follower;
+      plan.layer = comp->baseLayer ? 0 : layer->second;
+      plan.record.followed = objects[matched->second].id;
+      plan.record.flags = room.Active(*comp) ? PortRoomEffects::kFollowActive : 0u;
+      plan.record.locator = std::move(name);
+    }
+  }
+  const auto followsOk = [&](int effect) {
+    const auto by = scripts.followedBy.find(effect);
+    return by == scripts.followedBy.end() ||
+           std::all_of(by->second.begin(), by->second.end(), [&](int sf) { return followPlans.at(sf).ok; });
+  };
+  const auto followerIs = [&](int effect, uint32_t id) {
+    for (auto& [sf, plan] : followPlans) {
+      if (plan.ok && plan.follower == effect) {
+        plan.followerId = id;
+      }
+    }
+  };
+  std::vector<PortRoomEffects::Generator> generators;
+  size_t generatedCount = 0;  // effects added that a generator copies
   size_t reserved = 0;  // the barrier's actors, left to it
+  // entity -> the object drawing its EffectMP1: the add-on it became, or the retail effect it
+  // matched where that draws its GENP
+  std::map<int, uint32_t> effectOf;
   for (const Component* c : effects) {
     if (c->entity < 0 || !seen.insert(c->entity).second) {
       continue;
@@ -1012,6 +1564,7 @@ std::string WriteRoomEffects(const std::string& name, const Room& room, uint32_t
     const auto matched = scripts.retail.find(c->entity);
     if (matched != scripts.retail.end()) {
       const ScriptObject& o = objects[matched->second];
+      followerIs(c->entity, o.id);
       if (o.type != kRetailEffect) {
         ++kept;
         continue;
@@ -1044,6 +1597,10 @@ std::string WriteRoomEffects(const std::string& name, const Room& room, uint32_t
       // or a paired replacement whose presence io.matched verified. A carried
       // retail-id fallback from io.effect is not proof of converted source data.
       const bool sourcePlacement = replacedPart || pairedPart || ownPart;
+      // Where the object draws this GENP, an ambient spawning into it spawns into the object.
+      if (sourcePlacement || (part != 0 && part == own)) {
+        effectOf[c->entity] = o.id;
+      }
       if (!sourcePlacement && (part == 0 || part != own || vars.empty())) {
         ++keptOwn;
         continue;
@@ -1064,9 +1621,54 @@ std::string WriteRoomEffects(const std::string& name, const Room& room, uint32_t
       ++overridden;
       continue;
     }
+    // A connected one is added only where every connection into it traced to retail states
+    // that show, hide or toggle it: those become its drives.
+    // One a generator copies takes that generator too, if it is exact.
+    std::vector<PortRoomEffects::Drive> drives;
+    const auto generatedBy = scripts.generatedBy.find(c->entity);
+    const bool generated = generatedBy != scripts.generatedBy.end();
+    const bool followed = scripts.followedBy.count(c->entity) != 0;
     if (connected.count(c->entity) != 0) {
-      ++connectedCount;
-      continue;
+      const auto links = scripts.links.find(c->entity);
+      // Why it cannot be driven exactly (the first condition it fails), or empty.
+      const std::string untraced = [&]() -> std::string {
+        if (drivable.count(c->entity) == 0) return "not drivable";
+        if (links == scripts.links.end() && !generated && !followed) return "no link";
+        if (!followsOk(c->entity)) return "a follow";
+        if (scripts.unresolved.count(c->entity) != 0) return "an untraced link";
+        for (const PortRoomGeo::Link& l : links != scripts.links.end() ? links->second : std::vector<PortRoomGeo::Link>()) {
+          if (l.action != PortRoomGeo::kShow && l.action != PortRoomGeo::kHide && l.action != PortRoomGeo::kToggle) {
+            return "a link that does not show or hide";
+          }
+          if (!(l.delay >= 0.f && l.delay <= PortRoomEffects::kMaxDriveDelay)) return "a link's delay";
+          if (!addOnSenderOk(l)) return "an add-on sender";
+        }
+        for (int g : generated ? generatedBy->second : std::vector<int>()) {
+          if (!generatorPlans.at(g).ok) {
+            return std::string("its generator: ") + generatorPlans.at(g).why;
+          }
+        }
+        return "";
+      }();
+      if (!untraced.empty()) {
+        ++connectedCount;
+        ++connectedWhy[untraced];
+        static const bool logMisses = port::EnvFlag("MP_REMASTERED_MISS");
+        if (logMisses) {
+          const Id16& guid = room.Components()[size_t(c->entity)].guid;
+          char text[16];
+          std::snprintf(text, sizeof text, " %02x%02x%02x%02x", guid[0], guid[1], guid[2], guid[3]);
+          connectedWho[untraced] += text;
+        }
+        continue;
+      }
+      for (const PortRoomGeo::Link& l : links != scripts.links.end() ? links->second : std::vector<PortRoomGeo::Link>()) {
+        drives.push_back({0, l.sender, l.state,
+                          l.action == PortRoomGeo::kShow   ? 1u    // kSM_Activate
+                          : l.action == PortRoomGeo::kHide ? 4u    // kSM_Deactivate
+                                                           : 17u,  // kSM_ToggleActive
+                          l.delay});
+      }
     }
     if (part == 0) {
       ++noPart;
@@ -1093,6 +1695,34 @@ std::string WriteRoomEffects(const std::string& name, const Room& room, uint32_t
       continue;
     }
     e.id = PortRoomEffects::AddOnId(retailLayer, areaBits, uint32_t(added.size()));
+    followerIs(c->entity, e.id);
+    effectOf[c->entity] = e.id;
+    addedIds[c->entity] = e.id;
+    for (PortRoomEffects::Drive& d : drives) {
+      d.target = e.id;
+      allDrives.push_back(d);
+    }
+    drivenCount += drives.empty() && !generated ? 0 : 1;
+    // Its generators, each written once with its drives; their one template is this effect.
+    for (int g : generated ? generatedBy->second : std::vector<int>()) {
+      GeneratorPlan& plan = generatorPlans.at(g);
+      if (plan.index >= 0) {
+        continue;  // one template: a second effect never names it
+      }
+      plan.index = int(generators.size());
+      plan.record.templates.assign(plan.count, e.id);
+      generators.push_back(plan.record);
+      for (const PortRoomGeo::Link& l : scripts.links.at(g)) {
+        allDrives.push_back({uint32_t(plan.index), l.sender, l.state,
+                             l.action == PortRoomGeo::kGenerate ? 13u    // kSM_SetToZero
+                             : l.action == PortRoomGeo::kShow   ? 1u     // kSM_Activate
+                             : l.action == PortRoomGeo::kHide   ? 4u     // kSM_Deactivate
+                                                                : 17u,   // kSM_ToggleActive
+                             l.delay,
+                             PortRoomEffects::kDriveToGenerator | (l.relayed ? PortRoomEffects::kDriveRelayed : 0u)});
+      }
+    }
+    generatedCount += generated ? 1 : 0;
     PortRoomEffects::Layer& layer = layers[retailLayer];
     layer.layer = retailLayer;
     PortRoomEffects::AppendEffect(e, layer.objects);
@@ -1120,8 +1750,130 @@ std::string WriteRoomEffects(const std::string& name, const Room& room, uint32_t
     }
   }
   // A barrier that was not written leaves its ten actors out, as connected ones are: say so.
-  if (!group) {
+  if (!group && reserved != 0) {
     connectedCount += reserved;
+    connectedWhy["the barrier not written"] += reserved;
+  }
+  // The timers, triggers and relays the drives written hear from, and the ones those hear from:
+  // the timers' ids follow the barrier's, the triggers' the timers', the relays' the triggers'.
+  std::vector<PortRoomEffects::Timer> timers;
+  std::vector<PortRoomEffects::Trigger> triggers;
+  std::vector<PortRoomEffects::Relay> relays;
+  {
+    std::map<int, uint32_t> timerIds, triggerIds, relayIds;  // by entity
+    std::vector<uint32_t> queue;                             // senders
+    const auto need = [&](uint32_t sender) {
+      if ((IsTimerSender(sender) && timerIds.emplace(int(sender & ~kSenderTimer), 0).second) ||
+          (IsTriggerSender(sender) && triggerIds.emplace(int(sender & ~kSenderTrigger), 0).second) ||
+          (IsRelaySender(sender) && relayIds.emplace(int(sender & ~kSenderRelay), 0).second)) {
+        queue.push_back(sender);
+      }
+    };
+    const auto linksOf = [&](uint32_t sender) -> const std::vector<PortRoomGeo::Link>& {
+      return IsTimerSender(sender)     ? scripts.timers.at(int(sender & ~kSenderTimer)).links
+             : IsTriggerSender(sender) ? scripts.triggers.at(int(sender & ~kSenderTrigger)).links
+                                       : scripts.relays.at(int(sender & ~kSenderRelay)).links;
+    };
+    for (const PortRoomEffects::Drive& d : allDrives) {
+      need(d.sender);
+    }
+    for (size_t q = 0; q < queue.size(); ++q) {
+      for (const PortRoomGeo::Link& l : linksOf(queue[q])) {
+        need(l.sender);
+      }
+    }
+    const size_t first = added.size() + (group ? barrier.effects.size() : 0);
+    if (first + timerIds.size() + triggerIds.size() + relayIds.size() > PortRoomEffects::kMaxAddOns) {
+      // Never reached by retail's rooms; the drives they would send are dropped, so say so.
+      ++full;
+      std::erase_if(allDrives, [](const PortRoomEffects::Drive& d) {
+        return IsTimerSender(d.sender) || IsTriggerSender(d.sender) || IsRelaySender(d.sender);
+      });
+      timerIds.clear();
+      triggerIds.clear();
+      relayIds.clear();
+    }
+    for (auto& [t, id] : timerIds) {
+      const SceneryScripts::Timer& timer = scripts.timers.at(t);
+      const uint32_t retailLayer = timer.baseLayer ? 0 : scripts.layer.at(t);
+      id = PortRoomEffects::AddOnId(retailLayer, areaBits, uint32_t(first + timers.size()));
+      timers.push_back({id, timer.delay, timer.random,
+                        (timer.loop ? PortRoomEffects::kTimerLoop : 0u) |
+                            (timer.autoStart ? PortRoomEffects::kTimerAutoStart : 0u) |
+                            (timer.active ? PortRoomEffects::kTimerActive : 0u)});
+    }
+    for (auto& [t, id] : triggerIds) {
+      const SceneryScripts::Trigger& trigger = scripts.triggers.at(t);
+      const uint32_t retailLayer = trigger.baseLayer ? 0 : scripts.layer.at(t);
+      id = PortRoomEffects::AddOnId(retailLayer, areaBits, uint32_t(first + timers.size() + triggers.size()));
+      PortRoomEffects::Trigger record;
+      record.id = id;
+      std::copy(trigger.pos, trigger.pos + 3, record.pos);
+      std::copy(trigger.extent, trigger.extent + 3, record.extent);
+      record.triggerFlags = trigger.flags;
+      record.flags = (trigger.active ? PortRoomEffects::kTriggerActive : 0u) |
+                     (trigger.deactivateOnEntered ? PortRoomEffects::kTriggerDeactivateOnEntered : 0u) |
+                     (trigger.deactivateOnExited ? PortRoomEffects::kTriggerDeactivateOnExited : 0u);
+      triggers.push_back(record);
+    }
+    for (auto& [r, id] : relayIds) {
+      const SceneryScripts::Relay& relay = scripts.relays.at(r);
+      const uint32_t retailLayer = relay.baseLayer ? 0 : scripts.layer.at(r);
+      id = PortRoomEffects::AddOnId(retailLayer, areaBits,
+                                    uint32_t(first + timers.size() + triggers.size() + relays.size()));
+      relays.push_back({id, relay.active ? PortRoomEffects::kRelayActive : 0u});
+    }
+    const auto addDrives = [&](const std::map<int, uint32_t>& ids, const auto& addOns) {
+      for (const auto& [t, id] : ids) {
+        for (const PortRoomGeo::Link& l : addOns.at(t).links) {
+          allDrives.push_back({id, l.sender, l.state, uint32_t(l.action & ~kLinkMessage), l.delay,
+                               l.relayed ? PortRoomEffects::kDriveRelayed : 0u});
+        }
+      }
+    };
+    addDrives(timerIds, scripts.timers);
+    addDrives(triggerIds, scripts.triggers);
+    addDrives(relayIds, scripts.relays);
+    for (PortRoomEffects::Drive& d : allDrives) {
+      if (IsTimerSender(d.sender)) {
+        d.sender = timerIds.at(int(d.sender & ~kSenderTimer));
+      } else if (IsTriggerSender(d.sender)) {
+        d.sender = triggerIds.at(int(d.sender & ~kSenderTrigger));
+      } else if (IsRelaySender(d.sender)) {
+        d.sender = relayIds.at(int(d.sender & ~kSenderRelay));
+      } else if (IsEffectSender(d.sender)) {
+        const auto sender = addedIds.find(int(d.sender & ~kSenderEffect));
+        if (sender == addedIds.end()) {
+          missing.insert(int(d.sender & ~kSenderEffect));
+        } else {
+          d.sender = sender->second;
+        }
+      }
+    }
+  }
+  if (!missing.empty()) {
+    return {};
+  }
+  // The follow locators whose effect was written (or is a retail object): their ids follow the
+  // relays'.
+  std::vector<PortRoomEffects::Follow> follows;
+  std::string followsLeftOut;  // "; <reason>" per locator left out
+  {
+    const size_t first =
+        added.size() + (group ? barrier.effects.size() : 0) + timers.size() + triggers.size() + relays.size();
+    for (auto& [sf, plan] : followPlans) {
+      if (!plan.ok || plan.followerId == 0) {
+        followsLeftOut += plan.ok ? "; its effect not written" : std::string("; ") + plan.why;
+        continue;
+      }
+      if (first + follows.size() >= PortRoomEffects::kMaxAddOns) {
+        ++full;
+        break;
+      }
+      plan.record.id = PortRoomEffects::AddOnId(plan.layer, areaBits, uint32_t(first + follows.size()));
+      plan.record.follower = plan.followerId;
+      follows.push_back(plan.record);
+    }
   }
   // A retail effect no Remastered entity matched, that nothing sends a message to, next to an
   // added one: Remastered replaced it.
@@ -1383,16 +2135,72 @@ std::string WriteRoomEffects(const std::string& name, const Room& room, uint32_t
                   "PART), %zu Remastered-only effect slot(s) (%zu without an asset)",
                   patterned.size(), patternedNoPart, patches.size(), patchNoPart, actorSlots.size(), actorSlotNoPart);
   }
+  // The ambient particle spawners, filling the effects they link (CAmbientParticleEffectGOC).
+  std::vector<PortRoomEffects::Ambient> ambients;
+  std::map<std::string, size_t> ambientsLeftOut;
+  for (const Component& c : room.Components()) {
+    if (c.type != kAmbientParticleEffect) {
+      continue;
+    }
+    PortRoomEffects::Ambient a;
+    const char* why = "";
+    if (!AmbientRecord(room, c, area.xf, effectOf, a, why)) {
+      ++ambientsLeftOut[why];
+    } else if (a.rate > 0.f) {
+      ambients.push_back(std::move(a));
+    }
+  }
+  char generatorNote[512] = "";
+  if (!generators.empty()) {
+    std::snprintf(generatorNote, sizeof generatorNote, ", %zu of them copied by %zu generator(s)", generatedCount,
+                  generators.size());
+  }
+  if (!timers.empty()) {
+    const size_t at = std::strlen(generatorNote);
+    std::snprintf(generatorNote + at, sizeof generatorNote - at, ", %zu timer(s)", timers.size());
+  }
+  if (!triggers.empty()) {
+    const size_t at = std::strlen(generatorNote);
+    std::snprintf(generatorNote + at, sizeof generatorNote - at, ", %zu trigger(s)", triggers.size());
+  }
+  if (!relays.empty()) {
+    const size_t at = std::strlen(generatorNote);
+    std::snprintf(generatorNote + at, sizeof generatorNote - at, ", %zu relay(s)", relays.size());
+  }
+  if (!follows.empty()) {
+    const size_t at = std::strlen(generatorNote);
+    std::snprintf(generatorNote + at, sizeof generatorNote - at, ", %zu follow(s)", follows.size());
+  }
+  if (!followsLeftOut.empty()) {
+    const size_t at = std::strlen(generatorNote);
+    std::snprintf(generatorNote + at, sizeof generatorNote - at, ", follows left out: %s", followsLeftOut.c_str() + 2);
+  }
+  if (!ambients.empty()) {
+    const size_t at = std::strlen(generatorNote);
+    std::snprintf(generatorNote + at, sizeof generatorNote - at, ", %zu ambient spawner(s)", ambients.size());
+  }
+  for (const auto& [why, count] : connectedWhy) {
+    const size_t at = std::strlen(generatorNote);
+    std::snprintf(generatorNote + at, sizeof generatorNote - at, ", %zu connected left out: %s", count, why.c_str());
+  }
+  for (const auto& [why, count] : ambientsLeftOut) {
+    const size_t at = std::strlen(generatorNote);
+    std::snprintf(generatorNote + at, sizeof generatorNote - at, ", %zu ambient(s) left out: %s", count, why.c_str());
+  }
   std::snprintf(line, sizeof line,
                 "  %s: %zu effect actor(s) added, %zu retail effect(s) replaced, %zu retail effect(s) take "
-                "Remastered's effect, %zu connected and left out, %zu matched a retail object (%zu of them still on "
+                "Remastered's effect, %zu connected and left out (%zu more added with drives%s), %zu matched a retail object (%zu of them still on "
                 "the retail PART), %zu without a PART, %zu on an unknown layer%s%s%s%s%s",
-                name.c_str(), added.size(), replacedNear, overridden, connectedCount, kept + keptOwn + overridden,
+                name.c_str(), added.size(), replacedNear, overridden, connectedCount, drivenCount, generatorNote, kept + keptOwn + overridden,
                 keptOwn, noPart, noLayer, full != 0 ? ", the id range is full" : "",
                 badVars != 0 ? ", unreadable particle variables" : "", barrierNote, patternedNote, steamNote);
+  std::string summary = line;
+  for (const auto& [why, who] : connectedWho) {
+    summary += "; left out for " + why + ":" + who;
+  }
   if (added.empty() && overrides.empty() && skips.empty() && !group && patterned.empty() && patches.empty() &&
-      steams.empty() && actorSlots.empty()) {
-    return line;
+      steams.empty() && actorSlots.empty() && follows.empty()) {
+    return summary;
   }
   PortRoomEffects::File file;
   file.skips.assign(skips.begin(), skips.end());
@@ -1405,6 +2213,13 @@ std::string WriteRoomEffects(const std::string& name, const Room& room, uint32_t
   file.patches = std::move(patches);
   file.steams = std::move(steams);
   file.actorSlots = std::move(actorSlots);
+  file.drives = std::move(allDrives);
+  file.generators = std::move(generators);
+  file.timers = std::move(timers);
+  file.triggers = std::move(triggers);
+  file.relays = std::move(relays);
+  file.follows = std::move(follows);
+  file.ambients = std::move(ambients);
   if (group) {
     PortRoomEffects::BarrierGroup barrierGroup;
     barrierGroup.controller = PortQueenBarrier::kController;
@@ -1444,14 +2259,31 @@ std::string WriteRoomEffects(const std::string& name, const Room& room, uint32_t
   if (!io.write(fileName, PortRoomEffects::Write(file))) {
     return "  " + name + ": could not write " + fileName;
   }
-  return line;
+  return summary;
+}
+}  // namespace
+
+std::string WriteRoomEffects(const std::string& name, const Room& room, uint32_t mrea, const Area& area,
+                             const SceneryScripts& scripts, const RoomIO& io) {
+  // An effect whose Active or Inactive drives an added one is added too, or the one it drives is
+  // left out: over again without the senders that were not, until every one named is.
+  std::set<int> notSenders;
+  for (;;) {
+    std::set<int> missing;
+    std::string summary = WriteRoomEffectsOnce(name, room, mrea, area, scripts, io, notSenders, missing);
+    if (missing.empty()) {
+      return summary;
+    }
+    notSenders.insert(missing.begin(), missing.end());
+  }
 }
 
 std::vector<std::array<uint8_t, 16>> RoomEffectGenpsOf(const Room& room) {
   std::vector<std::array<uint8_t, 16>> out;
   const std::set<int> connected = ConnectedEntities(room);
+  const std::set<int> drivable = DrivableEntities(room);
   for (const Component* c : room.Of(kEffectMP1)) {
-    if (c->entity < 0 || connected.count(c->entity) != 0) {
+    if (c->entity < 0 || (connected.count(c->entity) != 0 && drivable.count(c->entity) == 0)) {
       continue;
     }
     const auto f = room.Flat(*c);

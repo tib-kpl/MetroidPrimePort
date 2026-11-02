@@ -17,12 +17,15 @@
 #include "MetroidPrime/Cameras/CGameCamera.hpp"
 #include "MetroidPrime/Player/CPlayerState.hpp"
 #include "MetroidPrime/ScriptObjects/CScriptTrigger.hpp"
+#include "MetaRender/CCubeRenderer.hpp"
 #include "MetroidPrime/TCastTo.hpp"
 
 #include "rstl/math.hpp"
 #ifdef TARGET_PC
 #include <cmath>
 #include "MetroidPrime/ScriptObjects/CScriptSpecialFunction.hpp"
+#include "port_mods.h"
+#include "port_room_env.h"
 #endif
 uint CScriptEffect::mNumParticlesDrawing = 0;
 uint CScriptEffect::mNumParticlesUpdating = 0;
@@ -159,7 +162,14 @@ void CScriptEffect::Think(float dt, CStateManager& mgr) {
 #endif
     if (x111_25_dieWhenSystemsDone) {
       x140_destroyDelayTimer += dt;
-      if (x140_destroyDelayTimer > 15.f) {
+#ifdef TARGET_PC
+      // Remastered's CScriptEffectMP1::Think (0xd9a8b8) waits 30 s, retail 15 s.
+      const float destroyDelay =
+          PortRoomEnv::Enabled() && PortMods::RoomEnvLoaded() ? 30.f : 15.f;
+#else
+      const float destroyDelay = 15.f;
+#endif
+      if (x140_destroyDelayTimer > destroyDelay) {
         mgr.DeleteObjectRequest(GetUniqueId());
         return;
       }
@@ -332,7 +342,16 @@ void CScriptEffect::AddToRenderer(const CFrustumPlanes& frustum, const CStateMan
                                            CAABox(center, center));
       x138_actorLights->BuildDynamicLightList(mgr, bounds);
     }
+#ifdef TARGET_PC
+    // Remastered sorts the whole effect against water by its root generator's WSTP (0xd9bc88).
+    if (x104_particleSystem.get() != nullptr) {
+      gpRender->PortSetNextWaterSort(x104_particleSystem->PortWaterSort());
+    }
     EnsureRendered(mgr);
+    gpRender->PortSetNextWaterSort(0);
+#else
+    EnsureRendered(mgr);
+#endif
   }
 }
 

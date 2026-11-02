@@ -345,7 +345,11 @@
   face button as the pad beam shift (which springs in morph ball), Scan and X-Ray swapped; twin stick on),
   **Modern** and **Southpaw**. Only Remastered sets `shift_pad`, `pad_alt` and
   `swap_scan_xray`; the others clear them. Remastered and Modern are off for a
-  GameCube adapter.
+  GameCube adapter. The last controller preset is persisted as `pad_preset`:
+  Aurora keeps mappings per controller model, so a controller that becomes pad 1
+  later with its type's default mappings gets the preset then, and with no
+  controller connected the Remap page shows the preset's mappings. Applying a
+  preset of your own clears it.
 - Swap the Scan and X-Ray visor buttons (Controls > Options, persisted as
   `swap_scan_xray`, off by default): each visor takes the other's D-pad
   direction, as in Remastered (D-pad right Scan, left X-Ray).
@@ -830,7 +834,9 @@
   `third_person_distance` (metres behind, 0.5..10, default 3.5),
   `third_person_shoulder` (metres right, -2..2, default 0.9) and
   `third_person_height` (metres above the first-person eye, -1..2, default
-  0.25) place it. Console: `thirdperson [on|off] [distance N] [shoulder N]
+  0.25) place it. Shoulder and height are for a 16:9 screen at the retail
+  FOV; a wider screen or FOV scales them so she keeps her place beside the
+  crosshair. Console: `thirdperson [on|off] [distance N] [shoulder N]
   [height N]`.
 - Speedrun timer and LiveSplit (F1 > Game > Speedrun; the timer also in pause Options >
   Display as In-Game Timer). `speedrun_timer` draws the in-game time (the play

@@ -225,7 +225,15 @@ inline constexpr int kModels = 30;
 // 136: GunTurret particle properties (room GENPs).
 // 137: GunTurret visor effects (room ELC2s).
 // 138: Drone laser and scanner particles (room GENPs).
-inline constexpr int kEffects = 139;   // Queen barrier shield/glow models back-cull (MATI cull byte)
+// 139: Queen barrier shield/glow models back-cull (MATI cull byte).
+// 141: effect generators, strict timers (roomfx v11). 142: strict timers start active.
+// 143: event states from the GOCs' TranslateScriptEventToState. 144: moved effects match by senders.
+// 145: TimerMP1s retail lacks become retail Timers (roomfx v12). 146: WSTP becomes the port-only PWST.
+// 147: ObjectFollowLocators retail lacks become follows (roomfx v13).
+// 148: retail positions after a type's leading field (GunTurret, flavors, Dock).
+// 152: ambient particle spawners (roomfx v16).
+// 153: ambients into matched retail effects.
+inline constexpr int kEffects = 157;   // recipes 90ce7873, 03ac7d53, d47ffcc3; a swoosh VMAT's PMTR life
 // 20: two rooms matching one area write only the closer match's files, not the later room's.
 // 21: roomenv version 22, the world master's hints driven by its camera volumes (the table in every roomenv).
 // 22: a master's InventoryActivator fired by the camera going under water drives its hints (kSenderCameraWaterItem).
@@ -275,7 +283,12 @@ inline constexpr int kEffects = 139;   // Queen barrier shield/glow models back-
 // 72: animated platforms are left to retail's Platform (they looped as scenery, without collision).
 // 74: a platform's model is drawn only riding its retail Platform; unbound or animated, retail draws it.
 // 75: the grid is the LTPB the ROOM's BLIT names, found in the master pak too (25 rooms had none).
-inline constexpr int kRooms = 75;
+// 76: script event -> state rows of MP1 types from their GOCs' TranslateScriptEventToState.
+// 77: an effect Remastered moved over 2 units matches its retail one by senders and states.
+// 78: retail objects whose position follows a component, flavor or active field match (turrets);
+// an effect Remastered dropped links into matches the one retail Effect with all of its links,
+// or whose parts Generator's one incoming link Remastered sends it directly.
+inline constexpr int kRooms = 78;
 inline constexpr int kRoomModels = 1;  // the rooms' own models and their levels of detail
 // kText: port_remastered_text, and the font (port_remastered_font).
 // 2: text/.disc, the disc the tables were merged from (kTextDiscName).

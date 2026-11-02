@@ -1210,8 +1210,53 @@ void CmdFxQuery() {
       uid.value = s.uid;
       const CEntity* const ent = mgr->GetObjectById(uid);
       const bool alive = ent != nullptr && ent->GetEditorId().Value() == (s.eid & 0x3FFFFFF);
-      Out("  %08X u%u PART %08X %s %s, %zu variable(s) set", s.eid, unsigned(s.uid), s.part,
-          !alive ? "gone" : ent->GetActive() ? "active" : "inactive", s.name.c_str(), s.vars);
+      const char* const state = !alive ? "gone" : ent->GetActive() ? "active" : "inactive";
+      if (s.part == 0xFFFFFFFF) {
+        Out("  %08X u%u %s %s", s.eid, unsigned(s.uid), state, s.name.c_str());  // a timer or follow locator
+      } else {
+        Out("  %08X u%u PART %08X %s %s, %zu variable(s) set", s.eid, unsigned(s.uid), s.part, state, s.name.c_str(),
+            s.vars);
+      }
+      for (const auto& [d, pending] : PortRoomEffects::DrivesOf(mrea)) {
+        if ((d.flags & PortRoomEffects::kDriveToGenerator) == 0 && (d.target & 0x3FFFFFF) == (s.eid & 0x3FFFFFF)) {
+          Out("    driven by %08X state %u: msg %u after %.2fs%s", d.sender, unsigned(d.state), unsigned(d.message),
+              d.delay, pending != 0 ? ", pending" : "");
+        }
+      }
+    }
+    const std::vector< PortRoomEffects::GeneratorState > generators = PortRoomEffects::GeneratorsOf(mrea);
+    for (size_t i = 0; i < generators.size(); ++i) {
+      const PortRoomEffects::GeneratorState& g = generators[i];
+      std::string templates;
+      for (uint32_t id : g.generator.templates) {
+        char text[16];
+        std::snprintf(text, sizeof text, " %08X", id);
+        templates += text;
+      }
+      Out("  generator %zu %s, %zu cop%s made, templates%s", i, g.active ? "active" : "inactive", g.made,
+          g.made == 1 ? "y" : "ies", templates.c_str());
+      for (const auto& [d, pending] : PortRoomEffects::DrivesOf(mrea)) {
+        if ((d.flags & PortRoomEffects::kDriveToGenerator) != 0 && d.target == i) {
+          Out("    driven by %08X state %u: msg %u after %.2fs%s%s", d.sender, unsigned(d.state), unsigned(d.message),
+              d.delay, (d.flags & PortRoomEffects::kDriveRelayed) != 0 ? ", relayed" : "",
+              pending != 0 ? ", pending" : "");
+        }
+      }
+    }
+    for (const PortRoomEffects::AmbientState& s : PortRoomEffects::AmbientsOf(mrea)) {
+      const PortRoomEffects::Ambient& a = s.ambient;
+      std::string emitters;
+      for (const PortRoomEffects::AmbientEmitter& e : a.emitters) {
+        char text[24];
+        std::snprintf(text, sizeof text, " %u:%08X", unsigned(e.index), e.id);
+        emitters += text;
+      }
+      Out("  ambient of %08X: %.2f point(s)/s, %zu shape(s), %zu spawned, emitters%s", a.owner, a.rate,
+          a.shapes.size(), s.spawned, emitters.c_str());
+      for (const PortRoomEffects::AmbientShape& sh : a.shapes) {
+        Out("    shape %u at (%.1f %.1f %.1f) half (%.1f %.1f %.1f)", unsigned(sh.type), sh.center[0], sh.center[1],
+            sh.center[2], sh.half[0], sh.half[1], sh.half[2]);
+      }
     }
   } else if (sub == "barrier") {
     // The Parasite Queen barrier group (port_queen_barrier.h), from each live ring controller.
@@ -3362,6 +3407,9 @@ void CmdRoomEnv() {
     } else if (arg == "fogregions" && sCmd.args.size() > 2 &&
                (Lower(sCmd.args[2]) == "on" || Lower(sCmd.args[2]) == "off")) {
       PortRoomEnv::SetFogRegionsEnabled(Lower(sCmd.args[2]) == "on");
+    } else if (arg == "fogregion" && sCmd.args.size() > 3 &&
+               (Lower(sCmd.args[3]) == "on" || Lower(sCmd.args[3]) == "off")) {
+      PortRoomEnv::SetFogRegionEnabled(uint32_t(std::atoi(sCmd.args[2].c_str())), Lower(sCmd.args[3]) == "on");
     } else if (arg == "state" && sCmd.args.size() > 3) {
       PortRoomEnv::SendScriptState(uint32_t(std::strtoul(sCmd.args[2].c_str(), nullptr, 16)) & 0x3ffffff,
                                    std::atoi(sCmd.args[3].c_str()));
@@ -3384,7 +3432,7 @@ void CmdRoomEnv() {
     } else {
       return Finish("usage: roomenv [on|off|info [<x> <y> <z>]|auto on|off|static on|off|"
                     "arealights on|off|balllight on|off|<scale>|blend on|off|bloom on|off|"
-                    "grade on|off|grades|fog|volfog on|off|fogregions on|off|"
+                    "grade on|off|grades|fog|volfog on|off|fogregions on|off|fogregion <i> on|off|"
                     "volume on|off|ambient <scale>|"
                     "show off|coords|light]");
     }

@@ -725,6 +725,15 @@ const Recipe* RecipeOf(uint32_t shader) {
       {0xd955396d, kOpacityTex | kSceneWarp,
        {{"TCH0", Role::Opacity, -1, -1}, {"TCH1", Role::Indirect, 0, 1}},
        {}},
+      // The same scene copy over the colour (90ce7873, _Color_Opacity: BCLR, opacity TCH0, warp TCH1; alpha
+      // BCLR.a x TCH0.x x vc.a) or over the ramp colour (03ac7d53, _ColorRamp_Opacity: warp TCH0, ramp TCH1
+      // picking between the two ramp rows by .x cubed, alpha TCH1.y x the rows' mixed alpha x TCH2.x x vc.a).
+      {0x90ce7873, kColorTex | kOpacityTex | kSceneWarp,
+       {{"BCLR", Role::Color, -1, -1}, {"TCH0", Role::Opacity, -1, -1}, {"TCH1", Role::Indirect, 0, 1}},
+       {}},
+      {0x03ac7d53, kOpacityTex | kRamp | kSceneWarp,
+       {{"TCH0", Role::Indirect, 0, 1}, {"TCH1", Role::Ramp, -1, -1}, {"TCH2", Role::Opacity, -1, -1}},
+       {}},
       // VFX_IceChargeBeam (perms 000_1/000_0, ICECHARGE.md): PMTR C x CCH0.x x COLOR.z x CCH2.x, plus
       // PMTR A/B blended by NMAP.x x BCLR.x, plus the NMAP-bumped facing term x BCLR.rgb, x vc.rgb; alpha
       // vc.a alone. The VS's hash rotation and shake run in CPortVfxMeshBatch::Add. CCH0..2 in VPRM.
@@ -826,6 +835,12 @@ const Recipe* RecipeOf(uint32_t shader) {
        {{kSrcErosion, 0, 0}}},
       {0x8e6bfa33, kRamp | kIndirect | kThresholding,
        {{"TCH0", Role::Ramp, 1, 2}, {"TCH1", Role::Threshold, -1, -1}, {"TCH2", Role::Indirect, -1, -1}},
+       {{kSrcThrX, 2, 0}, {kSrcThrY, 2, 1}, {kSrcThrW, -1, 0}}},
+      // 8e6bfa33 with an opacity map (VFX_ColorRamp_Indirect_Opacity_Thresholding_Unlit): the same VS and CCH0
+      // layout; ramp TCH0, warp TCH1, opacity TCH2 (x the alpha), threshold TCH3.
+      {0xd47ffcc3, kOpacityTex | kRamp | kIndirect | kThresholding,
+       {{"TCH0", Role::Ramp, 1, 2}, {"TCH1", Role::Indirect, -1, -1}, {"TCH2", Role::Opacity, -1, -1},
+        {"TCH3", Role::Threshold, -1, -1}},
        {{kSrcThrX, 2, 0}, {kSrcThrY, 2, 1}, {kSrcThrW, -1, 0}}},
       {0x6c165efd, kOpacityTex | kRamp,
        {{"TCH0", Role::Ramp, -1, -1}, {"TCH2", Role::Opacity, -1, -1}},
@@ -3488,7 +3503,7 @@ public:
     auto find = [this, &node, swoosh, electric](uint32_t fourcc) -> const EffectProperty* {
       for (const EffectProperty& property : node.properties) {
         if (property.fourcc == fourcc) {
-          m_lifetimeOffset = LifetimeOffset(!swoosh, false, electric, property);
+          m_lifetimeOffset = LifetimeOffset(!swoosh, swoosh && !electric, electric, property);
           return &property;
         }
       }
@@ -4193,6 +4208,7 @@ public:
     bool unfogged = false;  // DFOG 1, port-only PDFG
     bool noZTest = false;   // ZTES 0, port-only PZTS
     bool noIvse = false;    // IVSE 0, port-only PIVS
+    uint32_t waterSort = 0;  // WSTP 1/2, port-only PWST
     int spreadMode = -1;    // ITPE 1, port-only PITP with EMRV's mode word (-1 none)
     bool itpe = false;      // the node has an ITPE of its own
     uint32_t depthBias = 0;  // DBIS as float bits (nonzero), port-only PDBS
@@ -4508,6 +4524,20 @@ public:
         s.result.dropped.push_back("ZTES: not a constant");
       } else {
         s.noZTest = on == 0;
+      }
+      return true;
+    }
+    // WSTP (GetWaterSortMode, desc+0x69): ConvertWaterSortMode 0x256764 maps 1 to sort type 5
+    // (always above the water plane) and 2 to type 1 (always below); anything else is 0, which
+    // BinEntriesWithSortPlane 0x1f3140 resolves from the bounds. CScriptEffect's AddToRenderer
+    // (0xd9bc88) takes the root generator's mode for the whole effect. Retail has no such
+    // property: the port-only PWST.
+    if (s.part && fourcc == F("WSTP")) {
+      uint32_t mode = 0;
+      if (!SmallInteger(property, mode)) {
+        s.result.dropped.push_back("WSTP: not a constant");
+      } else {
+        s.waterSort = mode == 1 || mode == 2 ? mode : 0;
       }
       return true;
     }
@@ -5439,6 +5469,11 @@ public:
       AppendBE32(s.out, F("CNST"));
       AppendBE32(s.out, 0);
     }
+    if (s.waterSort != 0) {
+      AppendBE32(s.out, F("PWST"));
+      AppendBE32(s.out, F("CNST"));
+      AppendBE32(s.out, s.waterSort);
+    }
     if (s.noIvse) {
       AppendBE32(s.out, F("PIVS"));
       AppendBE32(s.out, F("CNST"));
@@ -6220,7 +6255,7 @@ bool SplitRetailEffect(uint32_t type, const uint8_t* data, size_t size, std::vec
       ok = reader.Element(Type::Int);
     } else if ((part && (fourcc == F("VORN") || fourcc == F("XFMD") ||
                          fourcc == F("PPRM") || fourcc == F("PSHP") || fourcc == F("PHDR") || fourcc == F("PHFO") || fourcc == F("PLIX") || fourcc == F("PGID") || fourcc == F("PBDM") ||
-                         fourcc == F("PDFG") || fourcc == F("PZTS") || fourcc == F("PIVS") ||
+                         fourcc == F("PDFG") || fourcc == F("PZTS") || fourcc == F("PIVS") || fourcc == F("PWST") ||
                          fourcc == F("PITP") || fourcc == F("PSHM") || fourcc == F("PISD") || fourcc == F("PBLT") ||
                          fourcc == F("VMPC") || fourcc == F("DVVN") || fourcc == F("IEXP") ||
                          (fourcc >= F("VGD1") && fourcc <= F("VGD4")) ||
