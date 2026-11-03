@@ -49,6 +49,12 @@ void DrawCutscenesSection() {
     SameLineAfterHelp();
     ImGui::TextDisabled("(on in randomized games)");
   }
+  bool seamlessPickups = sSeamlessPickups;
+  if (ImGui::Checkbox("Seamless item pickups", &seamlessPickups)) {
+    SetSeamlessPickups(seamlessPickups);
+  }
+  ItemHelp("Picking up an item keeps you in control: no cutscene, and its message shows on the "
+           "HUD instead of pausing. Applies to rooms loaded afterwards.");
   int elevatorRide = sElevatorRide;
   if (ImGui::Combo("Elevator ride", &elevatorRide, "Original\0Fast\0Skip\0")) {
     SetElevatorRide(static_cast< EElevatorRide >(elevatorRide));
@@ -94,6 +100,13 @@ void DrawCutscenesSection() {
   }
   ItemHelp("Each normal or charged shot also fires every other beam you own. Charge combos, "
            "missiles and the Phazon Beam are unchanged.");
+  bool walkSpeedEnabled = sWalkSpeedEnabled;
+  if (ImGui::Checkbox("Custom walk speed", &walkSpeedEnabled)) {
+    SetWalkSpeedEnabled(walkSpeedEnabled);
+  }
+  ItemHelp("Off: the original speed. A custom action (Controls) bound to this setting turns the "
+           "speed below on and off, to sprint.");
+  ImGui::BeginDisabled(!walkSpeedEnabled);
   int walkSpeed = sWalkSpeed;
   if (ImGui::SliderInt("Walk speed", &walkSpeed, kWalkSpeedMin, kWalkSpeedMax, "%d%%",
                        ImGuiSliderFlags_AlwaysClamp)) {
@@ -101,6 +114,7 @@ void DrawCutscenesSection() {
   }
   ItemHelp("How fast Samus moves on foot, walking, strafing and circle-strafing, in percent of "
            "the original speed. Jumps, dashes, turning and the Morph Ball are unchanged.");
+  ImGui::EndDisabled();
   EndOriginalLocked(locked);
 
   // Not under the Original experience lock: the stored choice applies there too.

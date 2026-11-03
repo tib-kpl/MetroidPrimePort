@@ -204,6 +204,9 @@ const Signatures& ElementsOf(Type type) {
       // Port-only: Remastered's ANCM with its REUL as three angles, MPAC (x and y centre, x and
       // y range, magnitude) and MPCN (direction, radius).
       {F("PANM"), "rrrrrr"}, {F("PMAC"), "rrrrr"}, {F("PMCN"), "vr"},
+      // Port-only PANV: Remastered's ANCV, its REUL as three angles, then polar count and
+      // variance, azimuth count and variance, and the shuffler size.
+      {F("PANV"), "rrrrrrirird"},
       // Port-only CVEPortAbs: Remastered's CVEAbsoluteValue, in whatever space the child is in.
       {F("ABS_"), "v"},
       // Port-only PEMV: Remastered's EMRV, the mode word (0 external translation, 1 local).
@@ -273,17 +276,18 @@ const Signatures& PortElementsOf(Type type) {
   static const Signatures realElements = {
       // VARF: a PVRT index. PSYR: a PSYS slot. PSDT: the shutdown countdown's remaining over its
       // total. PMXV: the index, then the fallback. PSLW: the two reals the system tween blends.
-      // PDML: a component of the dominant light direction (DOML).
+      // PDML: a component of the dominant light direction (DOML). PVSQ: the occlusion visibility.
+      // PGTC: Remastered's total created particles (a real GTCP).
       {F("VARF"), "w"}, {F("PSYR"), "w"}, {F("PSDT"), ""}, {F("PMXV"), "ir"}, {F("PSLW"), "rr"},
-      {F("PDML"), "w"},
+      {F("PDML"), "w"}, {F("PVSQ"), ""}, {F("PGTC"), ""},
   };
   static const Signatures vectorElements = {
       // VARV: a PVRT index. PCRC: centre, axis, start degrees, count, variance, radius, then the
       // shuffle byte. RNDV: the magnitude. PCRO: P, the frequency, the octave count, the gain,
       // then the amplitude A. PNCV: the normalised compensated velocity, no payload. PSYV: a PSYS
-      // slot.
+      // slot. PCRS: the raw slice, P, F, A.
       {F("VARV"), "w"}, {F("PCRC"), "vvrirrd"}, {F("RNDV"), "r"}, {F("PCRO"), "vrirv"}, {F("PNCV"), ""},
-      {F("PSYV"), "w"},
+      {F("PSYV"), "w"}, {F("PCRS"), "wvrv"},
   };
   static const Signatures modVectorElements = {
       // PCRM: the raw mode, the V vector, then t.
@@ -396,24 +400,6 @@ bool ContainsElement(const EffectValue& value, uint32_t fourcc) {
   return false;
 }
 
-// Whether every leaf of an element is literal data, so Remastered might fold it to a constant
-// (over-reports: a RAND of constants counts too). A keyframe never is: CIEKeyframeEmitter and
-// CIEKeyframeInput::GetConstOverride (0x2aa748, 0x2aa764) answer false.
-bool ConstantLeaves(const EffectValue& value) {
-  if (value.kind != EffectValue::Kind::Element) {
-    return true;
-  }
-  if (value.args.empty() || (value.fourcc >> 8) == (F("KEYE") >> 8)) {
-    return false;
-  }
-  for (const EffectValue& arg : value.args) {
-    if (!ConstantLeaves(arg)) {
-      return false;
-    }
-  }
-  return true;
-}
-
 // SPAF/SPAI/SPAC/SPAV(#n, fallback): the parent system's additional variable n
 // (GetRealElement 0x260de4: CElementParentAddlVar over SAddVarAddress(ctx 0, n),
 // AddParentAddlVarRef). DPV*/TPV*(guid, fallback): the direct or topmost parent's
@@ -434,7 +420,28 @@ bool IsParentRead(uint32_t fourcc, Type type) {
   }
 }
 
-// PSA0..PSA9: the system's own additional real n, or -1.
+// Whether every leaf of an element is literal data, so Remastered might fold it to a constant
+// (over-reports: a RAND of constants counts too). A keyframe never is: CIEKeyframeEmitter and
+// CIEKeyframeInput::GetConstOverride (0x2aa748, 0x2aa764) answer false. Nor is an int parent
+// read: GetIntElement 0x26a910 makes SPAI/DPVI/TPVI a CElementParentAddlVar, whose fallback is
+// read as a constant (GetIntElementAsConst), not as an input, and whose IsNodeConst is
+// IElement's (0x250d38, false), so CElementDep::Finish 0x24f9a4 leaves it non-constant.
+bool ConstantLeaves(const EffectValue& value) {
+  if (value.kind != EffectValue::Kind::Element) {
+    return true;
+  }
+  if (value.args.empty() || (value.fourcc >> 8) == (F("KEYE") >> 8) || IsParentRead(value.fourcc, Type::Int)) {
+    return false;
+  }
+  for (const EffectValue& arg : value.args) {
+    if (!ConstantLeaves(arg)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// PSA0..PSA9: the system's own additional variable n (real, int or vector by context), or -1.
 int SystemRealRead(uint32_t fourcc) {
   return fourcc >= F("PSA0") && fourcc <= F("PSA9") ? int(fourcc - F("PSA0")) : -1;
 }
@@ -498,7 +505,8 @@ uint32_t ConstantFlags(const EffectValue& value, Type type) {
   if (value.fourcc == F("IRND") && type != Type::Vector && type != Type::Color) {
     return 2;
   }
-  if (value.fourcc == F("KPIN") && type == Type::Real) {
+  // KPIN: CREKeepInitial 0x299d3c, CVEKeepInitial 0x2a4364, CCEKeepInitial 0x2c92bc.
+  if (value.fourcc == F("KPIN") && (type == Type::Real || type == Type::Vector || type == Type::Color)) {
     return 2;
   }
   const bool plain = type == Type::Real && value.args.size() == 2 &&
@@ -540,6 +548,119 @@ bool ConstWord(const EffectValue& value, uint32_t& word) {
 bool ConstIs(const EffectValue& value, uint32_t word) {
   uint32_t have;
   return ConstWord(value, have) && have == word;
+}
+
+// A swoosh's SYSR (desc+0x78, CreateSWSH 0x2dd224) makes any XFMD but 5 transform mode 1
+// (SetupTransformMode 0x2887d8; 5 deletes it). Mode 1 binds the system vars to the system's own
+// elements instead of the external transform: a8 translation, ac SYSR, b0 SYSS, b8 the birth
+// position and bc the birth orientation, which default to zero, identity, one, zero and identity.
+// So the setters move nothing; EXTR and the getters still read what they set. A zero REUL under
+// XFMD 2 is the port-only XFMD 1 (CParticleSwoosh xPortXfmdSystem) unless an EXTT or EXTS reads
+// the external translation or scale, an INTR other than a zero REUL is a rotation the points no
+// longer start from, or a RAZY's EMRV reads the frozen birth position. 1 writes it, 5 is a no-op,
+// and 0 is a drop with `why`.
+// A property that is one REUL of three constant zeros: the identity rotation.
+bool ZeroReul(const EffectProperty& property) {
+  if (property.value.size() != 1 || !IsElement(property.value[0], F("REUL")) || property.value[0].args.size() != 4) {
+    return false;
+  }
+  for (size_t i = 0; i < 3; ++i) {
+    uint32_t word = 0;
+    if (!ConstWord(property.value[0].args[i], word) || (word & 0x7fffffffu) != 0) {
+      return false;
+    }
+  }
+  return true;
+}
+
+int SwooshSystemMode(const EffectNode& node, std::string& why) {
+  uint32_t mode = 2;
+  bool zeroSysr = false;
+  bool otherIntr = false;
+  bool razy = false;
+  bool external = false;
+  for (const EffectProperty& property : node.properties) {
+    if (property.fourcc == F("XFMD") && (property.value.size() != 1 || !ConstWord(property.value[0], mode))) {
+      mode = UINT32_MAX;
+    }
+    zeroSysr = zeroSysr || (property.fourcc == F("SYSR") && ZeroReul(property));
+    otherIntr = otherIntr || (property.fourcc == F("INTR") && !ZeroReul(property));
+    for (const EffectValue& value : property.value) {
+      razy = razy || ContainsElement(value, F("RAZY"));
+      external = external || ContainsElement(value, F("EXTT")) || ContainsElement(value, F("EXTS"));
+    }
+  }
+  if (mode == 5) {
+    return 5;
+  }
+  why = mode != 2       ? "under XFMD " + std::to_string(int32_t(mode))
+        : !zeroSysr     ? "not a zero REUL"
+        : external      ? "with an EXTT or EXTS"
+        : otherIntr     ? "with an INTR other than a zero REUL"
+        : razy          ? "with a RAZY"
+                        : "";
+  return why.empty() ? 1 : 0;
+}
+
+// A generator's SYST, SYSR, SYSS, TEMT or TEMR (CreateGPSM) makes any XFMD but 5 transform mode 1
+// as a swoosh's SYSR does (SetupTransformMode 0x2887d8, which also deletes SMVR and EMVR; 5
+// deletes them instead): the render's a8 is SYST, live, ac SYSR and b0 SYSS, and b8 TEMT and bc
+// TEMR are baked into each particle at spawn (CreateNewParticles 0x24a5e4). The port-only XFMD 1
+// (CElementGen kPortXfmdSystem) carries SYST as PSYT and TEMT as PTMT, evaluated every tick, with
+// the rotations and scale at their defaults. So a SYSR or TEMR other than a zero REUL, a SYSS, an
+// IRND or KPIN (evaluated once per system) or a RAZY in SYST or TEMT, and an INTT, INTR, INTS,
+// POFS, EMVR, SMVR or ISVF beside them (mode 1 with those is not decoded) are a drop with `why`
+// (0). -1 without any of the five, 5 under XFMD 5 and 1 for XFMD 1.
+int PartSystemMode(const EffectNode& node, std::string& why) {
+  uint32_t mode = 2;
+  bool any = false;
+  why.clear();
+  for (const EffectProperty& property : node.properties) {
+    const uint32_t fourcc = property.fourcc;
+    if (fourcc == F("XFMD") && (property.value.size() != 1 || !ConstWord(property.value[0], mode))) {
+      mode = UINT32_MAX;
+    }
+    if (fourcc != F("SYST") && fourcc != F("SYSR") && fourcc != F("SYSS") && fourcc != F("TEMT") &&
+        fourcc != F("TEMR")) {
+      continue;
+    }
+    any = true;
+    if (!why.empty()) {
+      continue;
+    }
+    if ((fourcc == F("SYSR") || fourcc == F("TEMR")) && !ZeroReul(property)) {
+      why = EffectFourCCString(fourcc) + " not a zero REUL";
+    } else if (fourcc == F("SYSS")) {
+      why = "a SYSS";
+    } else if ((fourcc == F("SYST") || fourcc == F("TEMT")) && property.value.size() != 1) {
+      why = EffectFourCCString(fourcc) + " not one element";
+    } else if (fourcc == F("SYST") || fourcc == F("TEMT")) {
+      for (const uint32_t init : {F("IRND"), F("KPIN"), F("RAZY")}) {
+        if (why.empty() && ContainsElement(property.value[0], init)) {
+          why = EffectFourCCString(fourcc) + " with " + EffectFourCCString(init);
+        }
+      }
+    }
+  }
+  if (!any) {
+    return -1;
+  }
+  if (mode == 5) {
+    why.clear();
+    return 5;
+  }
+  if (mode == UINT32_MAX) {
+    why = "XFMD not a constant";
+    return 0;
+  }
+  for (const EffectProperty& property : node.properties) {
+    for (const uint32_t other : {F("INTT"), F("INTR"), F("INTS"), F("POFS"), F("EMVR"), F("SMVR"), F("ISVF")}) {
+      if (why.empty() && property.fourcc == other) {
+        why = "with an " + EffectFourCCString(other);
+      }
+    }
+  }
+  return why.empty() ? 1 : 0;
 }
 
 // A constant vector of three zeros (CNST of three CNST 0).
@@ -594,8 +715,6 @@ constexpr uint32_t kColorTex = 1, kOpacityTex = 2, kErosion = 4, kRamp = 8, kInd
                    kIceChargeCollision = 1u << 21, kUnfogged = 1u << 22, kVisorRunOff = 1u << 23,
                    kVisorRunOffLit = 1u << 24, kIceChargeCollisionLit = 1u << 25, kParticleLit = 1u << 26,
                    kVisorRain = 1u << 28, kBarrierShield = 1u << 29, kBarrierGlow = 1u << 30;
-// aurora::gfx::vfx::Blend::Multiply, the port's stand-in for the FrameBuffer_* shaders without a SceneWarp recipe.
-constexpr uint32_t kBlendMultiply = 4;
 constexpr uint32_t kBlendAdditiveOne = 5;  // aurora::gfx::vfx::Blend::AdditiveOne (RGB One/One)
 // aurora::gfx::vfx::Fogged: fogged whatever the blend (the row's fog under a MATI EBlendMode's factors).
 constexpr uint32_t kFogged = 1u << 27;
@@ -701,8 +820,7 @@ struct Recipe {
   std::vector<TexSpec> textures;
   std::vector<SrcSpec> sources;
   int addRow = -1;         // PMTR row of the AddColor (rgb, scale); -1: none
-  bool unitCch0 = false;   // shaders without v3 gain/bias support require identity CCH0.z/.w
-  bool frameBuffer = false; // a FrameBuffer_* shader (scene x vc.rgb, warped by CCH0.xy): drawn as a multiply
+  bool cch0GainBias = false; // CCH0.z/.w are the fade's alpha gain and bias (sat(S(fade) - c3[0].w) * c3[0].z): v3
   int params = 0;           // CCH0..params-1 go out whole in VPRM (with the NMAP slot), and SMTR overrides them
   bool fogPerm = false;     // its fog perm (001) is decoded too: drawn fogged without DFOG 1, unfogged (kUnfogged) with
   // Always drawn unfogged, and no DFOG 1 needed: the visor composite shaders never see the room's fog,
@@ -730,8 +848,9 @@ struct Recipe {
 // maths.
 const Recipe* RecipeOf(uint32_t shader) {
   static const std::vector<Recipe> table = {
-      // FrameBuffer_Indirect_Unlit: the scene behind at the fragment, times vc.rgb. The warp is dropped.
-      {0x3db95827, 0, {}, {}, -1, false, true},
+      // FrameBuffer_Indirect_Unlit (3db95827, perm 000_0): the same scene copy, offset by the warp map
+      // TCH0, times vc.rgb x M; alpha sat(vc.a). d955396d without its opacity map.
+      {0x3db95827, kSceneWarp, {{"TCH0", Role::Indirect, 0, 1}}, {}},
       // VFX_FrameBuffer_Indirect_* (perms 000_0 and 016_0): the scene copy at the fragment, offset by the
       // warp map's (d x 0.99609375 - 0.5) x CCH0.xy x near / view distance, times the colour and vc.rgb
       // (cc155f99 = 04276ae1: BCLR, warp TCH0; alpha BCLR.a x vc.a), or times vc.rgb with alpha
@@ -759,14 +878,14 @@ const Recipe* RecipeOf(uint32_t shader) {
       // vc.a alone. The VS's hash rotation and shake run in CPortVfxMeshBatch::Add. CCH0..2 in VPRM.
       {0x9e0605cd, kIceChargeBeam,
        {{"BCLR", Role::Color, -1, -1}, {"NMAP", Role::Normal, -1, -1}},
-       {}, -1, false, false, 3},
+       {}, -1, false, 3},
       // VFX_IceChargeCollision_Unlit (perms 000_1/000_0, fog perm 001; ICECHARGE.md): the NMAP-bumped refraction
       // of the scene copy, desaturated, plus the BCLR-driven colour ramp CCH0..1, the TCH0 reflection and the
       // CCH6 rim, x (CCH5.z / exposure + vc.rgb); alpha vc.a. The VS's tangent frame runs in
       // CPortVfxMeshBatch::Add. CCH0..6 in VPRM v2 with the NMAP and TCH0 slots.
       {0x1c651f97, kIceChargeCollision,
        {{"BCLR", Role::Color, -1, -1}, {"NMAP", Role::Normal, -1, -1}, {"TCH0", Role::Env, -1, -1}},
-       {}, -1, false, false, 7, true},
+       {}, -1, false, 7, true},
       // VFX_IceChargeCollision_Lit (390fc33b, Effect_IcePop; the lit perm of IceChargeCollision, REPORT.md
       // sections 3-5): the same feed, slots and CCH0..6 as 1c651f97, and the front end it shares. The tail
       // adds Remastered's clustered light gather and baked probe, which the runtime fills: the gather from
@@ -775,14 +894,14 @@ const Recipe* RecipeOf(uint32_t shader) {
       // 1). Fogged without DFOG 1 as the unlit perm is; the blend is additive, so the port's fog never mixes.
       {0x390fc33b, kIceChargeCollision | kIceChargeCollisionLit,
        {{"BCLR", Role::Color, -1, -1}, {"NMAP", Role::Normal, -1, -1}, {"TCH0", Role::Env, -1, -1}},
-       {}, -1, false, false, 7, true},
+       {}, -1, false, 7, true},
       // VFX_VisorRunOff (b5e12668 unlit, d85d4169 lit; FS perm 000; SPEC-fb-visor.md sections 5/6): the
       // TCH0 flow map scrolled by CCH1 drives a mask m and a glow; the scene copy at the fragment,
       // offset by CCH0.x x CCH1.z x the map x 0.01, is tinted between CCH3.rgb and CCH4.rgb by m, x the
       // fade and vc.rgb. CCH0..4 in VPRM, animated by SMTR; alpha vc.a. The visor composite pass has no
       // fog, so both are Unfogged whatever the effect's DFOG says.
-      {0xb5e12668, kVisorRunOff, {{"TCH0", Role::Color, -1, -1}}, {}, -1, false, false, 5, false, true},
-      {0xd85d4169, kVisorRunOffLit, {{"TCH0", Role::Color, -1, -1}}, {}, -1, false, false, 5, false, true},
+      {0xb5e12668, kVisorRunOff, {{"TCH0", Role::Color, -1, -1}}, {}, -1, false, 5, false, true},
+      {0xd85d4169, kVisorRunOffLit, {{"TCH0", Role::Color, -1, -1}}, {}, -1, false, 5, false, true},
       // VFX_VisorRain (0ec41df0, the visor rain splash GENP 45ba782d; FS perm 000, perms 001/002 identical,
       // 003..005 the particle-debug overlay; vfx/0ec41df0.md): TCH0 a 2-channel noise map (BC5, repeat); PMTR
       // rows 0..2 (R0 = noise offset xy, PAP9 fade, PAP8 gain; R1 = PAP3, PAP5 (runner pick), PAP7, size; R2 =
@@ -790,21 +909,21 @@ const Recipe* RecipeOf(uint32_t shader) {
       // the scene copy at the fragment, offset along the mask's normal by (1 - fade) x CCH0.w x near / depth, x
       // (0.75 .. 1) x vc.rgb, alpha vc.a; elsewhere discarded. The visor composite pass has no fog, so Unfogged
       // whatever the DFOG.
-      {0x0ec41df0, kVisorRain, {{"TCH0", Role::Color, -1, -1}}, {}, -1, false, false, 1, false, true},
+      {0x0ec41df0, kVisorRain, {{"TCH0", Role::Color, -1, -1}}, {}, -1, false, 1, false, true},
       // VFX_VisorSteam (53eceaa4, the SteamMP1 HUD billboard's model particle, MATI f4970293; FS perm 000_0,
       // VS 000_1; vfx/53eceaa4.md): TCH0 Repeat_Texture (wrap repeat) read at uv x CCH0.x, offset by TCH1
       // Macro_Texture (the second raw sample slot, the Indirect role: no CCH warp) and scrolled by the VS's
       // o2.yz, which depends on CCH0/2/3/4 only (the shader computes it). CCH0..4 in VPRM, SMTR-animated by the
       // Ship1 particle variables. No scene copy; the visor composite pass has no fog, so Unfogged.
       {0x53eceaa4, kVisorSteam, {{"TCH0", Role::Color, -1, -1}, {"TCH1", Role::Indirect, -1, -1}}, {}, -1, false,
-       false, 5, false, true},
+       5, false, true},
       // VFX_FrameBuffer_Color_Erosion_Unlit (d8ece62c, the frozen-player HUD effect GENP c23f13f7, MATI
       // eaef3c6e; FS perm 000_0, fog perm 001_0, 002/004 identical to 000 and 003/005 to 001): BCLR's
       // x and y offset the scene copy at the fragment by near / HUD depth x CCH0.xy, read at lod
       // max(0, CCH0.z - 1); rgb = (BCLR.rgb + scene) x vc.rgb x PCMD, alpha max(0, BCLR.a - PMTR row
       // 0's x) x vc.a (the VS's o2 is PMTR row 0). CCH0 in VPRM, animated by SMTR.
       {0xd8ece62c, kFrameBufferColorErosion | kErosion, {{"BCLR", Role::Color, -1, -1}}, {{kSrcErosion, 0, 0}},
-       -1, false, false, 1, true},
+       -1, false, 1, true},
       // VFX_BarrierShield (f197ec38, the Parasite Queen barrier's MATI 6429c234; its refraction perm 002,
       // the material flag MFC0 USE_FRAME_BUFFER_DISTORTION with shield-exterior MFC1 off; build/
       // s-queenbarrier-20261024/SHADER-IMPLEMENTATION.md): TCH0 read at (-2u, 2v) is the pattern (its .b
@@ -816,7 +935,7 @@ const Recipe* RecipeOf(uint32_t shader) {
       // MFC0 the material is refused (no VMAT), never drawn with another perm's maths.
       {0xf197ec38, kBarrierShield,
        {{"TCH0", Role::Color, -1, -1}, {"TCH1", Role::Indirect, -1, -1}},
-       {}, -1, false, false, 1, false, false, true},
+       {}, -1, false, 1, false, false, true},
       // VFX_BarrierGlow (b1eb2b67, the same Parasite Queen barrier's one-variable MATI ba0acbd6; FS perm
       // 000, the non-refraction perm: the material carries neither MFC0 nor MFC1; build/
       // s-queenbarrier-20261024/GLOW-IMPLEMENTATION.md): TCH0 read three times at (-u, v): its .r scrolls
@@ -824,14 +943,14 @@ const Recipe* RecipeOf(uint32_t shader) {
       // No scene copy (the glow adds over the frame, so no scene gate). The VS's displacement is in the
       // CPU feed (AddBarrierGlow); the mesh's vertex colour needs VMSH v2 (PortVfxBarrierGlowReady).
       // CCH0 whole in VPRM v1, animated by SMTR. TCH1 is in the MATI but this perm never reads it.
-      {0xb1eb2b67, kBarrierGlow, {{"TCH0", Role::Color, -1, -1}}, {}, -1, false, false, 1, false, false,
+      {0xb1eb2b67, kBarrierGlow, {{"TCH0", Role::Color, -1, -1}}, {}, -1, false, 1, false, false,
        false, true},
       // VFX_BarrierShield's exterior (b46bb66d, MATI 602b16e3 with MFC1 IS_SHIELD_EXTERIOR: Intro_Reactor's
       // and the Phendrana caves' shields; vfx/b46bb66d.md): both barrier bits. TCH1 read twice at (-u, v)
       // (its .r scrolls the second read, whose .a is the breakup); no scene copy. The VS's band sweep and
       // normal push are in the CPU feed (AddBarrierExterior); the mesh colour needs VMSH v2. CCH0 whole in
       // VPRM v1. Its fog perm (001) is decoded: fogged without DFOG 1, unfogged with.
-      {0xb46bb66d, kBarrierShield | kBarrierGlow, {{"TCH1", Role::Color, -1, -1}}, {}, -1, false, false, 1,
+      {0xb46bb66d, kBarrierShield | kBarrierGlow, {{"TCH1", Role::Color, -1, -1}}, {}, -1, false, 1,
        true, false, false, false, true},
       {0x84e0fe6c, kOpacityTex,
        {{"TCH0", Role::Opacity, -1, -1}},
@@ -1012,7 +1131,7 @@ const Recipe* RecipeOf(uint32_t shader) {
        {}},
       {0xe899b1df, kRamp | kIndirect | kDepthSoften | kOpacityFade,
        {{"TCH0", Role::Ramp, 0, 1}, {"TCH1", Role::Indirect, -1, -1}},
-       {{kSrcFadeX, 2, 0}, {kSrcFadeY, 2, 1}}, -1, false},
+       {{kSrcFadeX, 2, 0}, {kSrcFadeY, 2, 1}}, -1, true},
       {0x3a867837, kRamp | kIndirect,
        {{"TCH0", Role::Ramp, 0, 1}, {"TCH1", Role::Indirect, -1, -1}},
        {}},
@@ -1137,10 +1256,10 @@ const Recipe* RecipeOf(uint32_t shader) {
       // scene-depth soften.
       {0x8278c22d, kPyro,
        {{"TCH0", Role::Color, -1, -1}, {"TCH1", Role::Normal, -1, -1}, {"TCH2", Role::Ramp, -1, -1}},
-       {}, -1, false, false, 1, true},
+       {}, -1, false, 1, true},
       {0x7498e54a, kPyro | kDepthSoften,
        {{"TCH0", Role::Color, -1, -1}, {"TCH1", Role::Normal, -1, -1}, {"TCH2", Role::Ramp, -1, -1}},
-       {}, -1, false, false, 1, true},
+       {}, -1, false, 1, true},
       // VFX_Disintegration (perm 000_0, SPEC-disint-ice.md): TCH0 the mask, PMTR rows 0..3 (the VS
       // passes them as v2..v5). Perm 000 does no depth soften, so SFTD is not read.
       {0xd749057f, kDisintegration, {{"TCH0", Role::Color, -1, -1}}, {}},
@@ -1435,13 +1554,14 @@ public:
     if (value.fourcc == F("SEMR") && value.args.size() == 2) {
       m_semrPos = &value.args[0];
     }
-    // A swoosh evaluates no per-particle variables of its own: its PAP0..3 and PAP9 reads (the
-    // port-only ADV9 and IAVn slots) have nothing behind them.
+    // A swoosh's PAP0..3 and PAP9 reads (int ids 0..3, real id 8) have nothing behind them
+    // unless it defines IAV0..3 or ADV8 (its per-point variables, m_swooshVars).
     if (m_swoosh && value.args.empty() && (type == Type::Real || type == Type::Int)) {
       static constexpr uint32_t kRead[] = {F("PAP0"), F("PAP1"), F("PAP2"), F("PAP3"), F("PAP9")};
-      for (const uint32_t read : kRead) {
-        if (value.fourcc == read && (type == Type::Int || read == F("PAP9"))) {
-          why = EffectFourCCString(read) + " in a swoosh";
+      for (uint32_t n = 0; n < 5; ++n) {
+        const uint32_t id = n == 4 ? 8 : 9 + n;
+        if (value.fourcc == kRead[n] && (type == Type::Int || n == 4) && (m_swooshVars & 1u << id) == 0) {
+          why = EffectFourCCString(kRead[n]) + " in a swoosh";
           return false;
         }
       }
@@ -1502,6 +1622,33 @@ public:
       out.insert(out.end(), kept.begin(), kept.end());
       return true;
     }
+    // An int KPIN (CIEKeepInitial 0x2a98f0) is the same per-particle latch. PKPR is real, so it
+    // latches ITRL(x, 1) and RTOI(.., 1) reads it back: an int's float is exact below 2^24,
+    // and the product of an integral float and 1 has nothing for RTOI's truncation to drop.
+    if (m_keeps && m_spawnSysItems == nullptr && type == Type::Int && value.fourcc == F("KPIN") &&
+        value.args.size() == 1) {
+      const uint32_t first = m_keepNext;
+      std::vector<uint8_t> kept;
+      if (!Element(value.args[0], type, kept, why)) {
+        m_keepNext = first;
+        return false;
+      }
+      if (m_keepNext == kKeepSlots) {
+        m_keepNext = first;
+        why = "more than " + std::to_string(kKeepSlots) + " per-particle KPINs";
+        return false;
+      }
+      AppendBE32(out, F("RTOI"));
+      AppendBE32(out, F("PKPR"));
+      AppendBE32(out, m_keepNext++);
+      AppendBE32(out, F("ITRL"));
+      out.insert(out.end(), kept.begin(), kept.end());
+      AppendBE32(out, F("CNST"));
+      AppendBE32(out, FloatBits(1.0f));
+      AppendBE32(out, F("CNST"));
+      AppendBE32(out, FloatBits(1.0f));
+      return true;
+    }
     // IRSN(x) is CREInitialRandomSign: a sign drawn once at frame 0 and kept in the particle's
     // variable memory, which the port-only PIRS keeps in a PKPR-counter slot (never latched by
     // PKPR's birth latch: it draws at frame 0). With no per-particle slots (a system's own
@@ -1555,6 +1702,20 @@ public:
     if (type == Type::Vector && value.args.empty() && SystemRealRead(value.fourcc) >= 0) {
       AppendBE32(out, F("PSYV"));
       AppendBE32(out, uint32_t(SystemRealRead(value.fourcc)));
+      return true;
+    }
+    // An int PSAn is the system's own additional int n (GetIntElement 0x26a910:
+    // AddRefVar(ctx 0, int, n)), which its SVIn sets. The port-only PSYI and n.
+    if (type == Type::Int && value.args.empty() && SystemRealRead(value.fourcc) >= 0) {
+      AppendBE32(out, F("PSYI"));
+      AppendBE32(out, uint32_t(SystemRealRead(value.fourcc)));
+      return true;
+    }
+    // SELT is CIEElapsedTicks(ctx 0) 0x2a9f04, the system context's tick count: the tick sets it
+    // to the generator's frame (+0x2c, TickSystem_Complete 0x24acc0) and steps both together
+    // (0x24aee8..0x24aef8). That frame is retail's GEMT (x74_curFrame).
+    if (type == Type::Int && value.args.empty() && value.fourcc == F("SELT") && m_gpsm) {
+      AppendBE32(out, F("GEMT"));
       return true;
     }
     // Reads of the port's state, in retail's space, taken into Remastered's.
@@ -1748,17 +1909,20 @@ public:
     // KEYF (version 2) is CREKeyframeInput 0x296490: the 30-byte header (version, an unused word,
     // loop and an unused byte, N at +10, loop start A, start B and rate R as floats, then the key
     // count) with N keys, and an input element. The port-only PKYF: the loop byte, N, A, B, R, the
-    // N keys, then the input. Another version builds no element in Remastered.
-    if (value.fourcc == F("KEYF") && type == Type::Real && value.args.size() == 2 &&
+    // N keys, then the input. Another version builds no element in Remastered. A vector KEYF
+    // (CVEKeyframeInput 0x2a18fc, GetValue 0x2a19b8) is the same with three floats per key, in
+    // Remastered's numbers like any vector tree.
+    if (value.fourcc == F("KEYF") && (type == Type::Real || type == Type::Vector) && value.args.size() == 2 &&
         value.args[0].kind == EffectValue::Kind::Keys) {
       const uint8_t* p = m_data + value.args[0].offset;
       const size_t size = value.args[0].size;
+      const size_t floats = type == Type::Vector ? 3 : 1;
       if (size < 30 || ReadLE32(p) != 2) {
         why = "KEYF of a version other than 2";
         return false;
       }
       const uint32_t n = ReadLE32(p + 10);
-      if (n < 1 || n != ReadLE32(p + 26) || size - 30 != size_t(n) * 4) {
+      if (n < 1 || n != ReadLE32(p + 26) || size - 30 != size_t(n) * 4 * floats) {
         why = "KEYF whose key count differs from N";
         return false;
       }
@@ -1768,8 +1932,8 @@ public:
       AppendBE32(out, ReadLE32(p + 14));
       AppendBE32(out, ReadLE32(p + 18));
       AppendBE32(out, ReadLE32(p + 22));
-      for (uint32_t i = 0; i < n; ++i) {
-        AppendBE32(out, ReadLE32(p + 30 + size_t(i) * 4));
+      for (size_t i = 0; i < size_t(n) * floats; ++i) {
+        AppendBE32(out, ReadLE32(p + 30 + i * 4));
       }
       return Element(value.args[1], Type::Real, out, why);
     }
@@ -1979,6 +2143,29 @@ public:
       AppendBE32(out, F("PSDT"));
       return true;
     }
+    // VISQ (CREVisibilityQuery 0x299790) is the system's occlusion-query visibility, 1 before
+    // any result; its int (0x2619e8) is read and unused. A generator's port-only PVSQ; a swoosh
+    // or electric issues no queries in the port.
+    if (value.fourcc == F("VISQ") && type == Type::Real) {
+      if (!m_gpsm || value.args.size() != 1) {
+        why = "VISQ outside a generator needs Remastered's occlusion queries";
+        return false;
+      }
+      AppendBE32(out, F("PVSQ"));
+      return true;
+    }
+    // A real GTCP (CREGetTotalCreatedParticleCount 0x297434) is the generator's total created
+    // particles (vfunc +0x50, GetTotalParticlesCreated 0x24db30) as a float, 0 with none. In a
+    // generator's EMTR it is the port-only PGTC (one less than retail's count, which Remastered
+    // raises only at the creation loop's tail 0x24c1c8); elsewhere that offset is unverified.
+    if (value.fourcc == F("GTCP") && type == Type::Real && value.args.empty()) {
+      if (!m_gpsm || !m_emtr) {
+        why = "a real GTCP outside a generator's EMTR";
+        return false;
+      }
+      AppendBE32(out, F("PGTC"));
+      return true;
+    }
     const Signatures& elements = ElementsOf(type);
     const auto found = elements.find(value.fourcc);
     if (found == elements.end()) {
@@ -2150,7 +2337,7 @@ public:
     return true;
   }
 
-  // The port-only direction elements (ANCR, ANCM, MPAC, MPCN, RNDV). std::nullopt when `value` is none of them.
+  // The port-only direction elements (ANCR, ANCM, ANCV, MPAC, MPCN, RNDV). std::nullopt when `value` is none of them.
   std::optional<bool> DirectionElement(const EffectValue& value, Type type, std::vector<uint8_t>& out,
                                      std::string& why) const {
     // ANCR(REUL(x, y, z, #00), x range, y range, magnitude): the port-only ANCR
@@ -2165,6 +2352,32 @@ public:
     if (value.fourcc == F("ANCM") && type == Type::Vector && value.args.size() == 4) {
       AppendBE32(out, F("PANM"));
       return ConeRotation(value.args[0], out, why) && ShapedArgs(F("PANM"), type, 3, &value.args[1], out, why);
+    }
+    // ANCV(REUL, A, B, magnitude, polar count, polar variance, azimuth count, azimuth variance,
+    // shuffle): the port-only PANV (CVEAngleConeMinMaxWithVariance::GetValue 0x29f5c0), the REUL as
+    // three angles like PANM's. Init 0x2a69b8 runs as for ASPV, but its Compile 0x29fa1c
+    // (Compile2d) only for a SEMR's position: elsewhere a constant 0 count stays 0 (GetValue makes
+    // it 1) and has no shuffler.
+    if (value.fourcc == F("ANCV") && type == Type::Vector && value.args.size() == 9) {
+      Sections grid;
+      uint32_t counts[2] = {1, 1};
+      const bool known[2] = {ConstWord(value.args[4], counts[0]), ConstWord(value.args[6], counts[1])};
+      if (&value != m_semrPos && ((known[0] && counts[0] == 0) || (known[1] && counts[1] == 0))) {
+        const EffectValue& flag = value.args[8];
+        if (flag.kind != EffectValue::Kind::Byte && flag.kind != EffectValue::Kind::Word) {
+          why = "ANCV with a shuffle flag that is not a byte";
+          return false;
+        }
+        if ((known[0] && counts[0] > 255) || (known[1] && counts[1] > 255)) {
+          why = "ANCV with a constant count over 255 (Remastered keeps it in a byte)";
+          return false;
+        }
+      } else if (!Sectioned2d("ANCV", value, 4, 6, 8, grid, why)) {
+        return false;
+      }
+      AppendBE32(out, F("PANV"));
+      // The arguments after the REUL sit two places on in PANV's shape (the REUL is three angles).
+      return ConeRotation(value.args[0], out, why) && SectionedArgs(F("PANV"), type, value.args, 1, 8, 2, grid, out, why);
     }
     // MPAC(x centre, y centre, x range, y range, magnitude): the port-only PMAC runs
     // MPT_CVEAngleCone-like 0x29fec0 as is, a direction in retail's space (the MPCB around it
@@ -2309,9 +2522,10 @@ public:
 
   // CMVECurlNoise(V, mode, t) as the port-only PCRM (mode, V, t) around V's curl-noise evaluator
   // as the port-only PCRN (P, F, A, then the field: NONE, or CNST and the VECF's id), Remastered's
-  // CVECurlNoise_Perlin3d (slice 0, no octaves). The other slices and the octave classes are not
-  // ported. PCRN's vectors are in Remastered's numbers; V, like any mod-vector argument, is
-  // turned into the port's space around PCRN.
+  // CVECurlNoise_Perlin3d (slice 0, no octaves), the 2d slices as the port-only PCRS and slice 0
+  // with octaves as PCRO. The octave slices are not ported. The noise's vectors are in
+  // Remastered's numbers; V, like any mod-vector argument, is turned into the port's space
+  // around it.
   bool CurlNoise(const EffectValue& value, std::vector<uint8_t>& out, std::string& why) const {
     const std::vector<EffectValue>& a = value.args;
     const auto isByte = [](const EffectValue& v) {
@@ -2323,9 +2537,28 @@ public:
       why = "CRLN in a form not ported";
       return false;
     }
-    if (a[0].args[1].word != 0) {
-      why = "CRLN slice " + std::to_string(a[0].args[1].word) + " not ported";
+    const uint32_t slice = a[0].args[1].word;
+    if (slice > 3 || (slice != 0 && !IsElement(a[4], F("NONE")))) {
+      why = "CRLN slice " + std::to_string(slice) + (slice > 3 ? "" : " with octaves") + " not ported";
       return false;
+    }
+    if (slice != 0) {
+      // ReadCurlNoiseVectorParticleEvaluator 0x26ea20 releases the VECF of a slice.
+      std::vector<uint8_t> noise;
+      AppendBE32(noise, F("PCRS"));
+      AppendBE32(noise, slice);
+      if (!Element(a[2], Type::Vector, noise, why) || !Element(a[3], Type::Real, noise, why) ||
+          !Element(a[6], Type::Vector, noise, why)) {
+        return false;
+      }
+      AppendBE32(out, F("PCRM"));
+      AppendBE32(out, a[7].word);
+      if (m_mp1Space) {
+        out.insert(out.end(), noise.begin(), noise.end());
+      } else {
+        Basis(F("BSIS"), noise, out);
+      }
+      return Element(a[8], Type::Real, out, why);
     }
     if (!IsElement(a[4], F("NONE"))) {
       // Octaves: the port-only PCRO (P, freq, octaves, gain, A). The VECF is released in
@@ -2566,9 +2799,9 @@ public:
   // An ELC2's COLR (tag 3) reads slot 1 = the bolt's end - start (UpdateBolt 0xb77638 sets ctx+0x70
   // = param_2[3] - param_2[2] and calls the colour element with the bolt's age), the lifetime the
   // port's bolt sets, so its offset is 0.
-  // A generator's own SVCn/SVRn/SVIn/SVVn (CAddVarSystem's variables) is evaluated by CAddVarSystem
-  // ::Init/Update 0x278438/0x278638 on the generator's context, so its tag 1 is slot 0 = the system's
-  // PSLT, which CElementGen::PortEvalSys puts in CParticleGlobals: offset 0.
+  // A generator's or swoosh's own SVCn/SVRn/SVIn/SVVn (CAddVarSystem's variables) is evaluated by
+  // CAddVarSystem::Init/Update 0x278438/0x278638 on the system's context, so its tag 1 is slot 0 =
+  // the system's PSLT, which CElementGen/CParticleSwoosh::PortEvalSys put in CParticleGlobals: offset 0.
   static int LifetimeOffset(bool part, bool swoosh, bool electric, const EffectProperty& property) {
     if (electric && property.tag == 3 && property.fourcc == F("COLR")) {
       return 0;
@@ -3068,7 +3301,10 @@ public:
       Basis(fourcc == F("PMSC") ? F("BSSC") : F("BSIS"), inner, out);
       return true;
     }
-    return Element(value[0], type.type, out, why);
+    m_emtr = fourcc == F("EMTR");
+    const bool ok = Element(value[0], type.type, out, why);
+    m_emtr = false;
+    return ok;
   }
 
   // A swoosh or electric child a spawn table starts: retail has one of each
@@ -3415,6 +3651,10 @@ public:
       AppendBE32(out, fourcc);
       return ComponentRotation(value.args[0], node, out, why) && ComponentRotation(value.args[1], node, out, why);
     }
+    if (fourcc == F("KPIN") && value.args.size() == 1) {
+      AppendBE32(out, fourcc);
+      return ComponentRotation(value.args[0], node, out, why);
+    }
     if (fourcc == F("REUL") && value.args.size() == 4) {
       const EffectValue& order = value.args[3];
       if ((order.kind != EffectValue::Kind::Byte && order.kind != EffectValue::Kind::Word) || order.word != 0) {
@@ -3459,7 +3699,8 @@ public:
   // varying part sits under KPIN is therefore kept whole. SUST evaluates on the system's frame
   // (CRESolveUsingSystemTime 0x298ef8), the frame the port evaluates swoosh elements on, so it is
   // dropped; a timed SINE outside it would run on the point's age and is left out. EXTR and INTR are
-  // both the orientation SetOrientation gives under XFMD 2.
+  // both the orientation SetOrientation gives under XFMD 2, unless the swoosh has an INTR property
+  // (PSIR): bit 2 marks INTR, which reads that system rotation and not the external one.
   bool SwooshZRotation(const EffectValue& prot, uint32_t& flags, std::vector<uint8_t>& out, std::string& why) const {
     const EffectValue* value = &prot;
     flags = 0;
@@ -3470,7 +3711,7 @@ public:
     if (IsElement(*value, F("RADD")) && value->args.size() == 2 &&
         (IsElement(value->args[0], F("EXTR")) || IsElement(value->args[0], F("INTR"))) &&
         value->args[0].args.empty()) {
-      flags |= 2;
+      flags |= IsElement(value->args[0], F("INTR")) ? 6 : 2;
       value = &value->args[1];
     }
     uint32_t word = 0;
@@ -3591,7 +3832,8 @@ public:
 
   // XFMD, Remastered's transform mode (build/mpr/vfx/RESOLVED-xfmd.md): 3 keeps
   // the particles in emitter space, 4 does too at unit scale with SMVR as the
-  // mover. Written only for those two; 1, 2 and 5 draw as retail does. With 4,
+  // mover. Written only for those two; 1, 2 and 5 draw as retail does (a GPSM's
+  // forced 1 is PartSystemMode's). With 4,
   // PSMV carries the mover (none: the particles sit at the origin, unrotated),
   // except for the identity SMVR, which is the emitter's transform as it stands.
   void Transform(const EffectProperty& xfmd, const EffectProperty* mover, const EffectNode& node,
@@ -3622,6 +3864,32 @@ public:
       return;
     }
     PutList(out, F("PSMV"), 1, items);
+  }
+
+  // EMVR, XFMD 4's emitter mover (desc+0xa0, SetupTransformMode 0x289668), as the port-only PEMR:
+  // CNST 1 and the mover as Mover() writes it. It is a system-scoped SMOV like SMVR; its position
+  // is vec 0x12 and its rotation Q_l, which CreateNewParticles bakes into each particle at spawn
+  // (pos = Q_l emtr + vec12, the velocity turned by Q_l). With no SMVR they are also the system
+  // translation and rotation (+0x3c 0x289838, +0x38 0x289a60). Only that case is written: every
+  // part EMVR has no SMVR beside it, and with one +0x3c composes the two (0x289954).
+  void EmitterMover(const EffectProperty& emvr, const EffectProperty* xfmd, bool smvr, const EffectNode& node,
+                    std::vector<uint8_t>& out, std::vector<std::string>& dropped) const {
+    uint32_t mode = 2;
+    if (xfmd == nullptr || !SmallConst(*xfmd, mode) || mode != 4) {
+      dropped.push_back("EMVR: not XFMD 4");
+      return;
+    }
+    if (smvr) {
+      dropped.push_back("EMVR with an SMVR");
+      return;
+    }
+    std::vector<uint8_t> items;
+    std::string why;
+    if (emvr.value.size() != 1 || !Mover(emvr.value[0], node, items, why)) {
+      dropped.push_back("EMVR: " + (why.empty() ? "not SMOV" : why));
+      return;
+    }
+    PutList(out, F("PEMR"), 1, items);
   }
 
   // The count-prefixed list `CNST n, items` of a port-only property.
@@ -4099,10 +4367,6 @@ public:
       return found;
     };
     const auto cch0 = mati.vectors.count("CCH0") ? mati.vectors.at("CCH0") : std::array<float, 4>{};
-    if (recipe->unitCch0 && (cch0[2] != 1.0f || cch0[3] != 0.0f)) {
-      m_approximated.push_back(std::string("VMAT: shader ") + shaderText + " has a fade gain/bias the renderer lacks");
-      return false;
-    }
     // A recipe read against one material permutation: only the MATI whose header flags select it is
     // converted. f197ec38's refraction is the MFC0 (USE_FRAME_BUFFER_DISTORTION) perm 002; a material
     // without MFC0 draws perm 000's displacement and one with MFC1 (IS_SHIELD_EXTERIOR, its own shader
@@ -4309,12 +4573,6 @@ public:
     if (lit != 0 || recipe->litPerVertex) {
       features = (features | kParticleLit) & ~kAlreadyExposed;
     }
-    if (recipe->frameBuffer) {
-      if (cch0[0] != 0.0f || cch0[1] != 0.0f) {
-        m_approximated.push_back(std::string("VMAT: shader ") + shaderText + "'s scene warp dropped (drawn as a multiply)");
-      }
-      blend = kBlendMultiply;
-    }
     uint32_t spriteCenter = 0;
     if (const EffectProperty* sctr = find(F("SCTR"))) {
       uint32_t word = 0;
@@ -4355,7 +4613,7 @@ public:
 
     // The blob.
     std::vector<uint8_t> blob;
-    const bool opacityGainBias = mati.shader == kPowerBallShader;
+    const bool opacityGainBias = recipe->cch0GainBias;
     const bool alphaGamma = recipe->alphaGamma > 0.0f || recipe->litPerVertex;
     AppendBE32(blob, recipe->litPerVertex ? 5 : alphaGamma ? 4 : opacityGainBias ? 3 : 2);
     AppendBE32(blob, features);
@@ -4660,20 +4918,15 @@ public:
       }
     }
 
-    // SSZE and ITEN are real elements as they are; VORN is ORNT's byte.
-    for (const uint32_t fourcc : {F("SSZE"), F("ITEN")}) {
-      const std::string name = EffectFourCCString(fourcc);
-      const EffectProperty* property = swoosh && fourcc == F("SSZE") ? nullptr : find(fourcc);
-      if (property == nullptr) {
-        continue;
-      }
+    // ITEN is a real element as it is (the generator writes SSZE); VORN is ORNT's byte.
+    if (const EffectProperty* property = find(F("ITEN"))) {
       std::vector<uint8_t> bytes;
       std::string why;
       if (property->value.size() == 1 && Element(property->value[0], Type::Real, bytes, why)) {
-        AppendBE32(result.part, fourcc);
+        AppendBE32(result.part, F("ITEN"));
         result.part.insert(result.part.end(), bytes.begin(), bytes.end());
       } else {
-        result.dropped.push_back(name + ": " + (why.empty() ? "not one element" : why));
+        result.dropped.push_back("ITEN: " + (why.empty() ? std::string("not one element") : why));
       }
     }
     if (swoosh) {
@@ -4752,14 +5005,26 @@ public:
   }
 
   struct PartVar {
-    uint32_t id;           // 0..8 ADV1..9, 9..12 IAV0..3
+    uint32_t id;           // 0..8 ADV1..9 (a swoosh's ADV0..8), 9..12 IAV0..3, 13..16 VAV0..3, 17..20 CAV0..3
     uint32_t reads = 0;    // the variables its tree reads (m_varReads)
     uint32_t flags = 0;    // ConstantFlags
     bool converted = false;
     size_t begin = 0, end = 0;     // ADV1..8: its retail property in `out` (to take back out)
-    std::vector<uint8_t> element;  // ADV9 and IAVn: the converted tree
+    std::vector<uint8_t> element;  // ADV9, IAVn, VAVn, CAVn: the converted tree
   };
-  // ADV1..9 are 0..8, IAV0..3 9..12, anything else -1.
+  static Type PartVarType(uint32_t id) {
+    return id >= 17 ? Type::Color : id >= 13 ? Type::Vector : id >= 9 ? Type::Int : Type::Real;
+  }
+  static std::string PartVarName(uint32_t id, bool swoosh) {
+    if (id < 9) {
+      return "ADV" + std::to_string(swoosh ? id : id + 1);
+    }
+    const char* kinds[] = {"IAV", "VAV", "CAV"};
+    return kinds[(id - 9) / 4] + std::to_string((id - 9) % 4);
+  }
+  // ADV1..9 are 0..8, IAV0..3 9..12, VAV0..3 13..16, CAV0..3 17..20 (CreateGPSM AddDefinedVar;
+  // no shipped element reads a VAV or CAV, but they run, and a RAND in one draws), anything
+  // else -1.
   static int PartVarId(uint32_t fourcc) {
     for (uint32_t n = 0; n < 9; ++n) {
       const char name[5] = {'A', 'D', 'V', char('1' + n), 0};
@@ -4769,11 +5034,32 @@ public:
     }
     for (uint32_t n = 0; n < 4; ++n) {
       const char name[5] = {'I', 'A', 'V', char('0' + n), 0};
+      const char vav[5] = {'V', 'A', 'V', char('0' + n), 0};
+      const char cav[5] = {'C', 'A', 'V', char('0' + n), 0};
       if (fourcc == F(name)) {
         return int(9 + n);
       }
+      if (fourcc == F(vav)) {
+        return int(13 + n);
+      }
+      if (fourcc == F(cav)) {
+        return int(17 + n);
+      }
     }
     return -1;
+  }
+  // A swoosh's per-point variables (CreateSWSH 0x2db8a4 AddDefinedVar: its ADVn is real id n,
+  // read by PAP(n + 1), unlike a GPSM's ADVn): ADV0..8 are 0..8, IAV/VAV/CAV as PartVarId,
+  // anything else -1.
+  static int SwooshVarId(uint32_t fourcc) {
+    for (uint32_t n = 0; n < 9; ++n) {
+      const char name[5] = {'A', 'D', 'V', char('0' + n), 0};
+      if (fourcc == F(name)) {
+        return int(n);
+      }
+    }
+    const int id = PartVarId(fourcc);
+    return id >= 9 ? id : -1;
   }
 
   // What Generator writes and the properties it reads set, shared by the functions it is split
@@ -4796,9 +5082,9 @@ public:
     // An ELC2 (CParticleElectric2) is written as an ELSC stream that starts with the port-only PEL2
     // marker and carries the ELC2 fields; it draws through its VMAT like a swoosh.
     const bool electric = type == F("ELSC") && node.form == F("ELC2");
-    // Remastered builds a real scene light for every generator with a point LTYP, from
-    // LCLR*LINT, LIRD/LORD and LFOT. Those become the port-only PHDR/PIR0/POR0/PHFO that
-    // CElementGen carries as an HDR light (spot lights stay on the retail GX path).
+    // Remastered builds a real scene light for every generator with a point or spot LTYP, from
+    // LCLR*LINT, LIRD/LORD and LFOT (and a spot's LIAN/LOAN cone). Those become the port-only
+    // PHDR/PIR0/POR0/PHFO (PLIA/PLOA) that CElementGen carries as an HDR light.
     std::vector<uint8_t> nestedLightInnerRadius;
     std::vector<uint8_t> nestedLightOuterRadius;
     bool nestedHdrLight = false;
@@ -4808,8 +5094,14 @@ public:
     // LSPS: the light block's +0x50, CLight+0x74, which widens the light's specular lobe
     // (roughness r + (1 - r) * LSPS in the PBR shaders). A CNST real's bits; 0 = none.
     uint32_t nestedLightWiden = 0;
+    // LIAN/LOAN of a spot LTYP (raw 3): the full cone angles in degrees, CNST real bits.
+    bool nestedLightSpot = false;
+    uint32_t nestedLightInnerAngle = 0;
+    uint32_t nestedLightOuterAngle = 0;
     // The light is built once and never updated (port-only PLON); see NestedLight.
     bool lightOnce = false;
+    // KILL is a constant true (port-only PKIL); see the KILL consume.
+    bool kill = false;
     // FXBR/FXBM/FXBO/FXBI, the system's own bounds (FixedBounds): the constant box in the port's
     // space (min then max), written as PFXB, and whether children's bounds are left out (PFXC).
     std::optional<std::array<float, 6>> fixedBounds;
@@ -4856,8 +5148,11 @@ public:
     uint32_t depthBias = 0;  // DBIS as float bits (nonzero), port-only PDBS
     bool depthBiasUsesDepthRange = true;  // DBSO (desc+0x6b bit 2), port-only PDBO when false
     uint32_t sortBias = 0;   // SBIS as float bits (nonzero), port-only PSBS
+    uint32_t sleepDistance = 0;  // a nonzero constant SLDS as float bits, port-only PSLD
     const EffectProperty* mover = nullptr;
+    const EffectProperty* emitterMover = nullptr;  // EMVR, written as PEMR after the loop
     std::vector<uint32_t> portOnly;  // material data, written only with a VMAT
+    bool drawsSsze = false;          // an SSZE that shapes the quad, which only a VMAT draws
     bool anth = false;               // an ANTH, drawn only by a header material
     const bool textured = retail.count(F("TEXR")) != 0;
     // SetupPrimitiveTypes 0x29069c and FixAndClean 0x2908a4 select geometry,
@@ -4905,6 +5200,12 @@ public:
       AppendBE32(s.out, F("CNST"));
       AppendBE32(s.out, 1);
     }
+    if (type == F("ELSC")) {
+      // Every converted electric, ELSM-form ones too, which otherwise read like retail streams.
+      AppendBE32(s.out, F("PIRN"));
+      AppendBE32(s.out, F("CNST"));
+      AppendBE32(s.out, 1);
+    }
     NestedLight(s);
     FixedBounds(s);
     NodeModes(s);
@@ -4943,6 +5244,11 @@ public:
       AppendBE32(s.out, guidWord);
     }
     NestedLightWrites(s);
+    if (s.kill) {
+      AppendBE32(s.out, F("PKIL"));
+      AppendBE32(s.out, F("CNST"));
+      AppendBE32(s.out, 1);
+    }
     if (s.fixedBounds) {
       AppendBE32(s.out, F("PFXB"));
       AppendBE32(s.out, F("CNST"));
@@ -4962,7 +5268,7 @@ public:
     return std::move(s.result);
   }
 
-  // The nested HDR light of a point LTYP (the state's nestedLight*).
+  // The nested HDR light of a point or spot LTYP (the state's nestedLight*).
   void NestedLight(GeneratorState& s) const {
     if (s.part) {
       auto unique = [&s](uint32_t fourcc) -> const EffectProperty* {
@@ -4988,10 +5294,17 @@ public:
       std::string why;
       std::vector<uint8_t> colorProbe;
       std::vector<uint8_t> intensityProbe;
-      s.nestedHdrLight = ltyp != nullptr && lfot != nullptr && lird != nullptr && lord != nullptr &&
+      // Raw LTYP 2 is a point, 3 a spot (GetLight 0x2df3f0's type byte 1 / anything else).
+      const bool typed = ltyp != nullptr && SmallInteger(*ltyp, lightType) && (lightType == 2 || lightType == 3);
+      const bool spot = typed && lightType == 3;
+      const EffectProperty* lian = spot ? unique(F("LIAN")) : nullptr;
+      const EffectProperty* loan = spot ? unique(F("LOAN")) : nullptr;
+      const bool cone = !spot || (lian != nullptr && loan != nullptr && lian->value.size() == 1 &&
+                                  loan->value.size() == 1 && ConstWord(lian->value[0], s.nestedLightInnerAngle) &&
+                                  ConstWord(loan->value[0], s.nestedLightOuterAngle));
+      s.nestedHdrLight = typed && cone && lfot != nullptr && lird != nullptr && lord != nullptr &&
                        lclr != nullptr && lint != nullptr && lclr->value.size() == 1 &&
-                       lint->value.size() == 1 &&
-                       SmallInteger(*ltyp, lightType) && lightType == 2 && SmallInteger(*lfot, falloff) &&
+                       lint->value.size() == 1 && SmallInteger(*lfot, falloff) &&
                        falloff <= 3 && lird->value.size() == 1 && lord->value.size() == 1 &&
                        Element(lclr->value[0], Type::Color, colorProbe, why) &&
                        Element(lint->value[0], Type::Real, intensityProbe, why) &&
@@ -4999,6 +5312,7 @@ public:
                        Element(lord->value[0], Type::Real, s.nestedLightOuterRadius, why);
       if (s.nestedHdrLight) {
         s.nestedLightFalloff = falloff;
+        s.nestedLightSpot = spot;
         const EffectProperty* lixp = unique(F("LIXP"));
         uint32_t inverseExposed = 0;
         s.nestedLightInverseExposure = lixp != nullptr && SmallInteger(*lixp, inverseExposed) && inverseExposed != 0;
@@ -5007,8 +5321,12 @@ public:
         if (lsps == nullptr || lsps->value.size() != 1 || !ConstWord(lsps->value[0], s.nestedLightWiden)) {
           s.nestedLightWiden = 0;
         }
-      } else if (ltyp != nullptr && SmallInteger(*ltyp, lightType) && lightType == 2) {
-        s.result.dropped.push_back("PHDR: point light lacks constant LFOT or supported LCLR/LINT/LIRD/LORD");
+      } else if (typed) {
+        s.nestedLightInnerAngle = 0;
+        s.nestedLightOuterAngle = 0;
+        s.result.dropped.push_back(spot ? "PHDR: spot light lacks constant LFOT/LIAN/LOAN or supported "
+                                          "LCLR/LINT/LIRD/LORD"
+                                        : "PHDR: point light lacks constant LFOT or supported LCLR/LINT/LIRD/LORD");
       }
       // CParticleLight::Create 0x2def58 builds every generator's light in its ctor; only
       // TickSystem_Light 0x24af3c calls CParticleLight::Update. Compile 0x290e4c picks that tick
@@ -5116,6 +5434,11 @@ public:
       s.additive = s.additive || property.fourcc == F("AALP");
     }
     m_swoosh = s.node.form == F("SWSH");
+    m_swooshVars = 0;
+    for (const EffectProperty& property : s.node.properties) {
+      const int id = m_swoosh ? SwooshVarId(property.fourcc) : -1;
+      m_swooshVars |= id >= 0 ? 1u << id : 0u;
+    }
     m_gpsm = s.node.form == F("GPSM");
     m_xfmd = 2;
     m_pofs = 0;
@@ -5134,6 +5457,10 @@ public:
       if (property.fourcc == F("POFS") && !property.value.empty()) {
         m_pofs = std::max(m_pofs, IsConstantValue(property.value[0]) ? 1u : 2u);
       }
+    }
+    m_partSys = m_gpsm ? PartSystemMode(s.node, m_partSysWhy) : -1;
+    if (m_partSys == 1) {
+      m_xfmd = 1;
     }
     // An INTT written as POFS (below, IntIsPofs) is the offset EMRV adds.
     for (const EffectProperty& property : s.node.properties) {
@@ -5155,7 +5482,7 @@ public:
 
   // The system variables (the state's sysItems), in the order CElementGen evaluates them.
   void ReadSystemItems(GeneratorState& s) const {
-    if (s.part) {
+    if (s.part || s.swoosh) {
       struct Pending {
         const EffectProperty* property;
         uint32_t type;
@@ -5241,9 +5568,18 @@ public:
     if (StructureProperty(s, property, fourcc)) {
       return;
     }
-    const int varId = s.part ? PartVarId(fourcc) : -1;
-    // ADV9 and IAV0..3 have no retail property: they are written in the port-only PPVR.
-    if (varId >= 8) {
+    const int varId = s.part ? PartVarId(fourcc) : s.swoosh ? SwooshVarId(fourcc) : -1;
+    // ADV9 and IAV0..3, and all of a swoosh's, have no retail property: they are written in the
+    // port-only PPVR.
+    if (varId >= 8 || (s.swoosh && varId >= 0)) {
+      // VAVn = PWSL (744cc8aa): CVEParticleWorldSpaceLocation (0x2a1d68, built by GetVectorElement
+      // 0x251d94) transforms the particle's position, drawing no RNG and keeping no state, and only
+      // PTVA/BSVA/SYVA (0x2520ac) read a vector variable back, which no shipped effect has: it is
+      // never observed and converts to nothing.
+      if (PartVarType(varId) == Type::Vector && property.value.size() == 1 && IsElement(property.value[0], F("PWSL")) &&
+          property.value[0].args.empty()) {
+        return;
+      }
       ParticleVariable(s, property, varId);
       return;
     }
@@ -5256,10 +5592,6 @@ public:
   // The flags and render state a property sets: true where it is taken.
   bool RenderStateProperty(GeneratorState& s, const EffectProperty& property,
                            uint32_t fourcc) const {
-    if (s.swoosh && (fourcc == F("ADV9") || (PartVarId(fourcc) >= 9))) {
-      s.result.dropped.push_back(EffectFourCCString(fourcc) + ": a swoosh has no per-particle variables");
-      return true;
-    }
     if (s.inactivePrimitive && fourcc == F("SIZE")) {
       // Both sprite Fixup and transformed Fixup (0x28ec98) consume SIZE.
       // Only inactive primitives clear it; do not substitute SIZE=0 to hide draws.
@@ -5361,6 +5693,18 @@ public:
       s.out.insert(s.out.end(), inner.begin(), inner.end());
       return true;
     }
+    // IEVM caps the length of the delta ISVF scales (CreateNewParticles 0x24a540; ITPE's spread
+    // reads it unclamped). CreateGPSM 0x258438 keeps only a constant above zero: anything else is
+    // inert. The port-only PIEV carries the float bits.
+    if (s.part && fourcc == F("IEVM")) {
+      uint32_t bits = 0;
+      if (property.value.size() == 1 && ConstWord(property.value[0], bits) && FloatFromBits(bits) > 0.f) {
+        AppendBE32(s.out, F("PIEV"));
+        AppendBE32(s.out, F("CNST"));
+        AppendBE32(s.out, bits);
+      }
+      return true;
+    }
     // DBIS is the particle depth bias (desc+0xd4 of CreateGPSM, the SWSH one too; constant only),
     // a world-unit shift along the view depth that CParticleSceneNode::ConstructDepthBias 0x2b1004
     // turns into a projection m22 offset (CScopedGraphicsDepthBias::CalculateProjMatrixDepthBias
@@ -5390,12 +5734,17 @@ public:
     // OVEC (CreateGPSM 0x25a1c4, var 0x32 at desc+0x388) is a sprite's vector orientation axis:
     // CParticleStaticRenderState 0x28c4f0 makes a sprite vector-oriented when it is authored, ORNT 0
     // too, and the instance writer 0x2b4948 puts its value where the velocity would go. The port-only
-    // POVC, in the port's space. A planar square or model has no vector orientation.
+    // POVC, in the port's space. A planar square or model has no vector orientation: every other
+    // desc+0x388 load (UpdateSpriteRenderState 0x247668, CopyPerSpriteDataToSpriteRenderData
+    // 0x2478bc/0x248324, the instance writer 0x2b45b8/0x2b4948) is on the sprite path, and
+    // CreateNewParticles 0x24aae0 only writes the normalized velocity into its slot (ORNT 1). The
+    // shipped OVEC on a planar square or model is PLCD or a constant (no random draws), so it is
+    // consumed with no effect.
     if (s.part && fourcc == F("OVEC")) {
       std::vector<uint8_t> inner;
       std::string why = "not one element";
       if (s.node.primitiveType != 1) {
-        s.result.dropped.push_back("OVEC: on primitive " + std::to_string(s.node.primitiveType));
+        // Nothing to write.
       } else if (property.value.size() != 1 || !Element(property.value[0], Type::Vector, inner, why)) {
         s.result.dropped.push_back("OVEC: " + why);
       } else {
@@ -5414,6 +5763,17 @@ public:
         s.result.dropped.push_back("SBIS: not a constant");
       } else if ((bits & 0x7fffffffu) != 0) {
         s.sortBias = bits;
+      }
+      return true;
+    }
+    // SLDS ("SleepDistance", CreateGPSM 0x258a08) is evaluated only when it is a constant; any other
+    // element stores 0. desc+0x520 holds its square, and the CElementGen ctor 0x244cfc turns sleep on
+    // only when that square is positive (CElementGen::Update). Retail has no such property: the
+    // port-only PSLD, the raw distance (any sign; the factory squares it).
+    if (s.part && fourcc == F("SLDS")) {
+      uint32_t bits = 0;
+      if (property.value.size() == 1 && ConstWord(property.value[0], bits) && (bits & 0x7fffffffu) != 0) {
+        s.sleepDistance = bits;
       }
       return true;
     }
@@ -5559,6 +5919,38 @@ public:
       s.xfmd = &property;
       return true;
     }
+    // A generator's SYST, SYSR, SYSS, TEMT or TEMR forces transform mode 1 (PartSystemMode): SYST
+    // as the port-only PSYT and TEMT as PTMT, in the port's space as PINT is; the zero REULs are
+    // the port's defaults. XFMD 1 is written after the loop.
+    if (s.part && (fourcc == F("SYST") || fourcc == F("SYSR") || fourcc == F("SYSS") || fourcc == F("TEMT") ||
+                   fourcc == F("TEMR"))) {
+      if (m_partSys == 0) {
+        s.result.dropped.push_back(EffectFourCCString(fourcc) + ": " + m_partSysWhy);
+      } else if (m_partSys == 1 && (fourcc == F("SYST") || fourcc == F("TEMT"))) {
+        std::vector<uint8_t> inner;
+        std::string why = "not one element";
+        if (!Element(property.value[0], Type::Vector, inner, why)) {
+          s.result.dropped.push_back(EffectFourCCString(fourcc) + ": " + why);
+          return true;
+        }
+        AppendBE32(s.out, fourcc == F("SYST") ? F("PSYT") : F("PTMT"));
+        Basis(F("BSIS"), inner, s.out);
+      }
+      return true;
+    }
+    // A swoosh's SYSR forces transform mode 1 (SwooshSystemMode).
+    if (s.swoosh && fourcc == F("SYSR")) {
+      std::string why;
+      const int mode = SwooshSystemMode(s.node, why);
+      if (mode == 1) {
+        AppendBE32(s.out, F("XFMD"));
+        AppendBE32(s.out, F("CNST"));
+        AppendBE32(s.out, 1);
+      } else if (mode == 0) {
+        s.result.dropped.push_back("SYSR: " + why);
+      }
+      return true;
+    }
     // A swoosh's XFMD 3 draws its points in the emitter's frame (CParticleSwoosh xPortXfmdFollow);
     // 2 and 5 keep local and global apart as retail does (build/mpr/vfx/RESOLVED-xfmd.md). 4 with
     // an identity EMVR and no SMVR births points at the emitter's transform and draws them at
@@ -5603,12 +5995,36 @@ public:
       s.mover = &property;
       return true;
     }
+    if (s.part && fourcc == F("EMVR")) {
+      s.emitterMover = &property;
+      return true;
+    }
     // A thresholding map only a header material draws (DrawWrites reports it otherwise).
     if (s.part && fourcc == F("ANTH")) {
       s.anth = true;
       return true;
     }
-    if (s.part && (fourcc == F("TMTR") || fourcc == F("PMTR") || fourcc == F("SMTR") || fourcc == F("SSZE") ||
+    // SSZE is a per-particle value whatever draws the generator: sprite Fixup keeps it, transformed
+    // Fixup (0x28ec98) moves it as it does SIZE, and only an inactive primitive's Clear (0x28e2d8)
+    // deletes it. PSSZ reads it (some model generators keep a random angle there for their PMRQ);
+    // only a sprite's VMAT draws it as the quad's length. Port-only SSZE (xPortSsze).
+    if (s.part && fourcc == F("SSZE")) {
+      if (s.inactivePrimitive) {
+        return true;
+      }
+      std::vector<uint8_t> bytes;
+      std::string why;
+      if (property.value.size() != 1 || !Element(property.value[0], Type::Real, bytes, why)) {
+        s.result.dropped.push_back("SSZE: " + (why.empty() ? std::string("not one element") : why));
+        return true;
+      }
+      AppendBE32(s.out, fourcc);
+      s.out.insert(s.out.end(), bytes.begin(), bytes.end());
+      // A model particle never draws it (SolveParticleTransform 0x246f14 reads the position alone).
+      s.drawsSsze = s.node.primitiveType != 3;
+      return true;
+    }
+    if (s.part && (fourcc == F("TMTR") || fourcc == F("PMTR") || fourcc == F("SMTR") ||
                  fourcc == F("ITEN") || fourcc == F("SCTR") || fourcc == F("SFTD") || fourcc == F("AERO"))) {
       s.portOnly.push_back(fourcc);
       return true;
@@ -5632,6 +6048,25 @@ public:
         AppendBE32(s.out, mode);
       } else if (mode != 2) {
         s.result.dropped.push_back("XFMD " + std::to_string(mode));
+      }
+      return true;
+    }
+    // ELC2 render-state fields (CreateELC2 0xb70734). EBDM is read by the VMAT writer, the only
+    // way an ELC2 draws. DDLN is read into a stack byte and discarded. TEXW (desc+0x265) and ZBUF
+    // (desc+0x266) are GetBools whose ctor default is 0 (0xb71d3c); InitStaticRenderStateImpl
+    // 0xb72618 sets static-state bits 0x1080 and 0x40 for them. Bit 0x1000 has no reader (the
+    // state word's consumers test bits 6, 7, 9 and 14-18 only, and desc+0x265 is read nowhere
+    // else), so TEXW is consumed whatever its value. ZBUF 1 (depth write in BindGraphicsState
+    // 0x2b10e4) is not ported, so only 0 converts.
+    if (s.electric && (fourcc == F("EBDM") || fourcc == F("DDLN") || fourcc == F("TEXW"))) {
+      return true;
+    }
+    if (s.electric && fourcc == F("ZBUF")) {
+      uint32_t value = 0;
+      if (!SmallInteger(property, value) || value > 1) {
+        s.result.dropped.push_back(EffectFourCCString(fourcc) + ": not a constant 0 or 1");
+      } else if (value != 0) {
+        s.result.dropped.push_back(EffectFourCCString(fourcc) + " 1");
       }
       return true;
     }
@@ -5674,6 +6109,96 @@ public:
       } else if (shape > 6) {
         s.result.dropped.push_back("SSHP: shape " + std::to_string(shape) + " is past Remastered's 7 meshes");
       }
+      return true;
+    }
+    // INTR, the system rotation var 0xb in place of the external one (CParticleDescription::Compile
+    // 0x289af0, which CSwooshDescription::Compile 0x29b1a0 runs): under XFMD 2 the points' local
+    // orientation (var bc: CreateNewParticle 0x27cdc8's birth orientation and IVEL's turn, RLCL),
+    // under 3 the global one (SetupTransformMode 0x2887d8); 5 deletes it and 4's mover overrides
+    // it. A constant REUL r, or RADD(EXTR, r) (the external orientation times r, RADD = a * b), is
+    // the port-only PSIR: flags (bit 0 times the external orientation), then r as PINR's Euler
+    // vector in the port's space (ModelRotation, B r B). EXTR, or RADD(EXTR, REUL(0, 0, 0)), is the
+    // default and writes nothing; so is an ELC2's EXTR.
+    if ((s.swoosh || s.electric) && fourcc == F("INTR")) {
+      const auto isExtr = [](const EffectValue& value) { return IsElement(value, F("EXTR")) && value.args.empty(); };
+      const auto zeroReal = [](const EffectValue& value) {
+        uint32_t word = 0;
+        return ConstWord(value, word) && (word & 0x7fffffffu) == 0;
+      };
+      const EffectValue* rot = property.value.size() == 1 ? &property.value[0] : nullptr;
+      if (rot != nullptr && isExtr(*rot)) {
+        return true;
+      }
+      if (s.electric) {
+        s.result.dropped.push_back("INTR: an ELC2's other than EXTR");
+        return true;
+      }
+      uint32_t mode = 2;
+      for (const EffectProperty& other : s.node.properties) {
+        if (other.fourcc == F("XFMD") && !SmallConst(other, mode)) {
+          mode = UINT32_MAX;
+        }
+      }
+      if (mode == 4 || mode == 5) {
+        return true;
+      }
+      uint32_t flags = 0;
+      if (rot != nullptr && IsElement(*rot, F("RADD")) && rot->args.size() == 2 && isExtr(rot->args[0])) {
+        flags = 1;
+        rot = &rot->args[1];
+      }
+      const bool reul = rot != nullptr && IsElement(*rot, F("REUL")) && rot->args.size() == 4;
+      bool constant = reul;
+      bool zero = reul;
+      for (size_t i = 0; reul && i < 3; ++i) {
+        constant = constant && IsElement(rot->args[i], F("CNST"));
+        zero = zero && zeroReal(rot->args[i]);
+      }
+      std::vector<uint8_t> bytes;
+      std::string why;
+      if (mode != 2 && mode != 3) {
+        why = "under XFMD " + std::to_string(int32_t(mode));
+      } else if (!constant) {
+        why = "not a constant REUL or RADD(EXTR, constant REUL)";
+      } else if (flags == 1 && zero) {
+        return true;
+      } else if (ModelRotation({*rot}, bytes, why)) {
+        AppendBE32(s.out, F("PSIR"));
+        AppendBE32(s.out, F("CNST"));
+        AppendBE32(s.out, flags);
+        s.out.insert(s.out.end(), bytes.begin(), bytes.end());
+        return true;
+      }
+      s.result.dropped.push_back("INTR: " + why);
+      return true;
+    }
+    // A swoosh's INTT, the system translation var in place of the external one (Compile 0x289af0).
+    // EXTT, or EXTT plus a constant zero vector (ROTV of one, the shipped ADD_(EXTT, ROTV(0, EXTR))),
+    // is the external translation itself and writes nothing; anything else is not ported.
+    if (s.swoosh && fourcc == F("INTT")) {
+      const auto isExtt = [](const EffectValue& value) { return IsElement(value, F("EXTT")) && value.args.empty(); };
+      const auto zeroVector = [](const EffectValue& value) {
+        const EffectValue* v = &value;
+        if (IsElement(*v, F("ROTV")) && v->args.size() == 2) {
+          v = &v->args[0];
+        }
+        if (!IsElement(*v, F("CNST")) || v->args.size() != 3) {
+          return false;
+        }
+        for (const EffectValue& c : v->args) {
+          uint32_t word = 0;
+          if (!ConstWord(c, word) || (word & 0x7fffffffu) != 0) {
+            return false;
+          }
+        }
+        return true;
+      };
+      const EffectValue* t = property.value.size() == 1 ? &property.value[0] : nullptr;
+      if (t != nullptr && (isExtt(*t) || (IsElement(*t, F("ADD_")) && t->args.size() == 2 &&
+                                          isExtt(t->args[0]) && zeroVector(t->args[1])))) {
+        return true;
+      }
+      s.result.dropped.push_back("INTT: a swoosh's other than EXTT");
       return true;
     }
     // Port-only PRAZ/PRAF: a swoosh's PROT of KPIN(RAZY(EMRV, ROTV(v, RLCL), fallback)), the ring
@@ -5723,11 +6248,22 @@ public:
       }
       std::vector<uint8_t> bytes;
       std::string why;
-      if (fallback == UINT32_MAX && property.value.size() == 1 && !IsElement(property.value[0], F("KPIN")) &&
+      // Under XFMD 3 EMRV is a zero constant (b8 = 0), so RAZY always takes its fallback: a zero
+      // REUL there is written as that REUL (PROZ, which also stands in for retail's IROT/ROTM).
+      uint32_t flags = 0;
+      if (fallback == 0 && xfmdMode == 3) {
+        if (!SwooshZRotation(razy->args[2], flags, bytes, why)) {
+          s.result.dropped.push_back("PROT: " + why);
+        } else {
+          AppendBE32(s.out, F("PROZ"));
+          AppendBE32(s.out, F("CNST"));
+          AppendBE32(s.out, flags);
+          s.out.insert(s.out.end(), bytes.begin(), bytes.end());
+        }
+      } else if (fallback == UINT32_MAX && property.value.size() == 1 && !IsElement(property.value[0], F("KPIN")) &&
           !IsElement(property.value[0], F("RADD")) && !IsElement(property.value[0], F("REUL"))) {
         s.result.dropped.push_back("PROT: not KPIN(RAZY(EMRV, ROTV(v, RLCL), RLCL or zero REUL))");
       } else if (fallback == UINT32_MAX) {
-        uint32_t flags = 0;
         // CreateNewParticle 0x27cdc8 sets the point's orientation from var bc and then PROT's: a
         // plain REUL is the same under XFMD 3 (bc identity, the emitter's turn drawn globally) and 5
         // (bc set by SetOrientation, as retail's), and 4 (bc the EMVR's EXTR, set by both orientation
@@ -5758,20 +6294,20 @@ public:
       }
       return true;
     }
-    if (s.part && SystemVarWrite(property.fourcc).first != ~0u) {
+    if ((s.part || s.swoosh) && SystemVarWrite(property.fourcc).first != ~0u) {
       return true;  // written as PSYS
     }
     return false;
   }
 
-  // An ADV9 or IAVn, converted for the port-only PPVR.
+  // An ADV9, IAVn, VAVn or CAVn, converted for the port-only PPVR.
   void ParticleVariable(GeneratorState& s, const EffectProperty& property, int varId) const {
     PartVar var{uint32_t(varId)};
     std::string why;
     m_varReads = 0;
     if (property.value.size() != 1) {
       why = "not one element";
-    } else if (varId >= 9 && IsElement(property.value[0], F("IRND")) && property.value[0].args.size() == 2 &&
+    } else if (PartVarType(varId) == Type::Int && IsElement(property.value[0], F("IRND")) && property.value[0].args.size() == 2 &&
                ConstantFlags(property.value[0].args[0], Type::Int) == 1 &&
                ConstantFlags(property.value[0].args[1], Type::Int) == 1) {
       // IRND(CNST, CNST) is CIEInitialRandomConstant (0x2a8c40): one draw of the one RNG at
@@ -5781,11 +6317,16 @@ public:
           Element(property.value[0].args[1], Type::Int, var.element, why)) {
         var.converted = true;
       }
+    } else if ((PartVarType(varId) == Type::Vector || PartVarType(varId) == Type::Color) &&
+               IsElement(property.value[0], F("KPIN")) && property.value[0].args.size() == 1) {
+      // CVEKeepInitial/CCEKeepInitial (0x29e878, 0x2c7d58) run their child at age 0 only, and
+      // the variable is initial-only (PPVR runs it at spawn only): the child alone.
+      var.converted = Element(property.value[0].args[0], PartVarType(varId), var.element, why);
     } else {
-      var.converted = Element(property.value[0], varId >= 9 ? Type::Int : Type::Real, var.element, why);
+      var.converted = Element(property.value[0], PartVarType(varId), var.element, why);
     }
     var.reads = m_varReads;
-    var.flags = property.value.size() == 1 ? ConstantFlags(property.value[0], varId >= 9 ? Type::Int : Type::Real) : 0;
+    var.flags = property.value.size() == 1 ? ConstantFlags(property.value[0], PartVarType(varId)) : 0;
     if (!var.converted) {
       s.result.dropped.push_back(EffectFourCCString(property.fourcc) + ": " + why);
     }
@@ -5796,8 +6337,11 @@ public:
   // taken.
   bool PortOnlyProperty(GeneratorState& s, const EffectProperty& property,
                         uint32_t fourcc) const {
-    if (s.part && (fourcc == F("VESC") || fourcc == F("VEMC") || fourcc == F("VETC") || fourcc == F("VEBS") ||
-                 fourcc == F("VESN") || fourcc == F("VESM") || fourcc == F("VEDT"))) {
+    // An ELC2 holds the same SVisorEffectDataDescription (CreateELC2 0xb70734, desc +0x218),
+    // read the same way for a billboard root (CParticleElectric2::MPT_GetVisorEffectData 0xb78d5c).
+    if ((s.part || s.electric) &&
+        (fourcc == F("VESC") || fourcc == F("VEMC") || fourcc == F("VETC") || fourcc == F("VEBS") ||
+         fourcc == F("VESN") || fourcc == F("VESM") || fourcc == F("VEDT"))) {
       s.visorData = true;
       uint32_t bits = 0;
       if ((fourcc == F("VESN") || fourcc == F("VESM")) && property.value.size() == 1 &&
@@ -6014,7 +6558,9 @@ public:
     }
     // SHTT, the delayed shutdown (ShutdownEffect 0x27a66c, UpdateCountdownTimerForShutdown
     // 0x27b864): an int number of ticks, counted down once per tick after the owner's shutdown.
-    if (s.part && fourcc == F("SHTT")) {
+    // CreateSWSH reads it for a swoosh too (desc+0xd0; CParticleSwoosh::InternalUpdate 0x27d29c
+    // counts it down).
+    if ((s.part || s.swoosh) && fourcc == F("SHTT")) {
       std::vector<uint8_t> inner;
       std::string why = "not one element";
       if (property.value.size() != 1 || !Element(property.value[0], Type::Int, inner, why)) {
@@ -6079,6 +6625,77 @@ public:
     if (s.part && fourcc == F("STRY")) {
       return true;
     }
+    // ISTR (desc+0x528, CreateGPSM 0x259c3c) is evaluated by the three render-state updates
+    // (0x246eb4, 0x2475b8, 0x247780) only while desc+0x530 bit 4 is set. SRender::Fixup 0x28fc44
+    // is the only setter, and it returns at once unless bit 3 is set, which nothing sets (SRender
+    // ctor 0x28f4cc starts the flags at 0x3e0). Even when evaluated, its one sink,
+    // CParticleDynamicRenderState+0xd8, has no reader.
+    if (s.part && fourcc == F("ISTR")) {
+      return true;
+    }
+    // KILL (desc+0x160, a bool element) is evaluated at the current frame after every
+    // CElementGen::Update 0x2460e0 tick. True sets +0xa0 bit 0, which makes every IsSystemDeletable
+    // (0x24cb6c, 0x24cd78) return true at once, and clears +0x208 bit 3 so the same update also sets
+    // +0xa0 bit 1, after which Update returns at its first instruction. Only a constant is carried:
+    // false never fires, true is PKIL.
+    if (s.part && fourcc == F("KILL") && property.value.size() == 1 && IsElement(property.value[0], F("CNST")) &&
+        property.value[0].args.size() == 1 &&
+        (property.value[0].args[0].kind == EffectValue::Kind::Byte || property.value[0].args[0].kind == EffectValue::Kind::Word)) {
+      s.kill = property.value[0].args[0].word != 0;
+      return true;
+    }
+    // DPRE (0x6b bit 11, GetRenderInDepthPass 0x288250) is read once, by the proxy ctor 0xfbf3b0
+    // (+0xac). QueueRenderDefault_Unsorted 0xfbf410 then also queues the particle as a depth
+    // pre-pass command 0xfbd694, besides the unsorted command it always queues; the sorted path
+    // ignores it. That depth only feeds early-Z and the hardware occlusion queries
+    // (InitDepthBuffer 0xb328d4, RenderOcclusionQueries); the cluster light mask is built from
+    // light volumes, not depth. The unsorted draw writes the same depth, so no pixel changes.
+    if (s.part && fourcc == F("DPRE")) {
+      return true;
+    }
+    // DEFX and UGFP are GPSM bools in 0x6b bits 0 and 1 (CreateGPSM 0x25a29c, 0x258b0c). The
+    // CParticleDescription ctor 0x2883d4 starts the halfword at 0x304 and no other property sets
+    // either bit, so 0 is the default; SRender::Fixup 0x28fcb0 may set UGFP after the parse,
+    // whatever the file says. Only 0 converts (to nothing).
+    if (s.part && (fourcc == F("DEFX") || fourcc == F("UGFP"))) {
+      uint32_t value = 0;
+      if (!SmallInteger(property, value) || value > 1) {
+        s.result.dropped.push_back(EffectFourCCString(fourcc) + ": not a constant 0 or 1");
+      } else if (value != 0) {
+        s.result.dropped.push_back(EffectFourCCString(fourcc) + " 1");
+      }
+      return true;
+    }
+    // RSV0..9 (CreateGPSM 0x257074) is a rotation system variable: GetRotationElement, then
+    // CAddVarBuilder AddVar(ctx 0, rotation, n). Only a rotation PSAn reads it back
+    // (GetRotationElement 0x25d7ac), and evaluating a rotation has no side effect, so with no PSAn
+    // anywhere in the system it is never observed and converts to nothing.
+    if (s.part && (fourcc & 0xffffff00u) == (F("RSV0") & 0xffffff00u) && (fourcc & 0xffu) >= '0' && (fourcc & 0xffu) <= '9') {
+      const uint32_t read = F("PSA0") + (fourcc & 0xffu) - '0';
+      for (const EffectProperty& other : s.node.properties) {
+        for (const EffectValue& value : other.value) {
+          if (ContainsElement(value, read)) {
+            s.result.dropped.push_back(EffectFourCCString(fourcc) + ": read by " + EffectFourCCString(read));
+            return true;
+          }
+        }
+      }
+      return true;
+    }
+    // FRMD (desc+0x170, CreateGPSM): the face-reflection mode 1..3. An explosion of a generator
+    // with it set lights Samus's visor reflection (CVisorEffectManagerMP1::AddExplosionEffect
+    // 0xd10144) in place of retail's game lights. The port-only PFRM keeps the mode; 0 writes nothing.
+    if (s.part && fourcc == F("FRMD")) {
+      uint32_t value = 0;
+      if (!SmallInteger(property, value) || value > 3) {
+        s.result.dropped.push_back("FRMD: not a constant 0 to 3");
+      } else if (value != 0) {
+        AppendBE32(s.out, F("PFRM"));
+        AppendBE32(s.out, F("CNST"));
+        AppendBE32(s.out, value);
+      }
+      return true;
+    }
     // A POFS goes out with an INTT written as POFS above, added to it.
     if (s.part && fourcc == F("POFS") &&
         std::any_of(s.node.properties.begin(), s.node.properties.end(),
@@ -6087,6 +6704,9 @@ public:
     }
     if (s.nestedHdrLight && (fourcc == F("LIRD") || fourcc == F("LORD") || fourcc == F("LIXP"))) {
       return true;  // consumed as PIR0/POR0/PLIX below
+    }
+    if (s.nestedHdrLight && s.nestedLightSpot && (fourcc == F("LIAN") || fourcc == F("LOAN"))) {
+      return true;  // consumed as PLIA/PLOA below
     }
     if (s.boundsConsumed &&
         (fourcc == F("FXBR") || fourcc == F("FXBM") || fourcc == F("FXBO") || fourcc == F("FXBI"))) {
@@ -6150,6 +6770,18 @@ public:
       }
       return;
     }
+    // A swoosh's PSWT is GetIntElementAsConst into desc+0x20c (CreateSWSH 0x2dc8e0), the warm-up
+    // the first Update 0x27ddec runs (InternalUpdate(pswt / 60)) only when nonzero: 0 changes
+    // nothing. A swoosh warm-up is not ported.
+    if (s.swoosh && fourcc == F("PSWT")) {
+      uint32_t value = 0;
+      if (!SmallInteger(property, value)) {
+        s.result.dropped.push_back("PSWT: not a CNST");
+      } else if (value != 0) {
+        s.result.dropped.push_back("PSWT: a swoosh warm-up");
+      }
+      return;
+    }
     // A swoosh's TXUP is a GetBool into desc+0x22c bit 0x80 (CreateSWSH 0x2dc4f8), read by
     // UpdateRenderState 0x27e6b0 (CParticleSwoosh::PortTexUScroll). The port-only PTXU.
     if (s.swoosh && fourcc == F("TXUP")) {
@@ -6160,6 +6792,75 @@ public:
         AppendBE32(s.out, F("PTXU"));
         AppendBE32(s.out, F("CNST"));
         AppendBE32(s.out, 1);
+      }
+      return;
+    }
+    // A swoosh's BLIT is a GetBool into desc+0x22c bit 0x1000 (CreateSWSH 0x2dc968), which the
+    // CSwooshDescription ctor 0x29ad40 leaves clear (0xa00): 0 is the default and changes nothing.
+    // Baked lighting on a swoosh (1) is not ported; no shipped swoosh sets it.
+    if (s.swoosh && fourcc == F("BLIT")) {
+      uint32_t value = 0;
+      if (!SmallInteger(property, value) || value > 1) {
+        s.result.dropped.push_back("BLIT: invalid constant");
+      } else if (value != 0) {
+        s.result.dropped.push_back("BLIT: swoosh baked lighting not ported");
+      }
+      return;
+    }
+    // A swoosh's PSCL is a GetVectorElement into desc+0x138 (CreateSWSH 0x2dbea8), run for each
+    // point after PROT (UpdateExisting 0x27d700) into point+0x40, which scales the local ring vertex
+    // before the point's rotation (UpdateRenderData_Swoosh 0x2b607c). The port-only PSSC, in
+    // Remastered's numbers: a scale along the ring's own axes, not a vector in the port's space.
+    if (s.swoosh && fourcc == F("PSCL")) {
+      std::vector<uint8_t> bytes;
+      std::string why;
+      if (property.value.size() != 1 || !Element(property.value[0], Type::Vector, bytes, why)) {
+        s.result.dropped.push_back("PSCL: " + (why.empty() ? std::string("not one vector") : why));
+        return;
+      }
+      AppendBE32(s.out, F("PSSC"));
+      s.out.insert(s.out.end(), bytes.begin(), bytes.end());
+      return;
+    }
+    // A swoosh's LWQD is a GetIntElementAsConst clamped to 1..10 into desc+0x228 (CreateSWSH
+    // 0x2dbae0): UpdateRenderData_Swoosh 0x2b6a58 splits each side face into that many strips
+    // across the trail (CParticleSwoosh::PortRenderVfx). The port-only PLWQ.
+    if (s.swoosh && fourcc == F("LWQD")) {
+      uint32_t value = 0;
+      if (!SmallInteger(property, value)) {
+        s.result.dropped.push_back("LWQD: invalid constant");
+      } else {
+        value = static_cast<uint32_t>(std::clamp(static_cast<int32_t>(value), 1, 10));
+        if (value != 1) {
+          AppendBE32(s.out, F("PLWQ"));
+          AppendBE32(s.out, F("CNST"));
+          AppendBE32(s.out, value);
+        }
+      }
+      return;
+    }
+    // A swoosh's SNRD/SNRA are raw floats (GetReal) clamped to 0..10 / 0..60 into desc+0x21c/+0x220
+    // (CreateSWSH 0x2dc280/0x2dc5bc). Either above 0 sizes each segment's spline steps by its
+    // length and turn (UpdateRenderData_Swoosh 0x2b5a78; CParticleSwoosh::PortSplineSteps). The
+    // port-only PSRD/PSRA, the clamped float's bits; 0 writes nothing.
+    if (s.swoosh && (fourcc == F("SNRD") || fourcc == F("SNRA"))) {
+      if (property.value.size() != 1 || property.value[0].kind != EffectValue::Kind::Word) {
+        s.result.dropped.push_back(EffectFourCCString(fourcc) + ": not a raw float");
+        return;
+      }
+      uint32_t bits = property.value[0].word;
+      float value;
+      std::memcpy(&value, &bits, sizeof(value));
+      if (!std::isfinite(value)) {
+        s.result.dropped.push_back(EffectFourCCString(fourcc) + ": not finite");
+        return;
+      }
+      value = std::clamp(value, 0.f, fourcc == F("SNRD") ? 10.f : 60.f);
+      if (value > 0.f) {
+        std::memcpy(&bits, &value, sizeof(bits));
+        AppendBE32(s.out, fourcc == F("SNRD") ? F("PSRD") : F("PSRA"));
+        AppendBE32(s.out, F("CNST"));
+        AppendBE32(s.out, bits);
       }
       return;
     }
@@ -6193,6 +6894,43 @@ public:
       s.written.insert(fourcc);
       AppendBE32(s.out, fourcc);
       s.out.insert(s.out.end(), bytes.begin(), bytes.end());
+      return;
+    }
+    // SPWT/SPWR/SPWS/SPCL are the translation, rotation, scale and colour a generator hands its
+    // child systems (SChildSystems::SetupSpawn 0x28d8ac, desc+0x298..0x2a4), read only when one is
+    // built (ConstructChildSystemCoords 0x24c594) or updated (UpdateChildSystemExternalDataSet
+    // 0x246508). A generator with no child system property never reads them.
+    if (s.part && (fourcc == F("SPWT") || fourcc == F("SPWR") || fourcc == F("SPWS") || fourcc == F("SPCL")) &&
+        !s.Has(F("ICTS")) && !s.Has(F("IDTS")) && !s.Has(F("IITS")) && !s.Has(F("KSSM")) &&
+        !s.Has(F("SSWH")) && !s.Has(F("SELC")) && !s.Has(F("PSPS"))) {
+      return;
+    }
+    // SPWS, the scale a generator hands its children in place of its system scale (SetupSpawn
+    // +0x2a0 = desc+0x288), evaluated in its own context at spawn and every tick: the port-only
+    // PSWS, in Remastered's scale numbers as PINS is. An IRND, KPIN or RAZY in it (drawn once per
+    // system) is not decoded, nor is a mode-5 parent's (its children get identity coords).
+    if (s.part && fourcc == F("SPWS")) {
+      std::vector<uint8_t> inner;
+      std::string why = "not one element";
+      if (m_xfmd == 5) {
+        why = "under XFMD 5";
+      } else if (property.value.size() == 1) {
+        why.clear();
+        for (const uint32_t init : {F("IRND"), F("KPIN"), F("RAZY")}) {
+          if (why.empty() && ContainsElement(property.value[0], init)) {
+            why = "with " + EffectFourCCString(init);
+          }
+        }
+        if (why.empty() && !Element(property.value[0], Type::Vector, inner, why)) {
+          why = why.empty() ? "not a vector" : why;
+        }
+      }
+      if (!why.empty()) {
+        s.result.dropped.push_back("SPWS: " + why);
+        return;
+      }
+      AppendBE32(s.out, F("PSWS"));
+      Basis(F("BSSC"), inner, s.out);
       return;
     }
     if (found == s.retail.end()) {
@@ -6262,7 +7000,7 @@ public:
   // A variable that reads a dropped one would evaluate it as zero, which Remastered does not:
   // drop the reader too, transitively (the retail ADV1..8 properties are taken back out).
   void DropVariableReaders(GeneratorState& s) const {
-    if (s.part) {
+    if (s.part || s.swoosh) {
       uint32_t lost = 0;
       for (const PartVar& v : s.partVars) {
         lost |= v.converted ? 0u : 1u << v.id;
@@ -6274,9 +7012,7 @@ public:
             v.converted = false;
             lost |= 1u << v.id;
             again = true;
-            const char* names[] = {"ADV1", "ADV2", "ADV3", "ADV4", "ADV5", "ADV6", "ADV7", "ADV8", "ADV9",
-                                   "IAV0", "IAV1", "IAV2", "IAV3"};
-            s.result.dropped.push_back(std::string(names[v.id]) + ": reads a dropped variable");
+            s.result.dropped.push_back(PartVarName(v.id, s.swoosh) + ": reads a dropped variable");
           }
         }
       }
@@ -6333,11 +7069,15 @@ public:
         s.result.dropped.push_back("MTIN: no texture for its material");
         ++s.result.droppedRetail;
       }
-    } else if (s.material != nullptr && !s.electric) {
-      s.result.dropped.push_back("MTIN: the effect has a TEXR");
     }
     const bool customVmat = (s.part || s.swoosh || s.electric) && s.material != nullptr &&
                             Material(*s.material, s.node, s.result, s.swoosh || s.electric, s.electric);
+    // With a TEXR the material still draws: MTIN shaders sample only the material's own textures
+    // (kb topic/header-mtrl-perm048.md), and the TEXR stays the retail-path texture. Only a material
+    // the VMAT can't carry loses it.
+    if (s.material != nullptr && s.texture && !s.electric && !customVmat) {
+      s.result.dropped.push_back("MTIN: the effect has a TEXR");
+    }
     const bool headerVmat =
         !customVmat && s.part && !s.customMaterial && !s.drawsNothing && HeaderMaterial(s.node, s.result);
     const bool vmat = customVmat || headerVmat;
@@ -6373,8 +7113,15 @@ public:
       if (s.part && s.inverseExposed && !ownModelMaterials) {
         s.result.dropped.push_back("IEXP: no VMAT");
       }
+      if (s.drawsSsze) {
+        s.result.dropped.push_back("SSZE: drawn square (no VMAT)");
+      }
+      // SFTD (dyn+0xdc, UpdateRenderState_Node 0x2486e8) reaches only the node's PZSO scalar
+      // (UpdateRenderDataForContext 0x2b0cec), which is looked up in the custom material's
+      // instance data (node+0x80, UpdateCustomMaterialReadyToRender 0x2b0bbc): the CMDL's own
+      // materials never read it.
       for (const uint32_t fourcc : s.portOnly) {
-        if (!(ownModelMaterials && fourcc == F("ITEN"))) {
+        if (!(ownModelMaterials && (fourcc == F("ITEN") || fourcc == F("SFTD")))) {
           s.result.dropped.push_back(EffectFourCCString(fourcc) + ": no VMAT");
         }
       }
@@ -6392,10 +7139,17 @@ public:
         }
       }
     }
-    if (s.xfmd != nullptr) {
+    if (s.part && m_partSys == 1) {
+      AppendBE32(s.out, F("XFMD"));
+      AppendBE32(s.out, F("CNST"));
+      AppendBE32(s.out, 1);
+    } else if (s.xfmd != nullptr) {
       Transform(*s.xfmd, s.mover, s.node, s.out);
     } else if (s.mover != nullptr) {
       s.result.dropped.push_back("SMVR: no XFMD");
+    }
+    if (s.emitterMover != nullptr) {
+      EmitterMover(*s.emitterMover, s.xfmd, s.mover != nullptr, s.node, s.out, s.result.dropped);
     }
     if (vmat && s.pmdl != 0 && !s.pmdlVariants && m_io.modelMesh) {
       // VMSH: the converted PMDL as one mesh, so the model particle draws through the VMAT.
@@ -6515,6 +7269,11 @@ public:
       AppendBE32(s.out, F("CNST"));
       AppendBE32(s.out, s.sortBias);
     }
+    if (s.sleepDistance != 0) {
+      AppendBE32(s.out, F("PSLD"));
+      AppendBE32(s.out, F("CNST"));
+      AppendBE32(s.out, s.sleepDistance);
+    }
     if ((s.part || s.swoosh) && !m_vars.empty()) {
       // Port-only: the effect's PVAR table (names, kinds, defaults) for VARF/VARI/VARV/VARC.
       AppendBE32(s.out, F("PVRT"));
@@ -6547,10 +7306,11 @@ public:
   // so that each comes after those it reads, otherwise by stream order): ADV1 = KPIN(PAP2 + ..)
   // reads ADV2 = 0.5 of the same particle. A node with ADV9 or an IAVn writes them all as the
   // port-only PPVR (with each one's constant-after-start flag); otherwise ADV1..8 are the
-  // port-only PADO, in index order, when that is not 1..8.
+  // port-only PADO, in index order, when that is not 1..8. A swoosh's per-point variables are
+  // all in its PPVR.
   void ParticleVariableWrites(GeneratorState& s) const {
-    if (s.part && !s.partVars.empty()) {
-      const bool ppvr = std::any_of(s.partVars.begin(), s.partVars.end(), [](const PartVar& v) {
+    if ((s.part || s.swoosh) && !s.partVars.empty()) {
+      const bool ppvr = s.swoosh || std::any_of(s.partVars.begin(), s.partVars.end(), [](const PartVar& v) {
         return v.id >= 8 && v.converted;
       });
       std::vector<const PartVar*> pending;
@@ -6598,13 +7358,16 @@ public:
             written.push_back(v);
           }
         }
+        if (written.empty()) {
+          return;
+        }
         AppendBE32(s.out, F("PPVR"));
         AppendBE32(s.out, F("CNST"));
         AppendBE32(s.out, uint32_t(written.size()));
         for (const PartVar* v : written) {
-          const bool ints = v->id >= 9;
-          AppendBE32(s.out, ints ? 2 : v->id == 8 ? 1 : 0);
-          AppendBE32(s.out, ints ? v->id - 9 : v->id);
+          // Kinds 2, 3 and 4 are IAVn, VAVn and CAVn.
+          AppendBE32(s.out, v->id >= 9 ? 2 + (v->id - 9) / 4 : s.swoosh || v->id == 8 ? 1 : 0);
+          AppendBE32(s.out, v->id >= 9 ? (v->id - 9) % 4 : v->id);
           AppendBE32(s.out, (v->flags & 3) != 0);
           s.out.insert(s.out.end(), v->element.begin(), v->element.end());
         }
@@ -6631,7 +7394,7 @@ public:
   }
 
   void VisorWrites(GeneratorState& s) const {
-    if (s.part && s.visorData) {
+    if ((s.part || s.electric) && s.visorData) {
       // Port-only: the visor effect data is present (PVSD), with its size range as float bits.
       AppendBE32(s.out, F("PVSD"));
       AppendBE32(s.out, F("CNST"));
@@ -6688,6 +7451,14 @@ public:
         AppendBE32(s.out, F("CNST"));
         AppendBE32(s.out, s.nestedLightWiden);
       }
+      if (s.nestedLightSpot) {
+        AppendBE32(s.out, F("PLIA"));
+        AppendBE32(s.out, F("CNST"));
+        AppendBE32(s.out, s.nestedLightInnerAngle);
+        AppendBE32(s.out, F("PLOA"));
+        AppendBE32(s.out, F("CNST"));
+        AppendBE32(s.out, s.nestedLightOuterAngle);
+      }
     }
     if (s.lightOnce) {
       AppendBE32(s.out, F("PLON"));
@@ -6723,9 +7494,13 @@ private:
   mutable uint32_t m_keepNext = 0;                  // the next PKPR slot
   mutable uint32_t m_varReads = 0;                  // the particle variables Element() has read
   mutable bool m_swoosh = false;                    // the node being written is a SWSH
+  mutable uint32_t m_swooshVars = 0;                // its ADV0..8 and IAV0..3 (SwooshVarId), a bit each
   mutable bool m_gpsm = false;                      // the node being written is a GPSM
-  mutable uint32_t m_xfmd = 2;                      // its XFMD mode, 2 without one
+  mutable uint32_t m_xfmd = 2;                      // its XFMD mode, 2 without one, 1 forced by its SYST..
+  mutable int m_partSys = -1;                       // a GPSM's PartSystemMode
+  mutable std::string m_partSysWhy;                 // and its drop reason
   mutable const EffectValue* m_semrPos = nullptr;   // the position child of the SEMR being written
+  mutable bool m_emtr = false;                      // an EMTR property is being written
   mutable int64_t m_maxp = -1;                      // its MAXP when a constant, else -1
   // XFMD 5's INTT, and one under XFMD 2/3 that reads no EXTT, is written as retail's POFS.
   bool IntIsPofs(const EffectProperty& intt) const {
@@ -6808,11 +7583,12 @@ public:
       }
       return field == F("NONE") || (field == F("CNST") && Skip(4));
     }
-    // Port-only PKYF: the loop byte, N, the loop start, start and rate, N keys, then the input.
-    if (fourcc == F("PKYF") && type == Type::Real) {
+    // Port-only PKYF: the loop byte, N, the loop start, start and rate, N keys (three floats each
+    // for a vector), then the input.
+    if (fourcc == F("PKYF") && (type == Type::Real || type == Type::Vector)) {
       uint32_t count;
       return Skip(1) && Word(count) && count >= 1 && count <= 0x100000 && Skip(12) &&
-             Skip(size_t(count) * 4) && Element(Type::Real);
+             Skip(size_t(count) * (type == Type::Vector ? 12 : 4)) && Element(Type::Real);
     }
     // Port-only PRTV: the vector, then EXTR, CMRT, INTR or REUL and its three angles.
     if (fourcc == F("PRTV") && type == Type::Vector) {
@@ -7041,26 +7817,28 @@ public:
     return true;
   }
 
-  // The port-only PPVR property: CNST, a count up to 13, then per variable its kind, slot and
-  // constant-after-start flag, and for kinds 1 (a real) and 2 (an int) the element.
-  bool PortPartVars() {
+  // The port-only PPVR property: CNST, a count up to 21, then per variable its kind, slot and
+  // constant-after-start flag, and for kinds 1 (a real), 2 (an int), 3 (a vector) and 4 (a
+  // colour) the element. A swoosh has no kind 0 (its ADV0..8 are all kind 1).
+  bool PortPartVars(bool swoosh) {
     uint32_t fourcc, count;
-    if (!Word(fourcc) || fourcc != F("CNST") || !Word(count) || count > 13) {
+    if (!Word(fourcc) || fourcc != F("CNST") || !Word(count) || count > 21) {
       return false;
     }
     uint32_t seen = 0;
     for (uint32_t i = 0; i < count; ++i) {
       uint32_t kind, slot, flag;
-      if (!Word(kind) || kind > 2 || !Word(slot) || slot >= (kind == 2 ? 4u : kind == 1 ? 9u : 8u) ||
-          (kind == 1 && slot != 8) || !Word(flag) || flag > 1 ||
-          (seen & (1u << (kind == 2 ? 9 + slot : slot))) != 0 ||  // the factory rejects a duplicate
-          (kind != 0 && !Element(kind == 1 ? Type::Real : Type::Int))) {
+      const Type types[] = {Type::Real, Type::Real, Type::Int, Type::Vector, Type::Color};
+      if (!Word(kind) || kind > 4 || !Word(slot) || slot >= (kind >= 2 ? 4u : kind == 1 ? 9u : 8u) ||
+          (swoosh ? kind == 0 : kind == 1 && slot != 8) || !Word(flag) || flag > 1 ||
+          (seen & (1u << (kind >= 2 ? 9 + (kind - 2) * 4 + slot : slot))) != 0 ||  // the factory rejects a duplicate
+          (kind != 0 && !Element(types[kind]))) {
         if (m_error.empty()) {
           m_error = "bad PPVR";
         }
         return false;
       }
-      seen |= 1u << (kind == 2 ? 9 + slot : slot);
+      seen |= 1u << (kind >= 2 ? 9 + (kind - 2) * 4 + slot : slot);
     }
     return true;
   }
@@ -7114,7 +7892,7 @@ public:
     return true;
   }
 
-  // PSMV (Writer::Transform): CNST, a count of 0 or 1, then the mover.
+  // PSMV (Writer::Transform) and PEMR (Writer::EmitterMover): CNST, a count of 0 or 1, then the mover.
   bool PortMover() {
     uint32_t fourcc, count;
     return Word(fourcc) && fourcc == F("CNST") && Word(count) && count <= 1 && (count == 0 || Mover());
@@ -7195,6 +7973,9 @@ public:
     uint32_t a, b;
     if (fourcc == F("RADD")) {
       return Word(a) && ComponentRotation(a, depth + 1) && Word(b) && ComponentRotation(b, depth + 1);
+    }
+    if (fourcc == F("KPIN")) {
+      return Word(a) && ComponentRotation(a, depth + 1);
     }
     m_error = "component rotation " + EffectFourCCString(fourcc);
     return false;
@@ -7290,52 +8071,64 @@ bool SplitRetailEffect(uint32_t type, const uint8_t* data, size_t size, std::vec
       ok = reader.Skip(2 * 4) && reader.Element(Type::Real);  // columns, rows, the index
     } else if (part && fourcc == F("VTFB")) {
       ok = reader.Skip(4) && reader.Element(Type::Real);  // layers, the index
-    } else if (part && (fourcc == F("PVSC") || fourcc == F("PVMC") || fourcc == F("PVTC"))) {
+    } else if ((part || electric) && (fourcc == F("PVSC") || fourcc == F("PVMC") || fourcc == F("PVTC"))) {
       ok = reader.Element(Type::Color);
+    } else if (electric && fourcc == F("PVBS")) {
+      ok = reader.Element(Type::Real);
+    } else if (electric && (fourcc == F("PVSD") || fourcc == F("PVSN") || fourcc == F("PVSM") || fourcc == F("PVDT"))) {
+      ok = reader.PortWord();
     } else if ((part && (fourcc == F("SSZE") || fourcc == F("PIR0") || fourcc == F("POR0") ||
-                         fourcc == F("PVBS") || fourcc == F("PITN") || fourcc == F("PSBS"))) ||
+                         fourcc == F("PVBS") || fourcc == F("PITN") || fourcc == F("PSBS") ||
+                         fourcc == F("PSLD"))) ||
                (vfx && (fourcc == F("ITEN") || fourcc == F("PDBS")))) {
       ok = reader.Element(Type::Real);
-    } else if (part && (fourcc == F("PINS") || fourcc == F("PINR") || fourcc == F("PINT") || fourcc == F("PMOV") ||
-                        fourcc == F("PMPV") || fourcc == F("POVC"))) {
+    } else if (part && (fourcc == F("PINS") || fourcc == F("PSWS") || fourcc == F("PINR") || fourcc == F("PINT") || fourcc == F("PMOV") ||
+                        fourcc == F("PMPV") || fourcc == F("POVC") || fourcc == F("PSYT") || fourcc == F("PTMT"))) {
       ok = reader.Element(Type::Vector);
-    } else if (part && (fourcc == F("PSHT") || fourcc == F("PSMX"))) {
+    } else if ((part && (fourcc == F("PSHT") || fourcc == F("PSMX"))) || (type == F("SWHC") && fourcc == F("PSHT"))) {
       ok = reader.Element(Type::Int);
     } else if (part && fourcc == F("PSPS")) {
       ok = reader.Asset();
     } else if ((part && (fourcc == F("VORN") || fourcc == F("XFMD") ||
-                         fourcc == F("PPRM") || fourcc == F("PSHP") || fourcc == F("PHDR") || fourcc == F("PHFO") || fourcc == F("PLIX") || fourcc == F("PLSP") || fourcc == F("PLON") || fourcc == F("PFXC") || fourcc == F("PGID") || fourcc == F("PBDM") ||
+                         fourcc == F("PPRM") || fourcc == F("PSHP") || fourcc == F("PHDR") || fourcc == F("PHFO") || fourcc == F("PLIX") || fourcc == F("PLSP") || fourcc == F("PLIA") || fourcc == F("PLOA") || fourcc == F("PLON") || fourcc == F("PKIL") || fourcc == F("PFXC") || fourcc == F("PGID") || fourcc == F("PBDM") ||
                          fourcc == F("PDFG") || fourcc == F("PZTS") || fourcc == F("PIVS") || fourcc == F("PWST") ||
                          fourcc == F("PITP") || fourcc == F("PDBO") || fourcc == F("PSHM") || fourcc == F("PISD") || fourcc == F("POSD") || fourcc == F("PBLT") || fourcc == F("PBOR") ||
                          fourcc == F("VMPC") || fourcc == F("DVVN") || fourcc == F("IEXP") ||
                          (fourcc >= F("VGD1") && fourcc <= F("VGD4")) ||
-                         fourcc == F("PMRF") || fourcc == F("PVSD") || fourcc == F("PVSN") ||
+                         fourcc == F("PMRF") || fourcc == F("PFRM") || fourcc == F("PVSD") || fourcc == F("PVSN") ||
                          fourcc == F("PVSM") || fourcc == F("PVDT"))) ||
                (vfx && fourcc == F("PIRN")) ||
-               (type == F("SWHC") && (fourcc == F("PGID") || fourcc == F("PSED") || fourcc == F("PTXU")))) {
+               (type == F("SWHC") && (fourcc == F("PGID") || fourcc == F("PSED") || fourcc == F("PTXU") ||
+                                        fourcc == F("PLWQ") || fourcc == F("PSRD") || fourcc == F("PSRA")))) {
       ok = reader.PortWord();
     } else if (vfx && fourcc == F("PVRT")) {
       ok = reader.PortVariables();
-    } else if (part && fourcc == F("PSYS")) {
+    } else if ((part || type == F("SWHC")) && fourcc == F("PSYS")) {
       ok = reader.PortSystemVars();
     } else if (part && (fourcc == F("PADO") || fourcc == F("PFXB"))) {
       ok = reader.PortWords();
-    } else if (part && fourcc == F("PPVR")) {
-      ok = reader.PortPartVars();
+    } else if ((part || type == F("SWHC")) && fourcc == F("PPVR")) {
+      ok = reader.PortPartVars(type == F("SWHC"));
     } else if (part && fourcc == F("PSWX")) {
       ok = reader.PortExtraSwooshes();
     } else if (part && fourcc == F("PKSM")) {
       ok = reader.PortSpawnTables();
-    } else if (part && fourcc == F("PSMV")) {
+    } else if (part && (fourcc == F("PSMV") || fourcc == F("PEMR"))) {
       ok = reader.PortMover();
     } else if (!part && vfx && (fourcc == F("PSRO") || fourcc == F("PRAF") || fourcc == F("XFMD") || fourcc == F("PDFG") ||
                           fourcc == F("PZTS") || fourcc == F("PSHM"))) {
       ok = reader.PortWord();
     } else if (type == F("SWHC") && (fourcc == F("DVVN") || fourcc == F("IEXP"))) {
       ok = reader.PortWord();
+    } else if (part && fourcc == F("PIEV")) {
+      ok = reader.PortWord();
     } else if (part && fourcc == F("PISV")) {
       ok = reader.PortWord() && reader.Element(Type::Real);
     } else if (!part && vfx && fourcc == F("PRAZ")) {
+      ok = reader.Element(Type::Vector);
+    } else if (type == F("SWHC") && fourcc == F("PSIR")) {
+      ok = reader.PortWord() && reader.Element(Type::Vector);
+    } else if (type == F("SWHC") && fourcc == F("PSSC")) {
       ok = reader.Element(Type::Vector);
     } else if (!part && vfx && fourcc == F("PROZ")) {
       ok = reader.PortWord() && reader.Element(Type::Real);

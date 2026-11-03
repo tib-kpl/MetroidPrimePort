@@ -2929,8 +2929,8 @@ void PbrGen::buildSource() {
           let light = ubuf.lights[i];
           // A Remastered HDR light (GXSetPBRLightHdr) brings its own colour, position and
           // falloff.
-          let hdr_c = ubuf.pbr_light_hdr[i * 3u];
-          let hdr_p = ubuf.pbr_light_hdr[i * 3u + 1u];
+          let hdr_c = ubuf.pbr_light_hdr[i * 4u];
+          let hdr_p = ubuf.pbr_light_hdr[i * 4u + 1u];
           let hdr_on = hdr_c.w > 0.5;
           var ldir = select(light.pos, hdr_p.xyz, hdr_on) - in.pbr_pos;
           let dist2 = dot(ldir, ldir);
@@ -2941,7 +2941,7 @@ void PbrGen::buildSource() {
           let nh = max(dot(pbr_n, h), 0.0);
           let vh = max(dot(pbr_v, h), 0.0);
           // Remastered widens an HDR light's lobe by its LSPS (SCachedLight +0xc).
-          let l_w = select(0.0, ubuf.pbr_light_hdr[i * 3u + 2u].y, hdr_on);
+          let l_w = select(0.0, ubuf.pbr_light_hdr[i * 4u + 2u].y, hdr_on);
           let l_r = pbr_rough + (1.0 - pbr_rough) * l_w;
           let l_a2 = pow(l_r, 4.0);
           let l_k = l_r * l_r * 0.5;
@@ -2954,7 +2954,8 @@ void PbrGen::buildSource() {
           // 1/pi and the specular lobe is scaled by pi to match.
           var rad = ubuf.pbr_light_color[i].rgb * attn{16};
           if (hdr_on) {{
-              let hdr_r1 = ubuf.pbr_light_hdr[i * 3u + 2u].x;
+              let hdr_q = ubuf.pbr_light_hdr[i * 4u + 2u];
+              let hdr_r1 = hdr_q.x;
               let hdr_t = clamp((dist - hdr_p.w) / max(hdr_r1 - hdr_p.w, 1e-4), 0.0, 1.0);
               var hdr_fa = 1.0;
               if (hdr_c.w > 3.5) {{
@@ -2964,6 +2965,8 @@ void PbrGen::buildSource() {
               }} else if (hdr_c.w > 1.5) {{
                   hdr_fa = 1.0 - hdr_t;
               }}
+              // A spot's cone (SCachedLight +0x1c/+0x20/+0x2c; a point light is 0, 1).
+              hdr_fa *= clamp(dot(ldir, ubuf.pbr_light_hdr[i * 4u + 3u].xyz) * hdr_q.z + hdr_q.w, 0.0, 1.0);
               rad = hdr_c.rgb * hdr_fa{16};
           }}
           // pbr-sun-light
@@ -4145,9 +4148,22 @@ std::string build_shader_source(const ShaderConfig& config) noexcept {
         "\n    out.pos = vec4f(clip.xy + offset_ndc * clip.w, clip.zw);";
   } else {
     // GX_LINES / GX_LINESTRIP: expand line segment perpendicular to direction
+    // Port: GX clips a line at the near plane before widening it. An endpoint behind the eye has a
+    // negative w, so its NDC flips to the far side and the widened quad spans the screen: move it
+    // onto w = eps along the segment first, and drop a segment with both ends behind (z = -2w is
+    // clipped).
     vtxXfrAttrsPre +=
-        "\n    let clip_a = vec4f(mv_pos_a, 1.0) * ubuf.proj;"
-        "\n    let clip_b = vec4f(mv_pos_b, 1.0) * ubuf.proj;"
+        "\n    var clip_a = vec4f(mv_pos_a, 1.0) * ubuf.proj;"
+        "\n    var clip_b = vec4f(mv_pos_b, 1.0) * ubuf.proj;"
+        "\n    let line_near_w = 1e-4;"
+        "\n    if (clip_a.w < line_near_w && clip_b.w < line_near_w) {"
+        "\n        clip_a = vec4f(0.0, 0.0, -2.0, 1.0);"
+        "\n        clip_b = clip_a;"
+        "\n    } else if (clip_a.w < line_near_w) {"
+        "\n        clip_a = mix(clip_a, clip_b, (line_near_w - clip_a.w) / (clip_b.w - clip_a.w));"
+        "\n    } else if (clip_b.w < line_near_w) {"
+        "\n        clip_b = mix(clip_b, clip_a, (line_near_w - clip_b.w) / (clip_a.w - clip_b.w));"
+        "\n    }"
         "\n    let ndc_a = clip_a.xy / clip_a.w;"
         "\n    let ndc_b = clip_b.xy / clip_b.w;"
         "\n    let viewport_scale = ubuf.render_viewport_size / max(ubuf.logical_viewport_size, vec2f(1.0));"
@@ -4883,7 +4899,7 @@ fn vf_apply_hdr(c: vec4f, fog: vec4f, w: f32) -> vec4f {
     uniBufAttrs += "\n    pbr_light_skip: vec4f,";
     uniBufAttrs += "\n    pbr_light_scale: vec4f,";
     uniBufAttrs += fmt::format("\n    pbr_light_color: array<vec4f, {}>,", GX::MaxLights);
-    uniBufAttrs += fmt::format("\n    pbr_light_hdr: array<vec4f, {}>,", GX::MaxLights * 3);
+    uniBufAttrs += fmt::format("\n    pbr_light_hdr: array<vec4f, {}>,", GX::MaxLights * 4);
     uniBufAttrs += "\n    pbr_shield: array<vec4f, 8>,";
     uniBufAttrs += "\n    pbr_lmap_rect: vec4f,";
     uniBufAttrs += "\n    pbr_lmap_axes: array<vec4f, 3>,";

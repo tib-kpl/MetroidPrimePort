@@ -33,6 +33,8 @@ constexpr uint32_t kPropDieWhenDone = 0xf13f4e03;
 constexpr uint32_t kPropExternalVariables = 0x3def0de6;  // CScriptEffectMP1::InitializeExternalVariables
 
 constexpr uint8_t kRetailEffect = 7;
+constexpr uint8_t kRetailGenerator = 0x0A;
+constexpr uint32_t kMessageActivate = 1;  // EScriptObjectMessage kSM_Activate
 // A retail effect no object matched, with an added one this near, is the one it replaces.
 constexpr double kReplaceDistance = 5.0;
 
@@ -1290,6 +1292,8 @@ std::string WriteRoomEffectsOnce(const std::string& name, const Room& room, uint
   std::set<uint32_t> skips;
   std::vector<PortRoomEffects::Override> overrides;
   std::vector<Vec3> added;
+  std::vector<std::vector<PortRoomEffects::Drive>> addedDrives;  // per added effect: the links that switch it
+  std::vector<uint32_t> addedParts;                              // and its PART
   std::map<int, uint32_t> addedIds;  // the effects added, by entity
   std::set<int> seen;
   std::map<std::string, size_t> connectedWhy;  // connected ones left out, by cause
@@ -1731,6 +1735,8 @@ std::string WriteRoomEffectsOnce(const std::string& name, const Room& room, uint
     layer.vars.push_back(std::move(vars));
     ++layer.count;
     added.push_back(world);
+    addedDrives.push_back(generated ? std::vector<PortRoomEffects::Drive>() : drives);
+    addedParts.push_back(part);
   }
   // The barrier's ten effects, once every one of them converted: their ids follow the generic
   // add-ons', so no index is used twice, and nothing is written unless all ten are there.
@@ -1877,13 +1883,98 @@ std::string WriteRoomEffectsOnce(const std::string& name, const Room& room, uint
       follows.push_back(plan.record);
     }
   }
+  // A retail Generator whose effect templates Remastered's GeneratorMP1 generates, with the rest
+  // of its templates gone: they are not created, so it picks among Remastered's alone
+  // (CScriptGenerator skips a template that does not exist). The Reflecting Pool's drain
+  // generator had six DebrisExtended and two effects; Remastered's makes its six copies from
+  // the two effects (bubbles and its debris PKSM), so retail's mostly made debris and often no
+  // bubbles. Every template this drops (42, in 13 rooms) is a DebrisExtended in a room where
+  // Remastered has none.
+  size_t templatesDropped = 0;
+  {
+    const std::vector<Component>& comps = room.Components();
+    const std::vector<Connection> conns = ReadConnections(room);
+    std::map<uint32_t, size_t> incoming;  // retail connections per target id
+    std::map<uint32_t, size_t> indexOf;
+    for (size_t j = 0; j < objects.size(); ++j) {
+      indexOf.emplace(objects[j].id & 0x3FFFFFF, j);
+      for (uint32_t t : objects[j].targets) {
+        ++incoming[t & 0x3FFFFFF];
+      }
+    }
+    for (const Component* gen : room.Of(kGeneratorMP1)) {
+      std::set<size_t> generated;  // the retail objects its templates matched
+      bool exact = true;
+      for (const Connection& c : conns) {
+        if (comps[c.sender].entity != gen->entity || comps[c.sender].type != kGeneratorMP1 ||
+            c.event != kEventGeneratorZero || c.action != kActionGenerate) {
+          continue;
+        }
+        const int t = room.ByGuid(c.target);
+        const int te = t < 0 ? -1 : comps[size_t(t)].type == kEntity ? t : comps[size_t(t)].entity;
+        const auto m = te < 0 ? scripts.retail.end() : scripts.retail.find(te);
+        if (m == scripts.retail.end() || objects[m->second].type != kRetailEffect) {
+          exact = false;
+          break;
+        }
+        generated.insert(m->second);
+      }
+      if (!exact || generated.empty()) {
+        continue;
+      }
+      // The one retail Generator that activates each of them on Zero, and only it.
+      std::set<size_t> owners;
+      for (size_t j = 0; j < objects.size(); ++j) {
+        for (const ScriptObject::Link& l : objects[j].links) {
+          const auto k = indexOf.find(l.target & 0x3FFFFFF);
+          if (k != indexOf.end() && generated.count(k->second) != 0) {
+            owners.insert(j);
+            exact = exact && objects[j].type == kRetailGenerator && l.state == kStateZero &&
+                    l.message == kMessageActivate;
+          }
+        }
+      }
+      if (!exact || owners.size() != 1) {
+        continue;
+      }
+      const ScriptObject& g = objects[*owners.begin()];
+      // The same spawn count (retail's first property after the name).
+      const auto f = room.Flat(*gen);
+      const auto count = f.find(kPropGeneratorCount);
+      if (g.props.size() < 4 || count == f.end() || count->second.size != 4 ||
+          ReadLE32(room.Bytes(count->second)) != ReadBE32(g.props.data())) {
+        continue;
+      }
+      std::vector<uint32_t> drop;
+      for (const ScriptObject::Link& l : g.links) {
+        const auto k = indexOf.find(l.target & 0x3FFFFFF);
+        if (l.state != kStateZero || l.message != kMessageActivate || k == indexOf.end() ||
+            generated.count(k->second) != 0) {
+          continue;
+        }
+        // Only a template Remastered has no object for, that nothing else talks to.
+        if (matchedObjects.count(k->second) != 0 || incoming[l.target & 0x3FFFFFF] != 1) {
+          drop.clear();
+          break;
+        }
+        drop.push_back(objects[k->second].id);
+      }
+      for (uint32_t id : drop) {
+        skips.insert(id);
+        ++templatesDropped;
+      }
+    }
+  }
   // A retail effect no Remastered entity matched, that nothing sends a message to, next to an
   // added one: Remastered replaced it.
+  const auto unmatchedEffect = [&](size_t j) {
+    const ScriptObject& o = objects[j];
+    return o.type == kRetailEffect && o.hasPos && matchedObjects.count(j) == 0 && skips.count(o.id) == 0;
+  };
   size_t replacedNear = 0;
   for (size_t j = 0; j < objects.size(); ++j) {
     const ScriptObject& o = objects[j];
-    if (o.type != kRetailEffect || !o.hasPos || matchedObjects.count(j) != 0 || skips.count(o.id) != 0 ||
-        targeted.count(o.id & 0x3FFFFFF) != 0) {
+    if (!unmatchedEffect(j) || targeted.count(o.id & 0x3FFFFFF) != 0) {
       continue;
     }
     for (const Vec3& w : added) {
@@ -1891,6 +1982,116 @@ std::string WriteRoomEffectsOnce(const std::string& name, const Room& room, uint
         skips.insert(o.id);
         ++replacedNear;
         break;
+      }
+    }
+  }
+  // A volley Remastered moved to a trigger of its own: the added ones one Remastered link
+  // activates, each the mutual nearest of a distinct unmatched retail effect that one retail
+  // sender activates in one state, that nothing else switches and that sends nothing. The
+  // Reactor's Smoke'n'Sparks1-3 (Timer_Explosion3's in retail) fire from the Queen's death
+  // rattle in Remastered (0019F000-02, 3 m from each): both drew.
+  std::map<uint32_t, size_t> switches;  // incoming connections per target id
+  for (const ScriptObject& s : objects) {
+    for (const ScriptObject::Link& l : s.links) {
+      ++switches[l.target & 0x3FFFFFF];
+    }
+  }
+  std::map<uint32_t, size_t> indexOf;
+  for (size_t j = 0; j < objects.size(); ++j) {
+    indexOf.emplace(objects[j].id & 0x3FFFFFF, j);
+  }
+  std::map<size_t, std::tuple<uint32_t, uint32_t>> volleyOf;  // retail effect -> its sender and state
+  for (const ScriptObject& s : objects) {
+    for (const ScriptObject::Link& l : s.links) {
+      const auto j = indexOf.find(l.target & 0x3FFFFFF);
+      if (l.message == 1 && j != indexOf.end() && unmatchedEffect(j->second) && objects[j->second].targets.empty() &&
+          switches[l.target & 0x3FFFFFF] == 1) {
+        volleyOf[j->second] = {s.id, l.state};
+      }
+    }
+  }
+  const auto nearestAdded = [&](const Vec3& at) {
+    size_t best = added.size();
+    for (size_t a = 0; a < added.size(); ++a) {
+      if (best == added.size() || Distance(added[a], at) < Distance(added[best], at)) {
+        best = a;
+      }
+    }
+    return best;
+  };
+  // The added ones one Remastered link activates, by sender and state.
+  std::map<std::tuple<uint32_t, uint32_t>, std::vector<size_t>> addedVolleys;
+  for (size_t a = 0; a < added.size(); ++a) {
+    if (addedDrives[a].size() == 1 && addedDrives[a].front().message == 1) {
+      addedVolleys[{addedDrives[a].front().sender, addedDrives[a].front().state}].push_back(a);
+    }
+  }
+  std::string replacedSwitched;  // " <id>=<added PART>@<its sender>/<state>" per volley effect, for MP_REMASTERED_MISS
+  for (const auto& [drive, group] : addedVolleys) {
+    std::vector<size_t> pairs;  // the retail effect each one of the group replaces
+    std::set<std::tuple<uint32_t, uint32_t>> retailVolleys;
+    for (size_t a : group) {
+      size_t best = objects.size();
+      for (const auto& [j, from] : volleyOf) {
+        if (Distance(added[a], objects[j].pos) < kReplaceDistance &&
+            (best == objects.size() || Distance(added[a], objects[j].pos) < Distance(added[a], objects[best].pos))) {
+          best = j;
+        }
+      }
+      if (best == objects.size() || nearestAdded(objects[best].pos) != a) {
+        pairs.clear();
+        break;
+      }
+      pairs.push_back(best);
+      retailVolleys.insert(volleyOf.at(best));
+    }
+    if (pairs.empty() || retailVolleys.size() != 1 || std::set<size_t>(pairs.begin(), pairs.end()).size() != pairs.size()) {
+      continue;
+    }
+    for (size_t k = 0; k < pairs.size(); ++k) {
+      const size_t j = pairs[k];
+      skips.insert(objects[j].id);
+      ++replacedNear;
+      char text[40];
+      std::snprintf(text, sizeof text, " %08X=%08X@%08X/%u", objects[j].id, addedParts[group[k]], std::get<0>(drive),
+                    std::get<1>(drive));
+      replacedSwitched += text;
+    }
+  }
+  // A retail effect no Remastered entity matched, with no Remastered effect actor of any kind
+  // (matched, added or left out) within kReplaceDistance: Remastered dropped it. It is hidden,
+  // not skipped, so the messages it relays and the ones sent to it still work: the Reactor's
+  // Explosion3 sets off AfterCore and Afterfire, whose ElectricGoRound and sparks Remastered
+  // has none of (Ryujinx, after the Queen's death). MP_REMASTERED_MISS lists them,
+  // " <id>/<PART>/<nearest m>".
+  std::vector<uint32_t> hidden;
+  std::string unpaired;
+  {
+    std::vector<Vec3> actors;
+    for (const Component* c : effects) {
+      Vec3 pos, rot, scale;
+      if (room.Xform(*c, pos, rot, scale)) {
+        actors.push_back(Apply(area.xf, MulR2G(pos)));
+      }
+    }
+    for (size_t j = 0; j < objects.size(); ++j) {
+      const ScriptObject& o = objects[j];
+      if (!unmatchedEffect(j)) {
+        continue;
+      }
+      double nearest = 1e9;
+      for (const Vec3& w : actors) {
+        nearest = std::min(nearest, Distance(w, o.pos));
+      }
+      if (nearest < kReplaceDistance) {
+        continue;
+      }
+      hidden.push_back(o.id);
+      if (port::EnvFlag("MP_REMASTERED_MISS")) {
+        char text[48];
+        std::snprintf(text, sizeof text, " %08X/%08X/%.1f", o.id, o.props.size() >= 40 ? ReadBE32(&o.props[36]) : 0u,
+                      nearest);
+        unpaired += text;
       }
     }
   }
@@ -2173,6 +2374,11 @@ std::string WriteRoomEffectsOnce(const std::string& name, const Room& room, uint
     const size_t at = std::strlen(generatorNote);
     std::snprintf(generatorNote + at, sizeof generatorNote - at, ", %zu follow(s)", follows.size());
   }
+  if (templatesDropped != 0) {
+    const size_t at = std::strlen(generatorNote);
+    std::snprintf(generatorNote + at, sizeof generatorNote - at,
+                  ", %zu generator template(s) dropped", templatesDropped);
+  }
   if (!followsLeftOut.empty()) {
     const size_t at = std::strlen(generatorNote);
     std::snprintf(generatorNote + at, sizeof generatorNote - at, ", follows left out: %s", followsLeftOut.c_str() + 2);
@@ -2192,16 +2398,22 @@ std::string WriteRoomEffectsOnce(const std::string& name, const Room& room, uint
   std::snprintf(line, sizeof line,
                 "  %s: %zu effect actor(s) added, %zu retail effect(s) replaced, %zu retail effect(s) take "
                 "Remastered's effect, %zu connected and left out (%zu more added with drives%s), %zu matched a retail object (%zu of them still on "
-                "the retail PART), %zu without a PART, %zu on an unknown layer%s%s%s%s%s",
+                "the retail PART), %zu retail effect(s) hidden, %zu without a PART, %zu on an unknown layer%s%s%s%s%s",
                 name.c_str(), added.size(), replacedNear, overridden, connectedCount, drivenCount, generatorNote, kept + keptOwn + overridden,
-                keptOwn, noPart, noLayer, full != 0 ? ", the id range is full" : "",
+                keptOwn, hidden.size(), noPart, noLayer, full != 0 ? ", the id range is full" : "",
                 badVars != 0 ? ", unreadable particle variables" : "", barrierNote, patternedNote, steamNote);
   std::string summary = line;
   for (const auto& [why, who] : connectedWho) {
     summary += "; left out for " + why + ":" + who;
   }
+  if (!replacedSwitched.empty() && port::EnvFlag("MP_REMASTERED_MISS")) {
+    summary += "; replaced while switched:" + replacedSwitched;
+  }
+  if (!unpaired.empty()) {
+    summary += "; hidden:" + unpaired;
+  }
   if (added.empty() && overrides.empty() && skips.empty() && !group && patterned.empty() && patches.empty() &&
-      steams.empty() && actorSlots.empty() && follows.empty()) {
+      steams.empty() && actorSlots.empty() && follows.empty() && hidden.empty()) {
     return summary;
   }
   PortRoomEffects::File file;
@@ -2222,6 +2434,7 @@ std::string WriteRoomEffectsOnce(const std::string& name, const Room& room, uint
   file.relays = std::move(relays);
   file.follows = std::move(follows);
   file.ambients = std::move(ambients);
+  file.hidden = std::move(hidden);
   if (group) {
     PortRoomEffects::BarrierGroup barrierGroup;
     barrierGroup.controller = PortQueenBarrier::kController;

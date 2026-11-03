@@ -1399,10 +1399,12 @@ template <> const PortSchemaClass& PortEntitySchema::Describe< CHUDBillboardEffe
       {"x108_timeoutTimer", "float", PortSchemaKind::float_, 0, kPortSchemaPrivate, sizeof(CHUDBillboardEffect::x108_timeoutTimer), PES_ADDR(CHUDBillboardEffect, x108_timeoutTimer), nullptr, nullptr},
       {"xPortManagedType", "int", PortSchemaKind::int_, 0, kPortSchemaPrivate, sizeof(CHUDBillboardEffect::xPortManagedType), PES_ADDR(CHUDBillboardEffect, xPortManagedType), PES_GETI(CHUDBillboardEffect, xPortManagedType), PES_SETI(CHUDBillboardEffect, xPortManagedType)},
       {"xPortVisorOverride", "bool", PortSchemaKind::bool_, 0, kPortSchemaPrivate, sizeof(CHUDBillboardEffect::xPortVisorOverride), PES_ADDR(CHUDBillboardEffect, xPortVisorOverride), PES_GETI(CHUDBillboardEffect, xPortVisorOverride), PES_SETI(CHUDBillboardEffect, xPortVisorOverride)},
+      {"xPortFaceCounted", "bool", PortSchemaKind::bool_, 0, kPortSchemaPrivate, sizeof(CHUDBillboardEffect::xPortFaceCounted), PES_ADDR(CHUDBillboardEffect, xPortFaceCounted), PES_GETI(CHUDBillboardEffect, xPortFaceCounted), PES_SETI(CHUDBillboardEffect, xPortFaceCounted)},
+      {"xPortFaceUncounted", "bool", PortSchemaKind::bool_, 0, kPortSchemaPrivate, sizeof(CHUDBillboardEffect::xPortFaceUncounted), PES_ADDR(CHUDBillboardEffect, xPortFaceUncounted), PES_GETI(CHUDBillboardEffect, xPortFaceUncounted), PES_SETI(CHUDBillboardEffect, xPortFaceUncounted)},
       {"xPortSpawnSpread", "CVector3f", PortSchemaKind::math, 0, kPortSchemaPrivate, sizeof(CHUDBillboardEffect::xPortSpawnSpread), PES_ADDR(CHUDBillboardEffect, xPortSpawnSpread), nullptr, nullptr},
       {"xPortScaleType", "int", PortSchemaKind::int_, 0, kPortSchemaPrivate, sizeof(CHUDBillboardEffect::xPortScaleType), PES_ADDR(CHUDBillboardEffect, xPortScaleType), PES_GETI(CHUDBillboardEffect, xPortScaleType), PES_SETI(CHUDBillboardEffect, xPortScaleType)},
   };
-  static const PortSchemaClass desc = {"CHUDBillboardEffect", "CEffect", fields, 12, 0x4324A5B019EE3510ull};
+  static const PortSchemaClass desc = {"CHUDBillboardEffect", "CEffect", fields, 14, 0xF3C887A94B5C2CF9ull};
   return desc;
 }
 template <> const PortSchemaClass& PortEntitySchema::Describe< CIceAttackProjectile >() {
@@ -3252,8 +3254,9 @@ template <> const PortSchemaClass& PortEntitySchema::Describe< CScriptEffect >()
       {"xPortBarrierPlatform", "TUniqueId", PortSchemaKind::uid, 0, kPortSchemaPrivate, sizeof(CScriptEffect::xPortBarrierPlatform), PES_ADDR(CScriptEffect, xPortBarrierPlatform), nullptr, nullptr},
       {"xPortBarrierBounds", "CAABox", PortSchemaKind::math, 0, kPortSchemaPrivate, sizeof(CScriptEffect::xPortBarrierBounds), PES_ADDR(CScriptEffect, xPortBarrierBounds), nullptr, nullptr},
       {"xPortHasBarrierBounds", "bool", PortSchemaKind::bool_, 0, kPortSchemaPrivate, sizeof(CScriptEffect::xPortHasBarrierBounds), PES_ADDR(CScriptEffect, xPortHasBarrierBounds), PES_GETI(CScriptEffect, xPortHasBarrierBounds), PES_SETI(CScriptEffect, xPortHasBarrierBounds)},
+      {"xPortHidden", "bool", PortSchemaKind::bool_, 0, kPortSchemaPrivate, sizeof(CScriptEffect::xPortHidden), PES_ADDR(CScriptEffect, xPortHidden), PES_GETI(CScriptEffect, xPortHidden), PES_SETI(CScriptEffect, xPortHidden)},
   };
-  static const PortSchemaClass desc = {"CScriptEffect", "CActor", fields, 35, 0xD737D146483CB5E1ull};
+  static const PortSchemaClass desc = {"CScriptEffect", "CActor", fields, 36, 0xE596AFB409CF5C10ull};
   return desc;
 }
 template <> const PortSchemaClass& PortEntitySchema::Describe< CScriptGenerator >() {
@@ -4700,4 +4703,4 @@ const PortSchemaClass* const* PortEntitySchema::Classes(int& count) {
 }
 
 const int PortEntitySchema::kClassCount = 159;
-const int PortEntitySchema::kFieldCount = 3426;
+const int PortEntitySchema::kFieldCount = 3429;

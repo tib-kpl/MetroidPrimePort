@@ -2567,7 +2567,24 @@ void Run(std::string nspPath, std::string keysPath, int threads, fs::path stagin
         std::lock_guard<std::mutex> lock(takenMutex);
         taken.insert(id);
       }
-      AddLine("effects: " + std::to_string(roomGenps) + " effects of the rooms' own effect actors and port actors, " +
+      // The Remastered-only GENPs electrics name as GPSM/EPSM, which their ELSCs need written.
+      for (const EffectGuid& genp : ElectricGenps(effectIO)) {
+        if (std::find(effectIO.roomOnly.begin(), effectIO.roomOnly.end(), genp) != effectIO.roomOnly.end()) {
+          continue;
+        }
+        ++roomGenps;
+        const uint32_t id = RoomEffectId(genp);
+        if (retail.HasId(id) || !synthetic.insert(id).second) {
+          ++collisions;
+          PortLog::Write("remastered import: electric effect %s: its id %s is taken, left out\n",
+                         EffectGuidString(genp).c_str(), Hex8(id).c_str());
+          continue;
+        }
+        effectIO.roomOnly.push_back(genp);
+        std::lock_guard<std::mutex> lock(takenMutex);
+        taken.insert(id);
+      }
+      AddLine("effects: " + std::to_string(roomGenps) + " effects of the rooms' own effect actors, port actors and electrics, " +
               std::to_string(collisions) + " left out (id taken)");
     }
     std::set<std::string> effectWritten;  // the files the effects wrote (the converters write on every thread)
@@ -2652,6 +2669,8 @@ void Run(std::string nspPath, std::string keysPath, int threads, fs::path stagin
   }
   fs::create_directories(staging / kGeometryFolder, ec);
   const std::vector<RoomPak> allPaks = remastered.AllPaks();
+  const std::set<EffectGuid> neverLoaded = NeverLoadedUnits(allPaks);
+  AddLine(std::to_string(neverLoaded.size()) + " layer units never load; their layers are left out");
   const std::vector<RoomWorld>& worlds = RoomWorlds();
   std::atomic<size_t> nextWorld{0};
   std::atomic<int> roomFiles{0};
@@ -2952,6 +2971,7 @@ void Run(std::string nspPath, std::string keysPath, int threads, fs::path stagin
         return out;
       };
       io.wantsGeometry = WantsGeometry;
+      io.neverLoads = [&](const EffectGuid& unit) { return neverLoaded.count(unit) != 0; };
       io.retailModel = [&](const RetailPlacement& placement) {
         std::lock_guard<std::mutex> lock(retailMutex);
         retailPlacements.push_back(placement);

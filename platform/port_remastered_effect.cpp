@@ -83,17 +83,19 @@ constexpr ElementSig kElementSigs[] = {
     {"SMOV", "eeeee"},       {"SPAC", "be"},         {"SPAF", "be"},      {"SPAH", "eee"},
     {"SPAI", "be"},    {"SPAV", "be"},         {"SPHE", "eee"},     {"SPOS", "e"},
     {"SUB_", "ee"},    {"SWRL", "eeee"},       {"TPVC", "ge"},      {"TPVF", "ge"},
-    {"TPVI", "ge"},    {"TRSS", "eeeeee"},     {"TSCL", "e"},       {"VARC", "g"},
+    {"TPVI", "ge"},    {"TRSS", "RRRRRR"},     {"TSCL", "e"},       {"VARC", "g"},
     {"VARF", "g"},     {"VARI", "g"},          {"VARV", "g"},       {"VECF", "g"},
     {"VMAG", "e"},     {"VXTR", "e"},          {"VYTR", "e"},       {"VZTR", "e"},
     {"WIND", "ee"},
     // Pinned down against the shipped files: MPCB wraps a vector; MPAC is five
-    // reals, MPCN a vector and a radius; CREL a bool and two reals, LTHN two reals; MPRD is 2 or 4 elements; DFCP and DFCS 1 to 3.
-    {"MPCB", "e"},     {"MPAC", "eeeee"}, {"CREL", "eee"},   {"LTHN", "ee"},   {"MPCN", "ee"},       {"MPRD", "ee eeee"}, {"DFCP", "ee eee e"},
-    {"DFCS", "ee eee e"},
+    // reals, MPCN a vector and a radius; CREL a bool and two reals, LTHN two reals; MPRD is 2
+    // or 4 elements; DFCP and DFCS read two reals (GetRealElement 0x260de4).
+    {"MPCB", "e"},     {"MPAC", "eeeee"}, {"CREL", "eee"},   {"LTHN", "ee"},   {"MPCN", "ee"},       {"MPRD", "ee eeee"}, {"DFCP", "ee"},
+    {"DFCS", "ee"},
     // EXTT, EXTR and EXTS are leaves; SMOV is CSimpleMoverElement's (position,
     // velocity, rotation, scale, modifier); ROTV a vector turned by a rotation;
-    // TRST is five reals and a raw word.
+    // TRST is five reals and a raw word. TRSS (TMTR's UV transform) is six reals: untyped, a loose
+    // SLCT among them could take one argument and leave its ARRY to the next slot.
     {"TRST", "eeeeew"}, {"EXTS", "-"}, {"ROTV", "ee"},
     // TEXR's texture elements besides ATEX: an id and three elements (TXP2),
     // or an id and one to four (TXFB, whose first is an LFTW).
@@ -103,6 +105,8 @@ constexpr ElementSig kElementSigs[] = {
     // ATFB (CUVEAnimFlipBookTexture, ctor in GetTextureElement 0x266ba4): an id, the animation time as
     // an int read as a real, a flag. BNID (CIEBoneIndex, GetIntElement 0x26a910): a bone name and a flag.
     {"ATFB", "gee"},    {"BNID", "Se"},
+    // VISQ (CREVisibilityQuery, GetRealElement 0x2619e8): one int, read as a constant and unused.
+    {"VISQ", "e"},
 };
 
 // Elements by the type of value they are read as, with typed arguments: I an
@@ -131,7 +135,7 @@ constexpr ElementSig kRealSigs[] = {
     {"SUB_", "RR"},   {"GTCR", "C"},    {"GTCG", "C"},    {"GTCB", "C"},     {"GTCA", "C"},    {"DFCP", "RR"},
     {"CREL", "BRR"}, {"DFCS", "RR"}, {"MPRD", "RR eeee"}, {"TPVF", "gR"}, {"DPVF", "gR"}, {"SPAF", "bR"}, {"KPIN", "R"},
     {"SLCT", "Re"},   {"DIVD", "RR"},   {"SLTW", "RR"},   {"ABS_", "R"},    {"MPXV", "IR"},   {"COSE", "RRR"},  {"RSGN", "R"},     {"IRSN", "R"},
-    {"NEGT", "R"},    {"T2S_", "I"},    {"SDTR", "-"},
+    {"NEGT", "R"},    {"T2S_", "I"},    {"SDTR", "-"},    {"VISQ", "I"},
 };
 constexpr ElementSig kVectorSigs[] = {
     {"NONE", "-"},   {"CNST", "RRR"},   {"KEYE", "k"},    {"KEYP", "k"},   {"ANGC", "RRRRR"}, {"CONE", "VR"},
@@ -142,6 +146,8 @@ constexpr ElementSig kVectorSigs[] = {
     {"ANCR", "eRRR ebeee"}, {"ANCM", "eRRR"}, {"ANCV", "eRRRRRRRb"}, {"RNDV", "R"}, {"ROTV", "Ve"}, {"TPVV", "gV"}, {"DPVV", "gV"}, {"SPAV", "bV"},
     {"SLCT", "Re"},  {"NORM", "V"},     {"CMPS", "-"},    {"EXTT", "-"},   {"EXTS", "-"},
     {"CPSS", "-"},  {"ABS_", "V"}, {"PNCV", "-"}, {"SCLE", "VR"},
+    // PWSL reads the particle's position, no argument (GetVectorElement 0x251d94).
+    {"PWSL", "-"},
     // MCBS is MPCB's scale form (MPT_CVEConvertScaleToXLeftYUpZForward 0x2a30f8).
     {"MCBS", "V"},
     // LINV is CVELineWithVariance (GetVectorElement 0x251974): V V I R b.
@@ -208,7 +214,8 @@ constexpr PropertyType kPropertyTypes[] = {
     {'V', "PSIV PSOV ILOC IVEC POFS PMOP PMRT PMSC SSPO SEPO LOFF LDIR"},
     {'M', "PSVM VEL1 VEL2 VEL3 VEL4"},
     {'C', "COLR PMCL LCLR NCLR"},
-    {'E', "EMTR"},
+    // IEMT/FEMT: ELSC's start/end emitters (CParticleElectricDataFactory).
+    {'E', "EMTR IEMT FEMT"},
     {'Q', "PMRQ"},
 };
 

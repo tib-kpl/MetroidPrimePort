@@ -357,6 +357,13 @@ void SetBeamDoorsStayUnlocked(bool enabled);
 // and the Phazon Beam are unchanged. Off by default, and off in the Original experience.
 bool StackBeams();
 void SetStackBeams(bool enabled);
+// seamless_pickups: picking up an item keeps control and plays no cutscene
+// (randomprime's pickup patches, as AP games load rooms, minus the Artifact
+// Temple totem switches), and the item's message box shows as a HUD memo
+// (CScriptHUDMemo). Rooms load patched, so it applies to rooms loaded
+// afterwards. Off by default, and off in the Original experience.
+bool SeamlessPickups();
+void SetSeamlessPickups(bool enabled);
 // walk_speed (CPlayerDynamics WalkScale), in percent: Samus's on-foot top speed,
 // acceleration and friction (and the orbit strafe speeds) are scaled by it, so she
 // moves that much faster or slower and gets there in the same time. Jumps, dashes,
@@ -367,6 +374,10 @@ const int kWalkSpeedMax = 200;
 const int kWalkSpeedDefault = 100;
 int WalkSpeed();
 void SetWalkSpeed(int percent);
+// walk_speed_enabled: whether walk_speed applies (on by default; 100 while off).
+// A custom action bound to it is a sprint switch.
+bool WalkSpeedEnabled();
+void SetWalkSpeedEnabled(bool enabled);
 // The stored 1.00 sequence-break compatibility choice (raw, not the effective
 // policy). Randomizer and Archipelago games force it on at use.
 bool Revision100Compatibility();

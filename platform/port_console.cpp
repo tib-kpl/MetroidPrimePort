@@ -2741,6 +2741,18 @@ void CmdStackBeams() {
   Finish();
 }
 
+void CmdSeamlessPickups() {
+  if (sCmd.args.size() > 1) {
+    const std::string& v = sCmd.args[1];
+    if (v != "0" && v != "1") {
+      return Finish("usage: seamlesspickups [0|1]");
+    }
+    PortDebug::SetSeamlessPickups(v == "1");
+  }
+  Out(PortDebug::SeamlessPickups() ? "seamlesspickups 1" : "seamlesspickups 0");
+  Finish();
+}
+
 void CmdAimLockOn() {
   if (sCmd.args.size() > 1) {
     const std::string& v = sCmd.args[1];
@@ -2830,13 +2842,18 @@ void CmdRadial() {
 
 void CmdWalkSpeed() {
   if (sCmd.args.size() > 1) {
-    const int value = std::atoi(sCmd.args[1].c_str());
-    if (value < PortDebug::kWalkSpeedMin || value > PortDebug::kWalkSpeedMax) {
-      return Finish("usage: walkspeed [50..200]");
+    const std::string& v = sCmd.args[1];
+    if (v == "on" || v == "off") {
+      PortDebug::SetWalkSpeedEnabled(v == "on");
+    } else {
+      const int value = std::atoi(v.c_str());
+      if (value < PortDebug::kWalkSpeedMin || value > PortDebug::kWalkSpeedMax) {
+        return Finish("usage: walkspeed [50..200|on|off]");
+      }
+      PortDebug::SetWalkSpeed(value);
     }
-    PortDebug::SetWalkSpeed(value);
   }
-  Out("walkspeed %d", PortDebug::WalkSpeed());
+  Out("walkspeed %d (%s)", PortDebug::WalkSpeed(), PortDebug::WalkSpeedEnabled() ? "on" : "off");
   Finish();
 }
 
@@ -4508,6 +4525,8 @@ const CommandSpec kCommands[] = {
      "mapui [0|1]                 the map's extra legend entries and the Mark room prompt"},
     {"stackbeams", CmdStackBeams, nullptr,
      "stackbeams [0|1]           every shot also fires the other owned beams' projectiles (stack_beams)"},
+    {"seamlesspickups", CmdSeamlessPickups, nullptr,
+     "seamlesspickups [0|1]      pickups without control lock, cutscene or message box (seamless_pickups)"},
     {"aimlockon", CmdAimLockOn, nullptr,
      "aimlockon [0|1]            lock-on picks the target nearest the crosshair (aim_lock_on)"},
     {"dodge", CmdDodge, nullptr,
@@ -4525,7 +4544,7 @@ const CommandSpec kCommands[] = {
     {"radial", CmdRadial, nullptr,
      "radial [beam|visor [x y] | release]  holds a radial menu with its selection (x right, y up); radial_menus"},
     {"walkspeed", CmdWalkSpeed, nullptr,
-     "walkspeed [50..200]        on-foot movement speed in percent (walk_speed); no argument prints it"},
+     "walkspeed [50..200|on|off] on-foot speed in percent (walk_speed, walk_speed_enabled); no argument prints it"},
     {"beamdoors", nullptr, CmdBeamDoors,
      "beamdoors [status|on|off|list [here]|unlock <door index|all>|reset]  the beam doors opened for good\n"
      "                           (beam_doors_stay_unlocked; on/off, unlock restyle the loaded doors)"},

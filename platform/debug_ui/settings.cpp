@@ -311,6 +311,8 @@ const SettingKey kSettingKeys[] = {
     BoolKey< &sSkippableCutscenes >("skippable_cutscenes"),
     BoolKey< &sBeamDoorsStayUnlocked >("beam_doors_stay_unlocked"),
     BoolKey< &sStackBeams >("stack_beams"),
+    BoolKey< &sSeamlessPickups >("seamless_pickups"),
+    BoolKey< &sWalkSpeedEnabled >("walk_speed_enabled"),
     {"walk_speed",
      [](const std::string& value) {
        const int s = std::atoi(value.c_str());

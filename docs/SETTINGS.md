@@ -510,6 +510,14 @@
   the gameplay page. The layout editor's "Ball page" button edits the other page, where
   the ball buttons move, resize, hide and delete like any; an added button belongs to
   the page it was added on, and its "On …" button moves it to Gameplay, Ball or Both.
+  The Map rows (Map rotate up/down/left/right, Map pan up/down/left/right;
+  `map_rotate_up`.. `map_rotate_right`, `map_pan_up`.. `map_pan_right` in controls.toml)
+  tilt the control stick (rotate) or the C-stick (pan) only on the map screen. They start
+  unbound and add to the sticks: their own inputs keep rotating and panning. An input bound
+  to a map row does only that on the map, bindings scoped to the map included, and what it
+  did before everywhere else, so WASD can pan the map without moving the gameplay C-stick.
+  Zoom stays on L/R (or the "Menus and map" L/R rows). On the map the stick prompts name
+  a bound map row's input.
   "Point and click menus" (on by default; `pointer_menus=`, `MP_POINTER_MENUS`) lets
   the mouse and touch work the game's own menus (front end, pause screen, save stations,
   upgrade messages) and the map. A hover selects (a tap on touch), a click confirms (a
@@ -977,6 +985,18 @@
   finish at once, a Reset ends a beetle's emergence, no skip without a
   cutscene camera). Rooms a mod replaced are left unpatched. Archipelago
   games also skip the Landing Site intro: Samus starts on top of her ship.
+- Seamless item pickups (F1 > Game > Cutscenes, `seamless_pickups`, console
+  `seamlesspickups`, off by default and off in the Original experience): picking
+  up an item keeps control and plays no cutscene, as in the randomizer. Rooms load
+  with randomprime's pickup patches, as Archipelago games do
+  (`platform/port_skip_cutscenes.cpp` PatchPickups: the "Player Hint Disable
+  Controls", the cinematic's start relay and the logbook screen go; what the
+  cinematic's end did moves onto a relay the pickup fires), but the artifacts
+  still light their Artifact Temple totems. The item's message box shows its
+  headline ("Missile Expansion acquired!") as a HUD memo instead of pausing
+  (`CScriptHUDMemo`). Applies to rooms loaded afterwards; a room the patch
+  doesn't match (a mod's room, another disc revision) is left as is (logged as
+  `pickups: room ...`).
 - Stack beams (F1 > Game > Cutscenes, `stack_beams`, off by default and off in the Original
   experience): every normal or charged arm-cannon shot also fires the projectiles
   of each other beam you own (Power, Ice, Wave, Plasma), from the same spot, at
@@ -996,6 +1016,10 @@
   she reaches k times the retail speed in the same time and stops in the same
   time. Jump height, sideways dashes, turning, the grapple and the Morph Ball
   are unchanged; speed carries into a jump. At 100 movement is exactly retail.
+  The Custom walk speed switch above it (`walk_speed_enabled`, on by default)
+  turns it off without losing the value: off is retail speed. Bind a custom
+  action ("Change a setting", Custom walk speed, the other way) to a key to
+  sprint with it.
 - Unlock beam doors once opened (F1 > Game > Cutscenes, `beam_doors_stay_unlocked`,
   off by default and off in the Original experience): a door locked to the Wave,
   Ice, Plasma or Power Beam that you open by breaking its force field becomes a
