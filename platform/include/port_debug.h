@@ -357,6 +357,19 @@ void SetBeamDoorsStayUnlocked(bool enabled);
 // and the Phazon Beam are unchanged. Off by default, and off in the Original experience.
 bool StackBeams();
 void SetStackBeams(bool enabled);
+// beam_switch_speed (CPlayerGun::PortBeamSwitchScale), in percent: a beam change's
+// animations, wipe and hold run that much faster, so 200 swaps in half the time.
+// 100 (retail) by default, and 100 in the Original experience.
+const int kBeamSwitchSpeedMin = 100;
+const int kBeamSwitchSpeedMax = 400;
+const int kBeamSwitchSpeedDefault = 100;
+int BeamSwitchSpeed();
+void SetBeamSwitchSpeed(int percent);
+// beam_switch_fire (CPlayerGun::ProcessGunMorph): the new beam fires as soon as its
+// wipe ends, without waiting for the into-beam animation. Off by default, and off in
+// the Original experience.
+bool BeamSwitchFire();
+void SetBeamSwitchFire(bool enabled);
 // seamless_pickups: picking up an item keeps control and plays no cutscene
 // (randomprime's pickup patches, as AP games load rooms, minus the Artifact
 // Temple totem switches), and the item's message box shows as a HUD memo
@@ -401,12 +414,23 @@ enum EBootLogos { kBootLogos_Show, kBootLogos_Skippable, kBootLogos_Off };
 EBootLogos BootLogos();
 void SetBootLogos(EBootLogos mode);
 // First-person vertical field of view in degrees (retail 55). The arm cannon is
-// drawn at the retail FOV whatever this is, like a view-model FOV.
+// drawn at its own FOV (GunFov, retail 55) whatever this is, like a view-model
+// FOV, unless GunFollowsFov: then it shares the world's projection (smaller,
+// further into the corner at a wide FOV). Both are 55 and following is off in
+// the original experience.
 const float kFovRetail = 55.f;
 const float kFovMin = 45.f;
 const float kFovMax = 120.f;
 float FirstPersonFov();
 void SetFirstPersonFov(float degrees);
+bool GunFollowsFov();
+void SetGunFollowsFov(bool enabled);
+float GunFov();
+void SetGunFov(float degrees);
+// The FOV the arm cannon is drawn at, for a first-person camera whose FOV is cameraFov.
+inline float GunDrawFov(float cameraFov) { return GunFollowsFov() ? cameraFov : GunFov(); }
+// Whether the arm cannon gets its own projection (at GunDrawFov) this frame.
+inline bool GunOwnFov(float cameraFov) { return GunDrawFov(cameraFov) != cameraFov; }
 // Arm cannon offset from its retail place, in metres along the camera's right,
 // forward and up axes (issue #72, like PrimeHack's). It moves the real gun, so
 // shots leave from the new muzzle. Zero in the original experience.
@@ -915,6 +939,10 @@ bool SpringBallRequested();
 // experience).
 void RequestDodge();
 bool TakeDodgeRequest();
+// Issue #243: Next/Previous target while locked on (+1 right, -1 left on screen).
+// CPlayer takes it once; 0 when none is pending or under Original experience.
+void RequestTargetCycle(int dir);
+int TakeTargetCycle();
 // Issue #243: the Grapple action's state, set by the input routing each frame;
 // HoldGrapple holds it for a time (console). CStateManager turns it into L at a
 // grapple point (port_hold_toggle.h GrappleKey).

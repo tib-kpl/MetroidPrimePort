@@ -311,6 +311,15 @@ const SettingKey kSettingKeys[] = {
     BoolKey< &sSkippableCutscenes >("skippable_cutscenes"),
     BoolKey< &sBeamDoorsStayUnlocked >("beam_doors_stay_unlocked"),
     BoolKey< &sStackBeams >("stack_beams"),
+    {"beam_switch_speed",
+     [](const std::string& value) {
+       const int s = std::atoi(value.c_str());
+       if (s >= PortDebug::kBeamSwitchSpeedMin && s <= PortDebug::kBeamSwitchSpeedMax) {
+         sBeamSwitchSpeed = s;
+       }
+     },
+     [](std::ostream& out) { out << sBeamSwitchSpeed; }, false, "100", "400"},
+    BoolKey< &sBeamSwitchFire >("beam_switch_fire"),
     BoolKey< &sSeamlessPickups >("seamless_pickups"),
     BoolKey< &sWalkSpeedEnabled >("walk_speed_enabled"),
     {"walk_speed",
@@ -362,6 +371,15 @@ const SettingKey kSettingKeys[] = {
        }
      },
      [](std::ostream& out) { out << sFirstPersonFov; }, false, "45", "72.5"},
+    BoolKey< &sGunFollowsFov >("gun_follows_fov"),
+    {"gun_fov",
+     [](const std::string& value) {
+       const float f = static_cast< float >(std::atof(value.c_str()));
+       if (std::isfinite(f) && f >= PortDebug::kFovMin && f <= PortDebug::kFovMax) {
+         sGunFov = f;
+       }
+     },
+     [](std::ostream& out) { out << sGunFov; }, false, "45", "72.5"},
     {"gun_offset",
      [](const std::string& value) {
        float v[3] = {};

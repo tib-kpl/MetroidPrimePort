@@ -578,12 +578,26 @@ uint16_t GameContexts() {
     if (morph == CPlayer::kMS_Morphed || morph == CPlayer::kMS_Morphing) return PortInput::kCtxMorphBall;
   }
   uint16_t contexts = PortInput::kCtxGameplay;
+  if (const CPlayer* player = mgr->GetPlayer();
+      player != nullptr && player->GetOrbitState() == CPlayer::kOS_OrbitObject && !PortDebug::OriginalExperience()) {
+    contexts |= PortInput::kCtxLockOn;
+  }
   const CPlayerState* state = mgr->GetPlayerState();
   if (state != nullptr && state->GetCurrentVisor() == CPlayerState::kPV_Scan) {
     contexts |= PortInput::kCtxScan;
     if (mgr->GetGameState() == CStateManager::kGS_SoftPaused) contexts |= PortInput::kCtxMenu;
   }
   return contexts;
+}
+
+// Locked on to an object or grappling (orbiting a carcass or a point is not a lock).
+static bool OrbitLocked() {
+  CStateManager* mgr = PortDebug::StateManager();
+  const CPlayer* player = mgr != nullptr ? mgr->GetPlayer() : nullptr;
+  if (player == nullptr) return false;
+  const CPlayer::EPlayerOrbitState orbit = player->GetOrbitState();
+  return orbit == CPlayer::kOS_OrbitObject || orbit == CPlayer::kOS_ForcedOrbitObject ||
+         orbit == CPlayer::kOS_Grapple;
 }
 
 // A next/previous pick the game hasn't taken yet.
@@ -686,6 +700,8 @@ void RouteDirectActions(const PortInput::Output& out) {
   PushCyclePick(false, visorDir != 0 ? CycleTarget(false, visorDir) : visorPick);
   if (out.Pressed(Action::SpringBall)) PortDebug::RequestSpringBall();
   if (out.Pressed(Action::Dodge)) PortDebug::RequestDodge();
+  if (out.Pressed(Action::TargetNext)) PortDebug::RequestTargetCycle(1);
+  if (out.Pressed(Action::TargetPrev)) PortDebug::RequestTargetCycle(-1);
   PortDebug::SetGrappleHeld(out.Held(Action::Grapple));
 }
 
@@ -1252,6 +1268,7 @@ SPoll Poll(unsigned mouseHeld, bool focused) {
   ApplyMenuButtons(next);
   PortInput::ApplyBallButtons(next);
   PortInput::ApplyMapRows(next);
+  PortInput::ApplyTargetRows(next);
   const uint16_t contexts = GameContexts();
   ApplyTwinStickFreeAim(next, contexts);
   if (!sInit || next != sProfile) {
@@ -1259,6 +1276,20 @@ SPoll Poll(unsigned mouseHeld, bool focused) {
     sProfile = std::move(next);
     sRuntime.SetProfile(&sProfile);
     sInit = true;
+  }
+
+  // A Toggle-trigger L lets go when its lock ends, as Toggle Lock-On does: a
+  // killed target leaves the player orbiting its carcass, a lost look angle a
+  // fixed point in empty space (#243). A toggle that never locked stays on.
+  static bool sToggleLocked = false;
+  if (!sRuntime.Toggled(Action::PadL) && !sRuntime.Toggled(Action::LAnalog)) {
+    sToggleLocked = false;
+  } else if (OrbitLocked()) {
+    sToggleLocked = true;
+  } else if (sToggleLocked) {
+    sRuntime.Untoggle(Action::PadL);
+    sRuntime.Untoggle(Action::LAnalog);
+    sToggleLocked = false;
   }
 
   PortInput::RawState raw;

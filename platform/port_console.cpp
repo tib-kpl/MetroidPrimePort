@@ -773,8 +773,18 @@ void CmdAreas(CStateManager& mgr) {
   const int current = world->GetCurrentAreaId().Value();
   for (int i = 0; i < world->GetNumAreas(); ++i) {
     const CGameArea& area = world->GetAreaAlways(TAreaId(i));
-    Out("%3d %08X%s%s", i, static_cast< uint32_t >(area.GetAreaAssetId()),
-        area.IsPostConstructed() ? " loaded" : "", i == current ? "  <- current" : "");
+    const bool loaded = area.IsPostConstructed();
+    Out("%3d %08X%s%s%s", i, static_cast< uint32_t >(area.GetAreaAssetId()), loaded ? " loaded" : "",
+        loaded ? (area.GetOcclusionState() == CGameArea::kOS_Visible ? " visible" : " occluded") : "",
+        i == current ? "  <- current" : "");
+  }
+  if (current >= 0 && current < world->GetNumAreas()) {
+    // Remastered's object positions (room files) are area-local: world = this * (-x, z, y).
+    const CTransform4f& m = world->GetAreaAlways(TAreaId(current)).GetTM();
+    Out("current area transform rows (%.4f %.4f %.4f %.3f) (%.4f %.4f %.4f %.3f) "
+        "(%.4f %.4f %.4f %.3f)",
+        m.Get00(), m.Get01(), m.Get02(), m.Get03(), m.Get10(), m.Get11(), m.Get12(), m.Get13(),
+        m.Get20(), m.Get21(), m.Get22(), m.Get23());
   }
   Finish();
 }
@@ -2484,10 +2494,29 @@ void CmdPadPreset() {
 }
 
 void CmdFov() {
+  if (sCmd.args.size() > 1 && sCmd.args[1] == "gun") {
+    if (sCmd.args.size() > 2) {
+      PortDebug::SetGunFollowsFov(sCmd.args[2] != "0");
+    }
+    Out("gun %s", PortDebug::GunFollowsFov() ? "follows fov" : "own fov");
+    return Finish();
+  }
+  if (sCmd.args.size() > 1 && sCmd.args[1] == "cannon") {
+    if (sCmd.args.size() > 2) {
+      const float fov = static_cast< float >(std::atof(sCmd.args[2].c_str()));
+      if (!(fov >= PortDebug::kFovMin && fov <= PortDebug::kFovMax)) {
+        return Finish("usage: fov cannon [45..120]   the arm cannon's own FOV (retail 55)");
+      }
+      PortDebug::SetGunFov(fov);
+    }
+    Out("cannon fov %.1f%s", PortDebug::GunFov(), PortDebug::GunFollowsFov() ? " (unused: gun follows fov)" : "");
+    return Finish();
+  }
   const float fov =
       sCmd.args.size() > 1 ? static_cast< float >(std::atof(sCmd.args[1].c_str())) : 0.f;
   if (!(fov >= PortDebug::kFovMin && fov <= PortDebug::kFovMax)) {
-    return Finish("usage: fov <45..120>   first-person vertical FOV (retail 55)");
+    return Finish("usage: fov <45..120> | fov gun [0|1] | fov cannon [45..120]   first-person vertical\n"
+                  "FOV (retail 55); gun 1 draws the arm cannon at it too, cannon sets its own FOV");
   }
   PortDebug::SetFirstPersonFov(fov);
   Finish();
@@ -2854,6 +2883,35 @@ void CmdWalkSpeed() {
     }
   }
   Out("walkspeed %d (%s)", PortDebug::WalkSpeed(), PortDebug::WalkSpeedEnabled() ? "on" : "off");
+  Finish();
+}
+
+void CmdBeamSwitch() {
+  if (sCmd.args.size() > 1) {
+    const int value = std::atoi(sCmd.args[1].c_str());
+    if (sCmd.args.size() > 2 || value < PortDebug::kBeamSwitchSpeedMin ||
+        value > PortDebug::kBeamSwitchSpeedMax) {
+      return Finish("usage: beamswitch [100..400]");
+    }
+    PortDebug::SetBeamSwitchSpeed(value);
+  }
+  Out("beamswitch %d", PortDebug::BeamSwitchSpeed());
+  Finish();
+}
+
+void CmdBeamSwitchFire() {
+  BoolSettingCmd("beamswitchfire", PortDebug::BeamSwitchFire, PortDebug::SetBeamSwitchFire);
+}
+
+// As a press of the Next/Previous target action: while locked on, the lock moves
+// to the next target right (next) or left (prev) on screen, wrapping around.
+void CmdTarget() {
+  if (sCmd.args.size() != 2 || (sCmd.args[1] != "next" && sCmd.args[1] != "prev")) {
+    return Finish("usage: target next|prev");
+  }
+  PortDebug::RequestTargetCycle(sCmd.args[1] == "next" ? 1 : -1);
+  Out(PortDebug::OriginalExperience() ? "target switch requested (off under original experience)"
+                                      : "target switch requested");
   Finish();
 }
 
@@ -4479,7 +4537,9 @@ const CommandSpec kCommands[] = {
      "keypreset classic|mouse|<saved name>|save <name>   apply or save a keyboard preset (Controls > Remap)"},
     {"padpreset", CmdPadPreset, nullptr,
      "padpreset gamecube|remastered|modern|southpaw|<saved name>|save <name>   apply or save a controller preset"},
-    {"fov", CmdFov, nullptr, "fov <45..120>              first-person vertical FOV, as the Options row does"},
+    {"fov", CmdFov, nullptr, "fov <45..120>|gun [0|1]|cannon [45..120]  first-person vertical FOV, as the\n"
+                             "                           Options row does; gun 1: the arm cannon follows it;\n"
+                             "                           cannon: the arm cannon's own FOV"},
     {"gunoffset", CmdGunOffset, nullptr,
      "gunoffset <r> <f> <u>      arm cannon offset in metres (+-1), as the Video row does"},
     {"pointeraim", CmdPointerAim, nullptr,
@@ -4525,6 +4585,12 @@ const CommandSpec kCommands[] = {
      "mapui [0|1]                 the map's extra legend entries and the Mark room prompt"},
     {"stackbeams", CmdStackBeams, nullptr,
      "stackbeams [0|1]           every shot also fires the other owned beams' projectiles (stack_beams)"},
+    {"beamswitch", CmdBeamSwitch, nullptr,
+     "beamswitch [100..400]      beam change speed in percent (beam_switch_speed); no argument prints it"},
+    {"beamswitchfire", CmdBeamSwitchFire, nullptr,
+     "beamswitchfire [0|1]       the new beam fires once its wipe ends, before the cannon opens (beam_switch_fire)"},
+    {"target", CmdTarget, nullptr,
+     "target next|prev           while locked on, lock the next target right (next) or left (prev) on screen"},
     {"seamlesspickups", CmdSeamlessPickups, nullptr,
      "seamlesspickups [0|1]      pickups without control lock, cutscene or message box (seamless_pickups)"},
     {"aimlockon", CmdAimLockOn, nullptr,

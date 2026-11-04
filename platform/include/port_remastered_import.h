@@ -115,7 +115,8 @@ namespace ImportStage {
 // 91: the skinned twins f07e9761 (of 98f0556d) and 3ef54cc4, 35acebd7 (of 4bc890c1) route to their family.
 // 92: LambertFx lights with the baked probe x BLCM like VFX_Model_Base, not the flat (zero) ambient.
 // 93: cc3e88af (the Omega fight's healing nodules) is kShaderPhazon's skinned twin and draws as kind 21.
-inline constexpr int kConverter = 93;
+// 94: 9b752e5e (Research Lab Hydra's ForceField_DX11) is 6c1a4768's twin and draws as kind 14.
+inline constexpr int kConverter = 94;
 // What a converted texture holds: port_remastered_image/txtr/dds/astc, and Converter's Get and
 // Cube. Each converted texture is kept across imports under its tag and this number, so a
 // kConverter bump re-imports the models without converting their textures again.
@@ -159,7 +160,13 @@ inline constexpr int kTextures = 5;
 //     Light's puffers.
 // 31: retail CMDL E4C4F3CA (the Omega fight's Phazon healing nodule, ANCS 7C26C9EE) is in the
 //     table, paired with dfa19c72, the skinned model of its CHPR.
-inline constexpr int kModels = 31;
+// 32: retail CMDL 607C35E7 (the rubble mounds of Mine Security Station) leaves the table: its
+//     partner 05a716b1 is the stations' white AreaLight dome; the room names the carried-over
+//     10000000-...-607c35e7 instead, which then places per object.
+// 33: so do 7E9028D7 (Frigate hologram grids), DDA8738A (00p_ice_connect), FC49F290 and 95413951
+//     (model particles): Remastered's rooms and GENPs name their carried-over models, and the
+//     partners are other rooms' models.
+inline constexpr int kModels = 33;
 // 63: ELPS reads its CNST surface flag; the system tween is 0 only at a 0x1000000 lifetime.
 // 62: NEGT, CRCV, SPEV, ELPS, ROTV, PNCV, KEYF, SLTW, CRLN octaves, KESP, one-stop GRAD, PAP0/9,
 //     ADV9 and IAV0..3 are converted; PLNV counts come from MAXP.
@@ -263,7 +270,9 @@ inline constexpr int kModels = 31;
 // 220: a constant true KILL is the port-only PKIL (7f71e94b light); a false one is consumed.
 // 221: ELC2 SSWH swooshes written standalone.
 // 222: CRLN 2d slices are PCRS.
-inline constexpr int kEffects = 227;   // PIRN marks every converted electric
+// 227: PIRN marks every converted electric.
+// 228: a model Remastered keeps under a carried-over id converts as the effect's own (drain debris).
+inline constexpr int kEffects = 228;
 // 20: two rooms matching one area write only the closer match's files, not the later room's.
 // 21: roomenv version 22, the world master's hints driven by its camera volumes (the table in every roomenv).
 // 22: a master's InventoryActivator fired by the camera going under water drives its hints (kSenderCameraWaterItem).
@@ -324,7 +333,12 @@ inline constexpr int kEffects = 227;   // PIRN marks every converted electric
 // ones one Remastered link activates, is replaced (the Reactor's Smoke'n'Sparks drew twice).
 // 82: roomfx v17, retail effects Remastered dropped are hidden.
 // 83: retail Generator templates Remastered's GeneratorMP1 dropped are skipped.
-inline constexpr int kRooms = 83;
+// 84: roomfx v18, FishCloudMP1's swim properties (speed variance, turning, darting, wobble).
+// 85: an actor with the room's own model on a retail Actor whose model the table carries over
+// stands in for it (Research Lab Hydra's force field).
+// 86: a room's fog hints its own Relays switch from the camera water (FluidRelayLinks) get those
+// links (the Reflecting Pool's water fogs were dropped as unlinked).
+inline constexpr int kRooms = 86;
 inline constexpr int kRoomModels = 1;  // the rooms' own models and their levels of detail
 // kText: port_remastered_text, and the font (port_remastered_font).
 // 2: text/.disc, the disc the tables were merged from (kTextDiscName).

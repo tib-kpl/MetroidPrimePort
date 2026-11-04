@@ -10,6 +10,7 @@
 
 #include "port_remastered_room_internal.h"
 #include "port_gunship_scenery.h"
+#include "port_remastered_table.h"
 
 namespace PortRemastered {
 namespace RoomDetail {
@@ -2469,8 +2470,38 @@ void Writer::WriteGeometry(const RoomData& r, uint32_t mrea, const Area& area) {
     uint32_t instance;
     Vec3 pos, lo, hi;
     bool lore;
+    bool covers;  // hides the dropped retail actors whose origin its box holds
+    bool own;     // the room's own model on a carried-over actor: hides only that actor
   };
   std::vector<Standin> standins;
+  // The retail Actors whose model the table replaces by its carried-over copy (a Remastered id
+  // 10000000-0000-f000-f000-0000XXXXXXXX), which only some rooms place: Research Lab Hydra's
+  // force field 982D9D75 is the Frigate hangar's carried-over pane in the table, but Remastered's
+  // Research_A puts its own (603d908b) on the same spot, unmarked as added. Such an actor stands
+  // in for the retail one, so the room draws the model Remastered gives it there.
+  std::vector<const ScriptObject*> carriedActors;
+  {
+    static constexpr uint8_t kCarried[12] = {0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf0, 0x00, 0xf0, 0x00, 0x00, 0x00};
+    size_t count = 0;
+    const TableEntry* table = Table(count);
+    std::vector<uint32_t> carried;
+    for (size_t i = 0; i < count; ++i) {
+      // A save station's room carries its retail model over as well (m_roomRetailIds), so its own
+      // model there is another object at the same spot, not this one's replacement.
+      if (std::memcmp(table[i].rem, kCarried, 12) == 0 && m_roomRetailIds.count(table[i].retail) == 0) {
+        carried.push_back(table[i].retail);
+      }
+    }
+    for (const ScriptObject& o : area.objects) {
+      if (o.type == kRetailActor && o.hasPos && std::any_of(carried.begin(), carried.end(), [&](uint32_t id) {
+            const uint8_t be[4] = {uint8_t(id >> 24), uint8_t(id >> 16), uint8_t(id >> 8), uint8_t(id)};
+            return std::search(o.props.begin(), o.props.end(), be, be + 4) != o.props.end();
+          })) {
+        carriedActors.push_back(&o);
+      }
+    }
+  }
+  size_t ownModels = 0;
   std::vector<const Component*> renderActors = r.room.Of(kActorMP1);
   const auto renderPlatforms = r.room.Of(kPlatformComponent);
   renderActors.insert(renderActors.end(), renderPlatforms.begin(), renderPlatforms.end());
@@ -2488,10 +2519,28 @@ void Writer::WriteGeometry(const RoomData& r, uint32_t mrea, const Area& area) {
     const bool synthetic = hasModel && (m_syntheticEntities.count(c->entity) != 0 ||
                                         (!isPlatform && std::memcmp(r.room.Bytes(prop->second), kRetailIdPrefix, 12) != 0 &&
                                          loreSheet(r.room.Bytes(prop->second))));
-    if ((!isPlatform && f.find(kPropActorAdded) == f.end() && !synthetic) || (!hasModel && !hasAnim) ||
+    const bool added = f.find(kPropActorAdded) != f.end();
+    const bool ownModel = !isPlatform && !added && !synthetic && hasModel && !carriedActors.empty() &&
+                          std::memcmp(r.room.Bytes(prop->second), kRetailIdPrefix, 12) != 0;
+    if ((!isPlatform && !added && !synthetic && !ownModel) || (!hasModel && !hasAnim) ||
         !r.room.Xform(*c, pos, rot, scale)) {
       continue;
     }
+    if (ownModel) {
+      const Vec3 w = Apply(area.xf, MulR2G(pos));
+      const auto carried = std::find_if(carriedActors.begin(), carriedActors.end(),
+                                        [&](const ScriptObject* o) { return MaxAbs(o->pos, w) < kRetailActorNear; });
+      if (carried == carriedActors.end()) {
+        continue;
+      }
+      const uint8_t* model = r.room.Bytes(prop->second);
+      char line[160];
+      std::snprintf(line, sizeof line, "  %s: retail actor %08X at (%.1f, %.1f, %.1f) draws the room's own %02x%02x%02x%02x",
+                    r.name.c_str(), (*carried)->id, w[0], w[1], w[2], model[3], model[2], model[1], model[0]);
+      Log(line);
+      ++ownModels;
+    }
+    const bool standsIn = synthetic || ownModel;
     if (isPlatform) {
       // A platform is a retail Platform that moves and collides as its script drives it.
       // Its Remastered model is drawn only riding that Platform (`platformTransform`) or one it
@@ -2632,10 +2681,12 @@ void Writer::WriteGeometry(const RoomData& r, uint32_t mrea, const Area& area) {
     PortRoomGeo::Instance& inst = instances.emplace_back();
     inst.model = known->second;
     place(inst, pos, rot, scale);
-    if (Vec3 lo, hi; synthetic && modelBounds(r.room.Bytes(prop->second), lo, hi)) {
+    if (Vec3 lo, hi; standsIn && modelBounds(r.room.Bytes(prop->second), lo, hi)) {
       Standin& s = standins.emplace_back();
       s.instance = uint32_t(instances.size() - 1);
       s.lore = loreSheet(r.room.Bytes(prop->second));
+      s.covers = synthetic;
+      s.own = ownModel;
       s.pos = Apply(area.xf, MulR2G(pos));
       s.lo = Vec3{HUGE_VAL, HUGE_VAL, HUGE_VAL};
       s.hi = Vec3{-HUGE_VAL, -HUGE_VAL, -HUGE_VAL};
@@ -2766,7 +2817,9 @@ void Writer::WriteGeometry(const RoomData& r, uint32_t mrea, const Area& area) {
         if (by != nullptr) {
           break;
         }
-        if (MaxAbs(s.pos, o.pos) < kRetailActorNear) {
+        // Other retail actors may stand at the carried-over one's origin: only that one goes.
+        if (MaxAbs(s.pos, o.pos) < kRetailActorNear &&
+            (!s.own || std::find(carriedActors.begin(), carriedActors.end(), &o) != carriedActors.end())) {
           by = &s;
           break;
         }
@@ -2775,7 +2828,7 @@ void Writer::WriteGeometry(const RoomData& r, uint32_t mrea, const Area& area) {
             return MaxAbs(p, o.pos) < kRetailActorNear;
           })) {
         for (const Standin& s : standins) {
-          if (inside(o.pos, s.lo, s.hi, kStandinMargin)) {
+          if (s.covers && inside(o.pos, s.lo, s.hi, kStandinMargin)) {
             by = &s;
             break;
           }
@@ -2788,8 +2841,13 @@ void Writer::WriteGeometry(const RoomData& r, uint32_t mrea, const Area& area) {
     }
   }
   if (!m_syntheticEntities.empty() || !standins.empty()) {
-    Log("  " + r.name + ": " + std::to_string(standins.size()) + " of " + std::to_string(m_syntheticEntities.size()) +
+    const size_t synthetics = size_t(std::count_if(standins.begin(), standins.end(), [](const Standin& s) { return !s.own; }));
+    Log("  " + r.name + ": " + std::to_string(synthetics) + " of " + std::to_string(m_syntheticEntities.size()) +
         " Remastered stand-in actors drawn, " + std::to_string(standinHidden) + " retail actors hidden");
+  }
+  if (ownModels != 0) {
+    Log("  " + r.name + ": " + std::to_string(ownModels) +
+        " actors draw the room's own model where the table carries a retail one over");
   }
   // The room's skies, drawn in place of the world's: retail has one per world, Remastered
   // one per room, each turned and scaled to suit it (and two in the Frigate's hangar, one

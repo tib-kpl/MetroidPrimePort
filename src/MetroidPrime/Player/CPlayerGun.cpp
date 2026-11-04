@@ -612,7 +612,7 @@ void CPlayerGun::PortSnapshotPresentedPose(const CStateManager& mgr) const {
 }
 
 void CPlayerGun::PortShotFromDrawnMuzzle(const CStateManager& mgr, CTransform4f& xf, bool aim) const {
-  // CStateManager's RenderGun pass draws the gun at the retail FOV when the view's differs,
+  // CStateManager's RenderGun pass draws the gun at its own FOV when the view's differs,
   // so on screen the muzzle sits where a world point at the same depth, scaled out from the
   // view axis by the ratio of the two projections, would. Shots start there, so they leave
   // the cannon as drawn; with pointer aim they still head for the pointed point.
@@ -625,10 +625,10 @@ void CPlayerGun::PortShotFromDrawnMuzzle(const CStateManager& mgr, CTransform4f&
     return;
   }
   const CGameCamera& cam = camMgr->GetCurrentCamera(mgr);
-  if (cam.GetFov() == PortDebug::kFovRetail) {
+  if (!PortDebug::GunOwnFov(cam.GetFov())) {
     return;
   }
-  const float gunTan = tanf(CGameCamera::VertPlusFov(PortDebug::kFovRetail, cam.GetAspectRatio()) *
+  const float gunTan = tanf(CGameCamera::VertPlusFov(PortDebug::GunDrawFov(cam.GetFov()), cam.GetAspectRatio()) *
                             0.5f * (M_PIF / 180.f));
   const float viewTan = tanf(cam.GetRenderFov() * 0.5f * (M_PIF / 180.f));
   if (gunTan <= 0.f || viewTan <= 0.f) {
@@ -1047,14 +1047,21 @@ void CPlayerGun::Update(float grappleSwingT, float cameraBobT, float dt, CStateM
       isUnmorphed ? just_thawed(x834_29_frozen, player.GetFrozenState()) : false;
   x834_29_frozen = isUnmorphed ? player.GetFrozenState() : false;
   const float advDt = x834_29_frozen ? 0.f : dt;
+#ifdef TARGET_PC
+  // beam_switch_speed: a beam change's from/to-beam animations, hand and wipe run
+  // faster (the rest of the gun keeps advDt).
+  const float switchDt = advDt * PortBeamSwitchScale();
+#else
+  const float switchDt = advDt;
+#endif
 
   const bool inMorph = gunState != CGunMorph::kGS_OutWipeDone;
   if (mgr.GetPlayerState()->GetCurrentVisor() == CPlayerState::kPV_XRay || inMorph) {
-    x6e0_rightHandModel.AdvanceAnimation(advDt, mgr, kInvalidAreaId, true);
+    x6e0_rightHandModel.AdvanceAnimation(switchDt, mgr, kInvalidAreaId, true);
   }
   if (inMorph && x734_loadingBeam != NULL && x734_loadingBeam != x72c_currentBeam) {
     x744_auxWeapon->LoadIdle();
-    x734_loadingBeam->Update(advDt, mgr);
+    x734_loadingBeam->Update(switchDt, mgr);
   }
   if (!x744_auxWeapon->IsLoaded()) {
     x744_auxWeapon->LoadIdle();
@@ -1073,7 +1080,7 @@ void CPlayerGun::Update(float grappleSwingT, float cameraBobT, float dt, CStateM
     CancelFiring(mgr);
   }
 
-  x72c_currentBeam->Update(advDt, mgr);
+  x72c_currentBeam->Update(switchDt, mgr);
   x73c_gunMotion->Update(advDt * x370_gunMotionSpeedMult, mgr);
   x740_grappleArm->Update(grappleSwingT, advDt, mgr);
 
@@ -1235,6 +1242,14 @@ void CPlayerGun::Update(float grappleSwingT, float cameraBobT, float dt, CStateM
     beamTargetXf = GetGunMotionTransform() * x418_beamLocalXf;
     beamTargetXf.AddTranslation(camTrans);
   }
+  // The combo streams (Wavebuster, Flamethrower) start at and follow
+  // beamTargetXf every frame: with the gun at its own FOV it starts at the drawn muzzle and
+  // heads where retail's would, or the stream leaves beside the cannon, more so the wider
+  // the view and the further the cannon is offset.
+  if ((sPortRemasteredGun || !x833_29_pointBlankWorldSurface) &&
+      x744_auxWeapon->IsComboFxActive(mgr)) {
+    PortShotFromDrawnMuzzle(mgr, beamTargetXf);
+  }
 #endif
 
   const bool emitting = x833_30_canShowAuxMuzzleEffect ? x344_comboXferTimer < 1.f : false;
@@ -1267,7 +1282,7 @@ void CPlayerGun::Update(float grappleSwingT, float cameraBobT, float dt, CStateM
   }
 
   UpdateGunLight(beamWorldXf, mgr);
-  ProcessGunMorph(advDt, mgr);
+  ProcessGunMorph(switchDt, mgr);
   if (x835_26_phazonBeamMorphing) {
     ProcessPhazonGunMorph(advDt, mgr);
   }
@@ -1449,6 +1464,10 @@ void CPlayerGun::ProcessInput(const CFinalInput& input, CStateManager& mgr) {
 }
 
 #ifdef TARGET_PC
+float CPlayerGun::PortBeamSwitchScale() const {
+  return IsWeaponStateSet(0x8) ? float(PortDebug::BeamSwitchSpeed()) / 100.f : 1.f;
+}
+
 // Port: the beam change HandleBeamChange starts, without the input.
 void CPlayerGun::PortSwitchToOwnedBeam(CStateManager& mgr) {
   const CPlayerState& playerState = *mgr.GetPlayerState();
@@ -3627,6 +3646,16 @@ void CPlayerGun::ProcessGunMorph(float dt, CStateManager& mgr) {
     }
     x832_30_requestReturnToDefault = false;
     x338_nextState = kNS_SetupBeam;
+#ifdef TARGET_PC
+    // beam_switch_fire: kNS_SetupBeam's work now, not when the into-beam animation ends;
+    // the animation plays on until a shot replaces it.
+    if (PortDebug::BeamSwitchFire()) {
+      x390_cooldown = x72c_currentBeam->GetWeaponInfo().x0_coolDown;
+      DisableWeaponState(0x8);
+      ResetToBeam();
+      x338_nextState = kNS_StatusQuo;
+    }
+#endif
     break;
   default:
     break;

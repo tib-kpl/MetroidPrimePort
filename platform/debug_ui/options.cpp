@@ -699,6 +699,24 @@ bool StackBeams() {
 
 void SetStackBeams(bool enabled) { StoreSetting(sStackBeams, enabled); }
 
+int BeamSwitchSpeed() {
+  EnsureInitialized();
+  return sOriginalExperience ? kBeamSwitchSpeedDefault : sBeamSwitchSpeed;
+}
+
+void SetBeamSwitchSpeed(int percent) {
+  EnsureInitialized();
+  sBeamSwitchSpeed = std::clamp(percent, kBeamSwitchSpeedMin, kBeamSwitchSpeedMax);
+  MarkDirty();
+}
+
+bool BeamSwitchFire() {
+  EnsureInitialized();
+  return sBeamSwitchFire && !sOriginalExperience;
+}
+
+void SetBeamSwitchFire(bool enabled) { StoreSetting(sBeamSwitchFire, enabled); }
+
 bool SeamlessPickups() {
   EnsureInitialized();
   return sSeamlessPickups && !sOriginalExperience;
@@ -771,6 +789,26 @@ void SetFirstPersonFov(float degrees) {
   EnsureInitialized();
   if (std::isfinite(degrees)) {
     sFirstPersonFov = std::clamp(degrees, kFovMin, kFovMax);
+    MarkDirty();
+  }
+}
+
+bool GunFollowsFov() {
+  EnsureInitialized();
+  return sGunFollowsFov && !sOriginalExperience;
+}
+
+void SetGunFollowsFov(bool enabled) { StoreSetting(sGunFollowsFov, enabled); }
+
+float GunFov() {
+  EnsureInitialized();
+  return sOriginalExperience ? kFovRetail : sGunFov;
+}
+
+void SetGunFov(float degrees) {
+  EnsureInitialized();
+  if (std::isfinite(degrees)) {
+    sGunFov = std::clamp(degrees, kFovMin, kFovMax);
     MarkDirty();
   }
 }

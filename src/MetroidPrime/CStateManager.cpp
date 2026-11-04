@@ -2638,8 +2638,12 @@ rstl::pair< TEditorId, TUniqueId > CStateManager::GenerateObject(const TEditorId
 #ifdef TARGET_PC
     // Only script generators set the generating flag (a boss's own spawns do not):
     // a save state brings such a copy back from the template it was made from.
+    // The copy takes the area's room effects (override, patches...) as the template did.
+    const bool roomEffects = PortRoomEffects::BeginGenerate(area->GetAreaAssetId());
     const rstl::pair< TEditorId, TUniqueId > made =
         LoadScriptObject(TAreaId(areaId), build.first->x0_type, build.first->x8_length, stream);
+    if (roomEffects)
+      PortRoomEffects::EndGenerate();
     if (xf94_26_generatingObject && made.second != kInvalidUniqueId)
       PortSaveState::NoteGenerated(*this, made.second.value);
     return made;
@@ -3147,36 +3151,36 @@ static std::vector<const PortRoomEnv::FogRegion*> sPortFogRegions;
 // MP_SHADOW_DIR ("x,y,z", the way the light travels) and MP_SHADOW_COLOR ("r,g,b") override the
 // room's sun.
 // The room's Remastered sun (port_room_env.h), when its import has one.
-static bool PortRoomSun(const CGameArea& area, CScriptLayerManager* layers, bool cinematic, float dir[3],
+static bool PortRoomSun(const CGameArea& area, const CStateManager& mgr, bool cinematic, float dir[3],
                         float color[3]) {
   struct Layers {
-    CScriptLayerManager* layers;
+    const CStateManager& mgr;
     TAreaId area;
-  } l{layers, area.GetId()};
+  } l{mgr, area.GetId()};
   return PortRoomEnv::Sun(
       [](int32_t layer, void* context) {
         const Layers& l = *static_cast< const Layers* >(context);
-        return l.layers == nullptr || l.layers->IsLayerActive(l.area, TLayerId(layer));
+        return l.mgr.PortLayerLoaded(l.area, layer);
       },
       &l, cinematic, dir, color);
 }
 
 // The room's other directional lights, which light without a shadow, as room light records.
-static void PortRoomSunLights(const CGameArea& area, CScriptLayerManager* layers, bool cinematic,
+static void PortRoomSunLights(const CGameArea& area, const CStateManager& mgr, bool cinematic,
                               const float worldToView[3][4], std::vector< float >& out) {
   struct Layers {
-    CScriptLayerManager* layers;
+    const CStateManager& mgr;
     TAreaId area;
-  } l{layers, area.GetId()};
+  } l{mgr, area.GetId()};
   PortRoomEnv::SunLights(
       [](int32_t layer, void* context) {
         const Layers& l = *static_cast< const Layers* >(context);
-        return l.layers == nullptr || l.layers->IsLayerActive(l.area, TLayerId(layer));
+        return l.mgr.PortLayerLoaded(l.area, layer);
       },
       &l, cinematic, worldToView, out);
 }
 
-static bool PortSetupShadow(const CTransform4f& view, const CGameArea* area, CScriptLayerManager* layers,
+static bool PortSetupShadow(const CTransform4f& view, const CGameArea* area, const CStateManager& mgr,
                             bool cinematic, bool enabled, bool roomLights) {
   static const bool sOn = port::EnvFlag("MP_SHADOWS", true);
   static const float sDistance = port::EnvFloat("MP_SHADOW_DISTANCE", 350.f);
@@ -3189,7 +3193,7 @@ static bool PortSetupShadow(const CTransform4f& view, const CGameArea* area, CSc
     float envDir[3];
     if (sDirEnv != nullptr && sscanf(sDirEnv, "%f,%f,%f", &envDir[0], &envDir[1], &envDir[2]) == 3) {
       dir[0] = envDir[0], dir[1] = envDir[1], dir[2] = envDir[2];
-    } else if (area != nullptr && PortRoomSun(*area, layers, cinematic, dir, color)) {
+    } else if (area != nullptr && PortRoomSun(*area, mgr, cinematic, dir, color)) {
       for (int i = 0; i < 3; ++i) {
         dir[i] = -dir[i]; // the way the light travels, as a CLight's direction
       }
@@ -3241,7 +3245,7 @@ static bool PortSetupShadow(const CTransform4f& view, const CGameArea* area, CSc
   if (roomLights) {
     PortRoomEnv::RoomLights(worldToView, sRoomLights);
     if (area != nullptr) {
-      PortRoomSunLights(*area, layers, cinematic, worldToView, sRoomLights);
+      PortRoomSunLights(*area, mgr, cinematic, worldToView, sRoomLights);
     }
   }
   GXPortSetRoomLights(sRoomLights.data(), u32(sRoomLights.size() / 16));
@@ -3344,6 +3348,18 @@ static void PortDrawVolumetricFog(const CStateManager& mgr, const CTransform4f& 
   GXPortVolumetricFog(&p);
 }
 
+bool CStateManager::PortLayerLoaded(TAreaId area, int layer) const {
+  const CScriptLayerManager* layers = x8c8_worldLayerState.GetPtr();
+  if (layers == nullptr || area == kInvalidAreaId || layer >= layers->GetAreaLayerCount(area)) {
+    return true;
+  }
+  uint64_t loaded = 0;
+  if (PortSaveState::AreaLoadedLayers(*this, area.Value(), loaded)) {
+    return ((loaded >> layer) & 1) != 0;
+  }
+  return layers->IsLayerActive(area, TLayerId(layer));
+}
+
 void CStateManager::PortCaptureProbeFace() const {
   if (CCubeMaterial::sPortPBRProbeMode < 0) {
     // off/on/mirror/window or 0-3, as docs/SETTINGS.md lists them.
@@ -3366,22 +3382,26 @@ void CStateManager::PortCaptureProbeFace() const {
     }
   }
   PortRoomEnv::SetLoadedAreas(mreas, mreaCount);
-  // Their probes follow the script layers, as Remastered's ReflectionProbe entities do.
-  if (const CScriptLayerManager* const layers = x8c8_worldLayerState.GetPtr()) {
-    for (int i = 0; i < x850_world->GetNumAreas(); ++i) {
-      const CGameArea& area = *x850_world->GetArea(TAreaId(i));
-      if (!area.IsLoaded()) {
-        continue;
-      }
-      uint64_t active = 0;
-      const int count = layers->GetAreaLayerCount(TAreaId(i));
-      for (int layer = 0; layer < 64; ++layer) {
-        if (layer >= count || layers->IsLayerActive(TAreaId(i), TLayerId(layer))) {
-          active |= uint64_t(1) << layer;
-        }
-      }
-      PortRoomEnv::SetAreaLayers(area.GetAreaAssetId(), active);
+  for (int i = 0; i < x850_world->GetNumAreas(); ++i) {
+    const CGameArea& area = *x850_world->GetArea(TAreaId(i));
+    if (area.IsLoaded()) {
+      PortRoomEnv::SetAreaVisible(area.GetAreaAssetId(), area.GetOcclusionState() == CGameArea::kOS_Visible);
     }
+  }
+  // Their probes follow the script layers the area loaded with, as Remastered's ReflectionProbe
+  // entities do.
+  for (int i = 0; i < x850_world->GetNumAreas(); ++i) {
+    const CGameArea& area = *x850_world->GetArea(TAreaId(i));
+    if (!area.IsLoaded()) {
+      continue;
+    }
+    uint64_t active = 0;
+    for (int layer = 0; layer < 64; ++layer) {
+      if (PortLayerLoaded(TAreaId(i), layer)) {
+        active |= uint64_t(1) << layer;
+      }
+    }
+    PortRoomEnv::SetAreaLayers(area.GetAreaAssetId(), active);
   }
   PortRoomEnv::UpdateLightHints();
   if (x8cc_nextAreaId != kInvalidAreaId) {
@@ -3474,18 +3494,12 @@ void CStateManager::PortCaptureProbeFace() const {
       dt += 900.f;
     }
     lastTime = xf14_curTimeMod900;
-    struct Layers {
-      const CScriptLayerManager* layers;
-      TAreaId area;
-    } layers{x8c8_worldLayerState.GetPtr(), x8cc_nextAreaId};
     PortRoomEnv::UpdateFog(
         [](int32_t layer, void* context) {
-          const Layers& l = *static_cast< const Layers* >(context);
-          return l.layers == nullptr || l.area == kInvalidAreaId ||
-                 layer >= l.layers->GetAreaLayerCount(l.area) ||
-                 l.layers->IsLayerActive(l.area, TLayerId(layer));
+          const CStateManager& mgr = *static_cast< const CStateManager* >(context);
+          return mgr.PortLayerLoaded(mgr.x8cc_nextAreaId, layer);
         },
-        &layers, dt);
+        const_cast< CStateManager* >(this), dt);
     PortRoomLiquid::Advance(dt);
     sPortVolFog = PortRoomEnv::VolumetricFog(sPortFog);
     sPortRemasteredFog = PortRoomEnv::FogOwnsRoom();
@@ -3728,10 +3742,10 @@ void CStateManager::DrawWorld() const {
       !PortThirdPerson::Active()) {
     const CGameCamera& gunCam = x870_cameraManager->GetCurrentCamera(*this);
     const CGraphics::CProjectionState gunProj = CGraphics::GetProjectionState();
-    if (gunCam.GetFov() != PortDebug::kFovRetail) {
+    if (PortDebug::GunOwnFov(gunCam.GetFov())) {
       const CViewport& gunViewport = CGraphics::GetViewport();
       gpRender->SetPerspective(
-          CGameCamera::VertPlusFov(PortDebug::kFovRetail, gunCam.GetAspectRatio()),
+          CGameCamera::VertPlusFov(PortDebug::GunDrawFov(gunCam.GetFov()), gunCam.GetAspectRatio()),
           static_cast< float >(gunViewport.mWidth), static_cast< float >(gunViewport.mHeight),
           gunCam.GetNearClipDistance(), gunCam.GetFarClipDistance());
     }
@@ -3746,7 +3760,7 @@ void CStateManager::DrawWorld() const {
   const u32 portGunFirstSerial = GXPortCopySerial();
   // The opaque world casts (and receives) from here to GXPortRenderShadowMap, but for the sky.
   const bool portShadow =
-      PortSetupShadow(backupViewMatrix, portVisArea, x8c8_worldLayerState.GetPtr(),
+      PortSetupShadow(backupViewMatrix, portVisArea, *this,
                       x870_cameraManager->IsInCinematicCamera(), !thermal && visor != CPlayerState::kPV_XRay && !portCollisionOnly,
                       !thermal && visor != CPlayerState::kPV_XRay);
   GXPortSetShadowCaster(portShadow);
@@ -4139,17 +4153,17 @@ void CStateManager::DrawWorld() const {
   if (x84c_player != nullptr) {
 #endif
 #ifdef TARGET_PC
-    // Port: with the FOV slider off retail, draw the arm cannon at the retail
+    // Port: when the arm cannon's FOV differs from the view's, draw it at its own
     // FOV (a view-model FOV), so a wide view doesn't shrink it or push it off
-    // the screen's corner.
+    // the screen's corner. "Arm cannon follows FOV" keeps the world's projection instead.
     const CGameCamera& gunCam = x870_cameraManager->GetCurrentCamera(*this);
     // Not in third person: its charge fx and grapple beam form on the body, in the world's view.
     const bool gunFov = x870_cameraManager->IsInFPCamera() && !PortThirdPerson::Active() &&
-                        gunCam.GetFov() != PortDebug::kFovRetail;
+                        PortDebug::GunOwnFov(gunCam.GetFov());
     const CGraphics::CProjectionState gunProj = CGraphics::GetProjectionState();
     if (gunFov) {
       const CViewport& gunViewport = CGraphics::GetViewport();
-      gpRender->SetPerspective(CGameCamera::VertPlusFov(PortDebug::kFovRetail, gunCam.GetAspectRatio()), static_cast< float >(gunViewport.mWidth),
+      gpRender->SetPerspective(CGameCamera::VertPlusFov(PortDebug::GunDrawFov(gunCam.GetFov()), gunCam.GetAspectRatio()), static_cast< float >(gunViewport.mWidth),
                                static_cast< float >(gunViewport.mHeight),
                                gunCam.GetNearClipDistance(), gunCam.GetFarClipDistance());
     }
@@ -4340,6 +4354,32 @@ void CStateManager::DrawCameraFilters() const {
     xb84_camFilterPasses[i].Draw();
   }
 }
+
+#ifdef TARGET_PC
+int CStateManager::PortCameraFilterMultiply(float rgb[3]) const {
+  for (int i = 0; i < kCFS_Max; ++i) {
+    CColor color;
+    if (xb84_camFilterPasses[i].PortMultiplyColor(color)) {
+      rgb[0] = color.GetRed();
+      rgb[1] = color.GetGreen();
+      rgb[2] = color.GetBlue();
+      return i;
+    }
+    if (!xb84_camFilterPasses[i].PortDrawsNothing()) {
+      return -1;
+    }
+  }
+  return -1;
+}
+
+void CStateManager::PortDrawCameraFilters(int skip) const {
+  for (int i = 0; i < kCFS_Max; ++i) {
+    if (i != skip) {
+      xb84_camFilterPasses[i].Draw();
+    }
+  }
+}
+#endif
 
 void CStateManager::DrawDebugStuff() const {}
 

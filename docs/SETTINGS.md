@@ -400,7 +400,9 @@
   point; grapple points follow Toggle Grapple) latches it held and the next press
   lets go. With nothing
   to lock on, L is a plain hold (strafe while held). The latch also lets go by
-  itself when its lock ends (target dead or out of range). Sticky
+  itself when its lock ends (target dead or out of range). So does an L binding
+  whose trigger is Toggle (F1 Remap), once it has locked on or grappled; one that
+  never locked stays on until pressed again. Sticky
   Charge (`sticky_charge`, off by default, needs the Charge Beam): holding fire
   for 0.35 s or more keeps the charge held after letting go, and the next press
   fires it; shorter taps shoot as usual. Both are off in morph ball and while
@@ -645,9 +647,16 @@
   16:9. Menus, the credits and other non-aspect-matched frames are unaffected.
 - Field of view (Video > Display and pause Options > Display, persisted as `fov`,
   45-120, retail 55): the first-person camera's vertical FOV. The overlay also
-  shows the horizontal FOV it gives at the current aspect. The arm cannon is
-  drawn at the retail FOV whatever the setting (a view-model FOV), so it keeps
-  its size and place. Shots start where the cannon is drawn and are aimed at
+  shows the horizontal FOV it gives at the current aspect. By default the arm
+  cannon is drawn at its own FOV whatever the setting (a view-model FOV), so
+  it keeps its size and place: Arm cannon FOV (Video > Display and pause
+  Options > Display, persisted as `gun_fov`, 45-120, default the retail 55,
+  retail in the original experience; higher draws it smaller and further into
+  the corner). Arm cannon follows FOV (the row below it,
+  persisted as `gun_follows_fov`, default off, off in the original experience)
+  draws it in the world's perspective instead: a wider FOV shows it smaller and
+  further into the corner, as the world around it. Shots then leave the real
+  muzzle as retail's do. With it off, shots start where the cannon is drawn and are aimed at
   where retail's would arrive (the aim target at its depth when assist aimed
   the shot at it, else what lies on retail's line), so they hit what retail's
   hit (#134). Morph ball, cutscene and other scripted cameras keep
@@ -1008,6 +1017,22 @@
   shot (nothing blocks). The other beams' projectile data is kept loaded while
   the setting is on and released when it is turned off. Shots fire at the
   selected beam's rate.
+- Beam switch speed (F1 > Game > Cutscenes, `beam_switch_speed`, 100 to 400
+  percent, 100 by default and 100 in the Original experience; issue #243): plays
+  the arm cannon's beam change (the wipe out, the swap and the wipe in) that
+  much faster, so a shot can follow sooner. Only the beam change is sped up;
+  the Phazon Beam's change and everything else run at the normal rate.
+- Fire during beam switch (F1 > Game > Cutscenes, `beam_switch_fire`, off by
+  default and off in the Original experience; issue #243): the new beam can fire
+  as soon as it is swapped in, while the arm cannon is still finishing its
+  change animation, instead of after it.
+- Next/Previous target (Controls, actions `target_next` and `target_prev`;
+  issue #243): while locked on, a press moves the lock to the visible target
+  nearest to the right (Next) or left (Previous) of the current one, wrapping to
+  the far side; grapple points are skipped. The actions work only while locked
+  on (input context `lockon`), where their inputs do nothing else (bound to the
+  mouse wheel, it moves the lock instead of cycling beams). Unbound by default.
+  Off in the Original experience.
 - Walk speed (F1 > Game > Cutscenes, `walk_speed`, 50 to 200 percent, 100 by
   default and 100 in the Original experience): scales how fast Samus moves on
   foot. The top speed, acceleration and friction of walking and strafing (also

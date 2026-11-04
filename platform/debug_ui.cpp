@@ -137,6 +137,8 @@ bool sSkippableCutscenes = false;
 // Off by default: a beam door that was opened stays blue (PortBeamDoors).
 bool sBeamDoorsStayUnlocked = false;
 bool sStackBeams = false;
+int sBeamSwitchSpeed = PortDebug::kBeamSwitchSpeedDefault;
+bool sBeamSwitchFire = false;
 bool sSeamlessPickups = false;
 bool sWalkSpeedEnabled = true;
 int sWalkSpeed = PortDebug::kWalkSpeedDefault;
@@ -167,6 +169,8 @@ bool sLogFile = true;
 std::mutex sRandoMutex;
 PortRandoGen::Settings sRandoSettings;
 float sFirstPersonFov = PortDebug::kFovRetail;
+bool sGunFollowsFov = false;
+float sGunFov = PortDebug::kFovRetail;
 float sGunOffset[3] = {};
 int sMsaa = 1;
 int sAnisotropy = 16;

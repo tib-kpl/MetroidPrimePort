@@ -321,6 +321,11 @@ public:
   // Remastered visor effects the last HDR world pass left out (not thermal), over the post output.
   void PortDrawVisorEffects() const;
   void PortUpdateIceDarkeners(float dt);
+  // Whether `layer` of `area` was active when the area's script objects last loaded, for the
+  // Remastered room components on it. Remastered's layer controller only sets an environment
+  // variable (0xd969c8 -> SetValue 0x3df484); load units follow it at the next room load
+  // (EvaluateLoadUnits 0x3fb2d8) or unload (ContinueUnload), as retail's script objects do.
+  bool PortLayerLoaded(TAreaId area, int layer) const;
   // CMFGame snapshots this per-world-pass policy; DrawWorld consumes and clears it before
   // recording the LDR probe capture or beginning the real scene.
   static bool sPortSceneHdrRequest;
@@ -346,6 +351,13 @@ public:
 #endif
   void RenderCamerasAndAreaLights() const;
   void DrawCameraFilters() const;
+#ifdef TARGET_PC
+  // The pass index of a fullscreen Multiply filter the HDR composite can take (no pass before it
+  // draws), its colour in rgb; -1 for none.
+  int PortCameraFilterMultiply(float rgb[3]) const;
+  // DrawCameraFilters leaving out pass `skip` (-1: none).
+  void PortDrawCameraFilters(int skip) const;
+#endif
   void DrawE3DeathEffect() const;
   void DrawAdditionalFilters() const;
   void GetCharacterRenderMaskAndTarget(bool, int&, int&);
