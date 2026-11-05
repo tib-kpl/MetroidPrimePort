@@ -22,6 +22,7 @@
 #include "Kyoto/Animation/CVertexMorphEffect.hpp"
 #include "Kyoto/Audio/CSfxManager.hpp"
 #include "Kyoto/CDependencyGroup.hpp"
+#include "Kyoto/Graphics/CCubeMaterial.hpp"
 #include "Kyoto/Graphics/CGraphics.hpp"
 #include "Kyoto/Graphics/CCubeModel.hpp"
 #include "Kyoto/Graphics/CModel.hpp"
@@ -35,9 +36,14 @@
 #ifdef TARGET_PC
 #include <dolphin/gx/GXExtra.h>
 
+#include "Kyoto/Animation/CAnimCharacterSet.hpp"
+#include "Kyoto/CResFactory.hpp"
+#include "Kyoto/CSimplePool.hpp"
+
 #include "port_beam_colours.h"
 #include "port_dread_samus_mod.h"
 #include "port_echoes_suits_mod.h"
+#include "port_model_variant.h"
 #endif
 
 const char* const CGunWeapon::skMuzzleNames[10] = {
@@ -159,6 +165,31 @@ void CGunWeapon::LoadGunModels(CStateManager& mgr) {
   LoadSuitArm(mgr);
   x10_solidModelData->SetSortThermal(true);
   x60_holoModelData->SetSortThermal(true);
+#ifdef TARGET_PC
+  // Remastered draws the gun in the thermal hot pass with a model of its own (MDL_ThermalHeatMask,
+  // kb material/c928a6c5.md), which the import writes as a look of the beam's character. Echoes'
+  // cannon has none.
+  if (ancsId == x214_ancsId) {
+    const CAssetId variant = PortModelVariant::Id(x214_ancsId, PortModelVariant::kThermalLook);
+    if (gpResourceFactory->GetResourceTypeById(variant) == 'ANCS') {
+      TToken< CAnimCharacterSet > look = gpSimplePool->GetObj(SObjectTag('ANCS', variant));
+      const CCharacterInfo& info = (*look)->GetCharacterSet().GetCharacterList()[0].second;
+      x10_solidModelData->SetInfraModel(
+          rstl::pair< CAssetId, CAssetId >(info.GetModelId(), info.GetSkinRulesId()));
+      x10_solidModelData->PortSetInfraHdrOnly();
+    }
+    // In X-ray it draws the beam's X-ray model (9d82dc5e, Phazon's 998992d7; shaders ac620b1d,
+    // a6dc7b40), the X-ray character of its CHPR, imported as look 4 of the same ANCS.
+    const CAssetId xray = PortModelVariant::Id(x214_ancsId, PortModelVariant::kXRayLook);
+    if (gpResourceFactory->GetResourceTypeById(xray) == 'ANCS') {
+      TToken< CAnimCharacterSet > look = gpSimplePool->GetObj(SObjectTag('ANCS', xray));
+      const CCharacterInfo& info = (*look)->GetCharacterSet().GetCharacterList()[0].second;
+      x10_solidModelData->SetXRayModel(
+          rstl::pair< CAssetId, CAssetId >(info.GetModelId(), info.GetSkinRulesId()));
+      x10_solidModelData->PortSetXRayHdrOnly();
+    }
+  }
+#endif
   x100_gunController = rs_new CGunController(*x10_solidModelData);
 }
 
@@ -432,8 +463,9 @@ void CGunWeapon::Draw(const bool drawSuitArm, const CStateManager& mgr, const CT
     const CColor mulColor(a, a, a, a);
     CColor addColor(static_cast< uchar >(0x40), 0x40, 0x40, 0x40);
 #ifdef TARGET_PC
-    // Remastered's hot gun takes the thermal override with a = 1, b = 0.
-    CCubeModel::PortSetThermalOverride(1.f, 0.f);
+    // Remastered's CGunWeaponMP1::Draw (0xca271c) draws the hot gun and arm with
+    // SModelThermalParams::DefaultOverride (0xfa738c) of a = the flags' alpha, b = 64/255.
+    CCubeModel::PortSetThermalOverride(a, 0.2509804f);
 #endif
     if (x218_29_drawHologram) {
       DrawHologram(mgr, xf, flags);
@@ -446,7 +478,13 @@ void CGunWeapon::Draw(const bool drawSuitArm, const CStateManager& mgr, const CT
 #endif
     else {
       CModelFlags useFlags(CModelFlags::kT_Opaque, 1.0f);
+#ifdef TARGET_PC
+      CCubeModel::PortApplyGunHeat(true);
+#endif
       x10_solidModelData->RenderThermal(xf, mulColor, addColor, useFlags);
+#ifdef TARGET_PC
+      CCubeModel::PortApplyGunHeat(false);
+#endif
     }
 
 #ifdef TARGET_PC
@@ -462,6 +500,22 @@ void CGunWeapon::Draw(const bool drawSuitArm, const CStateManager& mgr, const CT
 #endif
   } else {
     /* Cold Draw */
+#ifdef TARGET_PC
+    // Remastered's CGunWeaponMP1::Draw (0xca22c0) has no hologram in X-ray: outside a beam
+    // change it renders the solid gun for the visor, so its X-ray model, with the static
+    // Normal().SetWriteZBufferBeforeRender(true, true) (0x4b23af4; kF_DrawNormal is the depth
+    // prepass) and no beam glow. HDR scene only; retail X-ray keeps the hologram.
+    if (CCubeMaterial::sPortSceneHdr && !x218_29_drawHologram && !mPortDreadCannon &&
+        mgr.GetPlayerState()->GetCurrentVisor() == CPlayerState::kPV_XRay) {
+      x10_solidModelData->Render(
+          mgr, xf, lights,
+          CModelFlags(CModelFlags::kT_Opaque, 0,
+                      static_cast< CModelFlags::EFlags >(CModelFlags::kF_DepthCompare |
+                                                         CModelFlags::kF_DepthUpdate |
+                                                         CModelFlags::kF_DrawNormal),
+                      CColor::White()));
+    } else
+#endif
     if (mgr.GetPlayerState()->GetCurrentVisor() != CPlayerState::kPV_XRay &&
         !x218_29_drawHologram) {
 #ifdef TARGET_PC
@@ -624,7 +678,7 @@ void CGunWeapon::PortDrawHologramTransition(const CStateManager& mgr, const CTra
     const float a = flags.GetColorRef().GetAlpha();
     CModelFlags useFlags(CModelFlags::kT_Opaque, 1.0f);
 #ifdef TARGET_PC
-    CCubeModel::PortSetThermalOverride(1.f, 0.f);
+    CCubeModel::PortSetThermalOverride(a, 0.2509804f); // as Draw's
 #endif
     xb0_suitArmModelData->RenderThermal(xf, CColor(a, a, a, a),
                                         CColor(static_cast< uchar >(0x40), 0x40, 0x40, 0x40),
@@ -1012,6 +1066,25 @@ void CGunWeapon::LoadSuitArm(CStateManager& mgr) {
   xb0_suitArmModelData = CStaticRes(armId, x4_scale);
 #endif
   xb0_suitArmModelData->SetSortThermal(true);
+#ifdef TARGET_PC
+  // Remastered draws the arm in the thermal hot pass with <Suit>Arm_Thermal (shader 1826e69d,
+  // c928a6c5's static twin; the Power arm's is plain PBR, drawn with the thermal override),
+  // which the import writes as a look of the retail arm. The Fusion arms have none.
+  if (!mPortDreadCannon) {
+    const CAssetId variant = PortModelVariant::Id(armId, PortModelVariant::kThermalLook);
+    if (gpResourceFactory->GetResourceTypeById(variant) == 'CMDL') {
+      xb0_suitArmModelData->SetInfraModel(rstl::pair< CAssetId, CAssetId >(variant, 0));
+      xb0_suitArmModelData->PortSetInfraHdrOnly();
+    }
+    // In X-ray it draws <Suit>Arm_XRay (the +0x2a8 slot; shader f88778c9, the Power arm's
+    // 24703d2a plain PBR) with the caller's flags, imported as look 4 of the retail arm.
+    const CAssetId xray = PortModelVariant::Id(armId, PortModelVariant::kXRayLook);
+    if (gpResourceFactory->GetResourceTypeById(xray) == 'CMDL') {
+      xb0_suitArmModelData->SetXRayModel(rstl::pair< CAssetId, CAssetId >(xray, 0));
+      xb0_suitArmModelData->PortSetXRayHdrOnly();
+    }
+  }
+#endif
   x218_28_suitArmLocked = false;
   x13c_armCharacter.Unlock();
 }
