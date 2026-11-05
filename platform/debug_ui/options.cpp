@@ -1008,6 +1008,28 @@ bool UnlockHardMode() {
 
 void SetUnlockHardMode(bool enabled) { StoreSetting(sUnlockHardMode, enabled); }
 
+float DamageTakenMultiplier() {
+  EnsureInitialized();
+  return sOriginalExperience ? 1.f : sDamageTakenMult;
+}
+
+void SetDamageTakenMultiplier(float m) {
+  if (std::isfinite(m)) {
+    StoreSetting(sDamageTakenMult, std::clamp(m, kDamageMultMin, kDamageMultMax));
+  }
+}
+
+float DamageDealtMultiplier() {
+  EnsureInitialized();
+  return sOriginalExperience ? 1.f : sDamageDealtMult;
+}
+
+void SetDamageDealtMultiplier(float m) {
+  if (std::isfinite(m)) {
+    StoreSetting(sDamageDealtMult, std::clamp(m, kDamageMultMin, kDamageMultMax));
+  }
+}
+
 bool UnlockFusionSuit() {
   EnsureInitialized();
   return sUnlockFusionSuit && !sOriginalExperience;

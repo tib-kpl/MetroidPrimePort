@@ -1323,6 +1323,13 @@ other `X:\Users\<name>`: `X:\Users\<user>`); the
   `port_save_convert`. Console: `gci list | import <path> | export [usa|pal]
   <dir or .raw> | export trilogy <save.bin> | dolphin import | dolphin export
   [usa|pal|trilogy]`.
+- Difficulty (F1 > Game > Difficulty, persisted as `damage_taken` and
+  `damage_dealt`, x0.1 to x10, 1 by default): linear sliders multiplying the
+  damage Samus takes (`CStateManager::ApplyDamage`) and the damage her shots
+  deal (`NWeaponTypes::get_shot_damage`: beams, charge shots, missiles, charge
+  combos; bombs and power bombs aren't scaled, as on Hard). They apply on top of
+  a Hard file's own x2 and x0.5, take effect on the next hit, and read 1 under
+  Original experience. "Reset difficulty" puts both back to 1.
 - Unlocks (F1 > Game > Unlocks, persisted as `unlock_hard_mode`, `unlock_fusion_suit`,
   `unlock_galleries`, all off by default): offer what finishing the game
   unlocks without finishing it. Hard mode adds Normal/Hard to a new file; the
