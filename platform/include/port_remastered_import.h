@@ -116,7 +116,8 @@ namespace ImportStage {
 // 92: LambertFx lights with the baked probe x BLCM like VFX_Model_Base, not the flat (zero) ambient.
 // 93: cc3e88af (the Omega fight's healing nodules) is kShaderPhazon's skinned twin and draws as kind 21.
 // 94: 9b752e5e (Research Lab Hydra's ForceField_DX11) is 6c1a4768's twin and draws as kind 14.
-inline constexpr int kConverter = 94;
+// 95: cd033236 (the skies' flow-map clouds) draws as kind 49, its flow mask TCH0 in slot 3.
+inline constexpr int kConverter = 95;
 // What a converted texture holds: port_remastered_image/txtr/dds/astc, and Converter's Get and
 // Cube. Each converted texture is kept across imports under its tag and this number, so a
 // kConverter bump re-imports the models without converting their textures again.
@@ -272,7 +273,9 @@ inline constexpr int kModels = 33;
 // 222: CRLN 2d slices are PCRS.
 // 227: PIRN marks every converted electric.
 // 228: a model Remastered keeps under a carried-over id converts as the effect's own (drain debris).
-inline constexpr int kEffects = 228;
+// 229: Remastered decals (DPSM) written over their paired DPSCs, with their material (shader, blend,
+//      texture wrap, parameter defaults), SMTR and TMTR.
+inline constexpr int kEffects = 229;
 // 20: two rooms matching one area write only the closer match's files, not the later room's.
 // 21: roomenv version 22, the world master's hints driven by its camera volumes (the table in every roomenv).
 // 22: a master's InventoryActivator fired by the camera going under water drives its hints (kSenderCameraWaterItem).
@@ -338,7 +341,12 @@ inline constexpr int kEffects = 228;
 // stands in for it (Research Lab Hydra's force field).
 // 86: a room's fog hints its own Relays switch from the camera water (FluidRelayLinks) get those
 // links (the Reflecting Pool's water fogs were dropped as unlinked).
-inline constexpr int kRooms = 86;
+// 87: a retail model's objects in an area whose entity count differs pair with the entity standing
+// where they do, and a per-instance model some of whose objects stay unpaired converts in model space
+// too (1131 placements of 24 models drew the retail model; 21 placements of 2 models still do).
+// 88: the stage record keeps each retail placement's animated flag (a reused rooms stage lost it,
+// and the retail models stage converted animation sets' models).
+inline constexpr int kRooms = 88;
 inline constexpr int kRoomModels = 1;  // the rooms' own models and their levels of detail
 // kText: port_remastered_text, and the font (port_remastered_font).
 // 2: text/.disc, the disc the tables were merged from (kTextDiscName).
@@ -347,7 +355,7 @@ inline constexpr int kText = 2;
 // 10: shell.bin, the silhouette-shell textures (port_shell_file.h).
 // 18: hud/.disc, the disc the frames were rebuilt from (kHudDiscName).
 // 19: icy.bin, the frozen-enemy material (port_icy_file.h).
-inline constexpr int kHud = 19;        // port_remastered_hud, port_remastered_map, envfx.bin, shell.bin, icy.bin
+inline constexpr int kHud = 20;        // port_remastered_hud, port_remastered_map, envfx.bin, shell.bin, icy.bin
 inline constexpr int kMovies = 0;      // port_remastered_movie
 inline constexpr int kGallery = 0;     // the gallery pictures (port_gallery)
 }  // namespace ImportStage
@@ -833,5 +841,12 @@ int RunImportFromCommandLine(const std::string& nspPath, const std::string& keys
 bool StartDreadSamusImport(const std::string& nspPath, const std::string& keysPath);
 // `--import-dread-samus <nsp> [keys]`, as RunImportFromCommandLine. Returns the exit code.
 int RunDreadSamusImportFromCommandLine(const std::string& nspPath, const std::string& keysPath);
+
+// The Echoes suits import (port_echoes_suits.h): Varia, Gravity and Phazon bodies from the user's
+// own Metroid Prime 2: Echoes GameCube or Metroid Prime Trilogy image into <mods>/echoes-suits, with the disc open. Shares
+// this import's state, cancelling and thread like StartDreadSamusImport.
+bool StartEchoesSuitsImport(const std::string& imagePath);
+// `--import-echoes-suits <image>`, as RunImportFromCommandLine. Returns the exit code.
+int RunEchoesSuitsImportFromCommandLine(const std::string& imagePath);
 
 }  // namespace PortRemastered

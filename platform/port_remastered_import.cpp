@@ -1353,6 +1353,119 @@ std::vector<EffectPairing> ProjectilePairings(const Remastered& remastered, Reta
   return pairings;
 }
 
+// The DPSMs that replace the disc's DPSCs. A decal is reached the way the game reaches it: the
+// weapon's COLR names its collision response, whose decal fields (DDCL, MEDL...) name the decal.
+// Remastered's WPSM COLR is a kind-0 link to a CRSM and the CRSM's decal fields kind-4 links to
+// DPSMs; the disc's are WPSC COLR -> CRSC -> DPSC ids. Each weapon of both images pairs its CRSM's
+// field with its CRSC's field of the same name. A DPSM Remastered carried over from retail
+// (EffectRetailId) pairs with that id. A DPSC two different DPSMs claim, and every DPSC nothing
+// pairs, stays retail.
+std::vector<EffectPairing> DecalPairings(const Remastered& remastered, Retail& retail,
+                                         std::vector<std::string>& lines) {
+  static const char kFields[][5] = {"NDCL", "DDCL", "CODL", "MEDL", "GRDL", "ICDL", "GODL", "WODL",
+                                    "WTDL", "3MUD", "3LAV", "3SAN", "CHDL", "ENDL"};
+  struct Claim {
+    EffectGuid guid;  // in a pak's order
+    std::string who;
+  };
+  std::map<uint32_t, Claim> claims;  // by DPSC
+  std::set<uint32_t> conflicts;
+  auto claim = [&](uint32_t dpsc, const EffectGuid& guid, const std::string& who) {
+    const auto [found, inserted] = claims.emplace(dpsc, Claim{guid, who});
+    if (!inserted && found->second.guid != guid && conflicts.insert(dpsc).second) {
+      lines.push_back("decal " + Hex8(dpsc) + ": " + found->second.who + " (" +
+                      EffectGuidString(ToStored(found->second.guid)) + ") and " + who + " (" +
+                      EffectGuidString(ToStored(guid)) + ") claim it; left retail");
+    }
+  };
+  for (const std::string& name : remastered.ProjectileNames()) {
+    uint32_t wpsc = 0;
+    uint32_t crsc = 0;
+    std::vector<uint8_t> weapon;
+    std::vector<uint8_t> projectile;
+    std::vector<uint8_t> retailCollision;
+    std::vector<uint8_t> collision;
+    std::string why;
+    EffectGuid crsm{};
+    if (!retail.WpscId(name, wpsc) || !retail.Read(kWPSC, wpsc, weapon) ||
+        !remastered.ReadProjectile(name, projectile, why)) {
+      continue;  // ProjectilePairings logs these
+    }
+    const bool hasCrsc = ImportDetail::detail::ReadUniqueRetailAssetId(weapon.data(), weapon.size(), "WPSM", "COLR", crsc);
+    const bool hasCrsm =
+        ImportDetail::detail::ReadUniqueReversedGuidLink(projectile.data(), projectile.size(), "WPSM", "COLR", 0, crsm);
+    if (!hasCrsc || !hasCrsm) {
+      if (hasCrsc != hasCrsm) {
+        lines.push_back("decal WPSM " + name + " COLR: only the " + (hasCrsc ? "disc" : "WPSM") + " has one");
+      }
+      continue;
+    }
+    crsm = ToStored(crsm);  // to a pak's order
+    // A disc id names one asset, wherever many paks carry it.
+    if (!retail.HasResource(kCRSC, crsc) || !retail.Read(kCRSC, crsc, retailCollision)) {
+      lines.push_back("decal WPSM " + name + " COLR: the disc has no CRSC " + Hex8(crsc));
+      continue;
+    }
+    if (!remastered.HasUniqueCollision(crsm) || !remastered.ReadCollision(crsm, collision, why)) {
+      lines.push_back("decal WPSM " + name + " COLR: the CRSM " + EffectGuidString(ToStored(crsm)) +
+                      " is missing or not unique" + (why.empty() ? std::string() : " (" + why + ")"));
+      continue;
+    }
+    for (const char* field : kFields) {
+      char tag[5];
+      std::memcpy(tag, field, 5);
+      uint32_t dpsc = 0;
+      EffectGuid dpsm{};
+      std::string retailWhy;
+      std::string remasteredWhy;
+      const bool hasDpsc = ImportDetail::detail::ReadUniqueRetailAssetId(retailCollision.data(), retailCollision.size(),
+                                                                         "CRSM", tag, dpsc, &retailWhy);
+      const bool hasDpsm = ImportDetail::detail::ReadUniqueReversedGuidLink(collision.data(), collision.size(), "CRSM",
+                                                                            tag, 4, dpsm, &remasteredWhy);
+      const std::string who = "WPSM " + name + " " + field;
+      if (!hasDpsc || !hasDpsm) {
+        // Neither image having the field is no decal; anything else is worth a line.
+        const bool retailAbsent = !hasDpsc && (retailWhy.find("missing") != std::string::npos ||
+                                               retailWhy.find("NONE") != std::string::npos);
+        const bool remasteredAbsent = !hasDpsm && remasteredWhy.find("missing") != std::string::npos;
+        if (!retailAbsent || !remasteredAbsent) {
+          lines.push_back("decal " + who + ": not paired (disc: " + (hasDpsc ? Hex8(dpsc) : retailWhy) +
+                          "; Remastered: " + (hasDpsm ? EffectGuidString(dpsm) : remasteredWhy) + ")");
+        }
+        continue;
+      }
+      dpsm = ToStored(dpsm);
+      if (remastered.EffectAssetType(dpsm) != kDPSM || !retail.HasResource(kDPSC, dpsc)) {
+        lines.push_back("decal " + who + ": " + EffectGuidString(ToStored(dpsm)) + " is no DPSM or " + Hex8(dpsc) +
+                        " no DPSC");
+        continue;
+      }
+      claim(dpsc, dpsm, who);
+    }
+  }
+  // Retail's decals Remastered kept: 10000000-0000-f000-f000-0000XXXXXXXX.
+  for (const ModelUuid& id : remastered.Decals()) {
+    if (const std::optional<uint32_t> dpsc = EffectRetailId(id); dpsc && retail.HasResource(kDPSC, *dpsc)) {
+      claim(*dpsc, id, "retail id");
+    }
+  }
+  std::vector<EffectPairing> pairings;
+  for (const auto& [dpsc, found] : claims) {
+    if (conflicts.count(dpsc) == 0) {
+      pairings.push_back({found.guid, dpsc, "decal " + found.who});
+      lines.push_back("decal " + found.who + ": " + EffectGuidString(ToStored(found.guid)) + " -> " + Hex8(dpsc));
+    }
+  }
+  std::vector<uint32_t> discDecals = retail.Ids(kDPSC);
+  std::sort(discDecals.begin(), discDecals.end());
+  for (const uint32_t dpsc : discDecals) {
+    if (claims.count(dpsc) == 0) {
+      lines.push_back("decal " + Hex8(dpsc) + ": no DPSM pairs with it; left retail");
+    }
+  }
+  return pairings;
+}
+
 class TextureCache {
 public:
   explicit TextureCache(size_t budget) : m_budget(budget) {}
@@ -2512,6 +2625,12 @@ void Run(std::string nspPath, std::string keysPath, int threads, fs::path stagin
         PortLog::Write("remastered import: projectile %s\n", line.c_str());
       }
       AddLine("effects: " + std::to_string(effectIO.pairings.size()) + " projectile effects paired");
+      std::vector<std::string> decalLines;
+      effectIO.decals = DecalPairings(remastered, retail, decalLines);
+      for (const std::string& line : decalLines) {
+        PortLog::Write("remastered import: %s\n", line.c_str());
+      }
+      AddLine("effects: " + std::to_string(effectIO.decals.size()) + " decals paired");
 
       // The GENPs of the rooms' own effect actors, under ids no disc resource, other synthetic
       // effect or other such GENP has (the rooms' .roomfx files name them).
@@ -2635,6 +2754,8 @@ void Run(std::string nspPath, std::string keysPath, int threads, fs::path stagin
             std::to_string(effects.parts) + " PARTs, " + std::to_string(effects.textures) + " textures, " +
             std::to_string(effects.flipbooks) + " flipbooks, " + std::to_string(effects.models) + " models, " +
             std::to_string(effects.dropped) + " properties left out)");
+    AddLine("effects: " + std::to_string(effects.decals) + " decals written, " + std::to_string(effects.decalsFailed) +
+            " left retail");
     if (effects.failed > 0) {
       AddLine("effects: " + std::to_string(effects.failed) +
               " keep the disc's version (why: the log, reports/parts/effects.effects.tsv)");
@@ -3021,7 +3142,7 @@ void Run(std::string nspPath, std::string keysPath, int threads, fs::path stagin
         std::string uuid;
         std::string orient[9], offset[3];
         RetailPlacement& p = retailPlacements.emplace_back();
-        in >> uuid >> std::hex >> p.retail >> p.mrea >> p.object >> std::dec >> p.ok >> p.entity;
+        in >> uuid >> std::hex >> p.retail >> p.mrea >> p.object >> std::dec >> p.ok >> p.entity >> p.animated;
         for (std::string& value : orient) {
           in >> value;
         }
@@ -3075,8 +3196,8 @@ void Run(std::string nspPath, std::string keysPath, int threads, fs::path stagin
     }
     for (const RetailPlacement& p : retailPlacements) {
       char line[256];
-      std::snprintf(line, sizeof(line), "r %s %08X %08X %08X %d %d", UuidText(p.model).c_str(), p.retail, p.mrea,
-                    p.object, int(p.ok), p.entity);
+      std::snprintf(line, sizeof(line), "r %s %08X %08X %08X %d %d %d", UuidText(p.model).c_str(), p.retail, p.mrea,
+                    p.object, int(p.ok), p.entity, int(p.animated));
       std::string text = line;
       for (int i = 0; i < 12; ++i) {
         std::snprintf(line, sizeof(line), " %a", i < 9 ? p.orient[i / 3][i % 3] : p.offset[i - 9]);
@@ -3095,8 +3216,9 @@ void Run(std::string nspPath, std::string keysPath, int threads, fs::path stagin
   // replaces its retail model when the retail objects paired with their entities (RetailPlacement)
   // all found it at one transform: "paired", or "partial" when other objects naming it are in an
   // area whose count of them differs from its room's entities. One whose placements differ
-  // ("per-instance": Remastered moved some of its objects on their own), or that no object paired
-  // with ("unpaired"), stays retail. reports/retailmodels.tsv lists each with its placements. Other
+  // ("per-instance": Remastered moved some of its objects on their own) converts in model space
+  // and is placed per object, unless a placement is mirrored; one no object paired with
+  // ("unpaired") stays retail. reports/retailmodels.tsv lists each with its placements. Other
   // assets share the id prefix (textures, effects), so only Remastered's models count.
   {
     std::sort(retailPlacements.begin(), retailPlacements.end(), [](const RetailPlacement& a, const RetailPlacement& b) {
@@ -3182,8 +3304,8 @@ void Run(std::string nspPath, std::string keysPath, int threads, fs::path stagin
       const auto table = inTable.find(first->retail);
       const bool perInstance = ok != last && !agree;
       const char* status = ok == last                  ? "unpaired"
-                           : perInstance && !all       ? "per-instance unplaced"
                            : perInstance && table != inTable.end() ? "per-instance table"
+                           : perInstance && !all       ? "per-instance unplaced"
                            : perInstance               ? "per-instance"
                            : table != inTable.end()    ? "table"
                            : all                       ? "paired"
@@ -3232,7 +3354,7 @@ void Run(std::string nspPath, std::string keysPath, int threads, fs::path stagin
         ++orientSpread[decade(maxOrient)];
         ++offsetSpread[decade(maxOffset)];
         mirrored += flips;
-        if (all && flips != 0 && table == inTable.end()) {
+        if (flips != 0 && table == inTable.end()) {
           // No runtime path for it (below) and no single placement to bake: it stays retail.
           --statusCount[status];
           ++statusCount["per-instance mirrored"];
@@ -3242,10 +3364,11 @@ void Run(std::string nspPath, std::string keysPath, int threads, fs::path stagin
                       maxOrient, maxOffset, flips);
         spreadReport += line;
       }
-      if (perInstance && all && flips == 0 && table == inTable.end()) {
+      if (perInstance && flips == 0 && table == inTable.end()) {
         // Remastered moved some of this model's objects on their own: the model converts once,
-        // untransformed, and each object's draw goes through its own placement. A mirrored
-        // placement stays out: the baked conversion swaps its winding, a runtime one could not.
+        // untransformed, and each paired object's draw goes through its own placement; an
+        // unplaced one ("per-instance unplaced") draws it as converted. A mirrored placement
+        // stays out: the baked conversion swaps its winding, a runtime one could not.
         RetailModel& m = retailModels.emplace_back();
         std::copy(first->model.begin(), first->model.end(), m.uuid.begin());
         m.retail = first->retail;
@@ -3721,6 +3844,26 @@ void Run(std::string nspPath, std::string keysPath, int threads, fs::path stagin
       const std::string disc = PortDisc::Name(PortDisc::Current());
       if (!writeFile(hudFolder / kHudDiscName, std::vector<uint8_t>(disc.begin(), disc.end()))) {
         AddLine(std::string("hud/") + kHudDiscName + ": cannot write");
+      }
+    }
+    // The pause backdrop multiplies the game's frame by TXTR_MapLightQuarter, which
+    // CPauseScreenBackgroundMP1 (0xe7c5bc) loads by name as CPauseScreenBlur does;
+    // Remastered's is far darker than the disc's (B8C7B566).
+    {
+      std::vector<uint8_t> raw;
+      TxtrImage decoded;
+      std::string lightError;
+      if (!remastered.ReadTextureNamed("TXTR_MapLightQuarter", raw, lightError) ||
+          !DecodeTxtr(raw.data(), raw.size(), decoded, lightError)) {
+        AddLine("TXTR_MapLightQuarter: " + lightError);
+      } else {
+        Image image;
+        image.width = int(decoded.width);
+        image.height = int(decoded.height);
+        image.rgba = std::move(decoded.rgba);
+        if (!converter.WriteTexture(0xB8C7B566, std::move(image))) {
+          AddLine("TXTR_MapLightQuarter: cannot write");
+        }
       }
     }
     // The map screen's compass, which the game draws itself (port_map_icons.h).
@@ -4484,11 +4627,12 @@ bool ApplyPendingImport() {
   if (ImportStatus().running) {
     return false;
   }
-  const bool dread = ApplyPendingDreadImport();
+  // Both run: | does not stop at the first that moved.
+  const bool samus = ApplyPendingDreadImport() | ApplyPendingEchoesImport();
   if (staging.empty()) {
-    return dread;
+    return samus;
   }
-  return MoveIntoPlace(staging) || dread;
+  return MoveIntoPlace(staging) || samus;
 }
 
 void RemoveLegacyImport() {

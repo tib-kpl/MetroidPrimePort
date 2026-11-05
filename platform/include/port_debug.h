@@ -365,11 +365,6 @@ const int kBeamSwitchSpeedMax = 400;
 const int kBeamSwitchSpeedDefault = 100;
 int BeamSwitchSpeed();
 void SetBeamSwitchSpeed(int percent);
-// beam_switch_fire (CPlayerGun::ProcessGunMorph): the new beam fires as soon as its
-// wipe ends, without waiting for the into-beam animation. Off by default, and off in
-// the Original experience.
-bool BeamSwitchFire();
-void SetBeamSwitchFire(bool enabled);
 // seamless_pickups: picking up an item keeps control and plays no cutscene
 // (randomprime's pickup patches, as AP games load rooms, minus the Artifact
 // Temple totem switches), and the item's message box shows as a HUD memo
@@ -664,6 +659,8 @@ bool StartRemasteredImport(const std::string& image, const std::string& keys);
 // The Dread Samus import (PortRemastered::StartDreadSamusImport), with the same mods unload/reload
 // around it.
 bool StartDreadSamusImport(const std::string& image, const std::string& keys);
+// The Echoes suits import (PortRemastered::StartEchoesSuitsImport), likewise.
+bool StartEchoesSuitsImport(const std::string& image);
 // Memory card transfer to and from Dolphin (port_gci.h), for the overlay and
 // the console. Each returns a message for the user. Imports are refused in
 // game; `path` may be a .gci, a raw card image, a folder of .gci files or an
@@ -712,6 +709,10 @@ void SetLockOnToggle(bool enabled);
 // the grapple beam holds a grapple point.
 bool GrappleShoot();
 void SetGrappleShoot(bool enabled);
+// Shoot in Scan Visor (issue #243): the arm cannon stays out, fires and charges in
+// the Scan Visor, and a fire press no longer switches to the Combat Visor.
+bool ScanShoot();
+void SetScanShoot(bool enabled);
 bool GrappleToggle();
 void SetGrappleToggle(bool enabled);
 // Toggle Spider Ball (issue #243): an R press that attaches the spider ball

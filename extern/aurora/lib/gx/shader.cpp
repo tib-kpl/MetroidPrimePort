@@ -1034,6 +1034,7 @@ struct PbrGen {
   void layeredKinds3();
   void layeredKinds4();
   void liquidSurface();
+  void skyFlow();
   void normalMaps();
   void layeredGlass1();
   void layeredGlass2();
@@ -1856,6 +1857,41 @@ void PbrGen::liquidSurface() {
                            mapOf(2), uv);
     }
   }
+}
+
+void PbrGen::skyFlow() {
+  // Kind 49, the sky's flow-map clouds (Remastered's cd033236): map 0 is read twice, pushed
+  // along a world direction (pbr_param.yzw, in view space, times the strength) by the mask in
+  // map 3's red, in two phases half a period apart (pbr_param.x the time over the period), and
+  // blended as each wraps. The push is the direction on the surface's B = cross(N, T) and T.
+  if (config.pbrKind != PbrKind::SkyFlow || layered || mapStage[0] == -1 || mapStage[3] == -1) {
+    return;
+  }
+  const auto map0 = underlying(config.tevStages[mapStage[0]].texMapId);
+  const auto uv = underlying(config.tevStages[mapStage[0]].texCoordId);
+  layer += fmt::format(R"""(
+      let pbr_sfd1 = dpdx(tex{0}_uv);
+      let pbr_sfd2 = dpdy(tex{0}_uv);)""",
+                       uv);
+  if (tangents) {
+    layer += R"""(
+      let pbr_sft = normalize(in.pbr_tan.xyz);)""";
+  } else {
+    // The direction U grows in, from the derivatives as tangentFrame takes it.
+    layer += R"""(
+      let pbr_sfp2 = -dpdy(in.pbr_pos);
+      let pbr_sft0 = cross(pbr_sfp2, pbr_ngs) * pbr_sfd1.x + cross(pbr_ngs, dpdx(in.pbr_pos)) * -pbr_sfd2.x;
+      let pbr_sft = pbr_sft0 * inverseSqrt(max(dot(pbr_sft0, pbr_sft0), 1e-30));)""";
+  }
+  layer += fmt::format(R"""(
+      let pbr_sfo = sampled{1}.r * vec2f(dot(cross(pbr_ngs, pbr_sft), ubuf.pbr_param.yzw), dot(pbr_sft, ubuf.pbr_param.yzw));
+      let pbr_sfp1 = fract(ubuf.pbr_param.x);
+      let pbr_sfp0 = fract(ubuf.pbr_param.x + 0.5);
+      let pbr_sfs0 = textureSampleGrad(tex{2}, tex{2}_samp, tex{0}_uv + pbr_sfo * pbr_sfp0, pbr_sfd1, pbr_sfd2).rgb;
+      let pbr_sfs1 = textureSampleGrad(tex{2}, tex{2}_samp, tex{0}_uv + pbr_sfo * pbr_sfp1, pbr_sfd1, pbr_sfd2).rgb;
+      let pbr_sfb = vec4f(pbr_sfs1 + 2.0 * abs(pbr_sfp1 - 0.5) * (pbr_sfs0 - pbr_sfs1), 1.0);)""",
+                       uv, mapStage[3], map0);
+  base = "pbr_sfb";
 }
 
 void PbrGen::normalMaps() {
@@ -3350,7 +3386,8 @@ R"""(      // Encoded as Remastered's sRGB swapchain does it: the exact piecewis
                      // A sky's ICAN is its base map (the converter writes a black emissive map where
                      // it copies the base), and its glow ICAN x ICNC is most of what it shows. The
                      // map's last mip, its mean, tells that black map from one with dark texels.
-                     mapStage[3] == -1 || config.pbrKind == PbrKind::VertexBlend || config.pbrKind == PbrKind::DecalCut || config.pbrKind == PbrKind::DecalAlpha
+                     mapStage[3] == -1 || config.pbrKind == PbrKind::VertexBlend || config.pbrKind == PbrKind::DecalCut || config.pbrKind == PbrKind::DecalAlpha ||
+                             config.pbrKind == PbrKind::SkyFlow
                          ? "vec4f(0.0)"s
                          : fmt::format("select({0}, {1}, pbr_sky && dot(textureSampleLevel(tex3, tex3_samp, "
                                        "vec2f(0.5), 16.0).rgb, vec3f(1.0)) < 0.004)",
@@ -3486,6 +3523,16 @@ void PbrGen::patchSource() {
     for (const char* t : {"pbr_vol_mean", "pbr_vol_lobe", "pbr_vol_r", "pbr_vol_g", "pbr_vol_b"}) {
       cut(fmt::format("textureSampleLevel({}, pbr_cube_samp, pbr_vuv, 0.0)", t), "(vec4f(0.3, 0.2, 0.6, 0.5) + pbr_vuv.xyzx * 0.01)");
     }
+  }
+  if (config.colorMatrix) {
+    // GXSetColorMatrix's glow-only mode (w of row 0): the matrix on the glow term alone, every addition to it
+    // made; the lit surface keeps its colour. The full mode is applied to the shaded colour later.
+    const size_t at = find_anchor(source, "      let pbr_out = max(pbr_lo + pbr_glow, vec3f(0.0))");
+    source.insert(at, R"""(      if (ubuf.color_matrix[0].w > 0.5) {
+          pbr_glow = vec3f(dot(ubuf.color_matrix[0].xyz, pbr_glow), dot(ubuf.color_matrix[1].xyz, pbr_glow),
+                           dot(ubuf.color_matrix[2].xyz, pbr_glow));
+      }
+)""");
   }
 }
 
@@ -3689,6 +3736,7 @@ auto pbr_func(const ShaderConfig& config, const ShaderInfo& info, std::string& v
   g.layeredKinds3();
   g.layeredKinds4();
   g.liquidSurface();
+  g.skyFlow();
   g.normalMaps();
   g.layeredGlass1();
   g.layeredGlass2();
@@ -5070,6 +5118,15 @@ fn vf_apply_hdr(c: vec4f, fog: vec4f, w: f32) -> vec4f {
   if (info.usesPTTexMtx.any()) {
     uniBufAttrs += fmt::format("\n    postmtx: array<mat3x4f, {}>,", MaxPTTexMtx);
   }
+  if (info.usesColorMatrix) {
+    // GXSetColorMatrix: the shaded colour, before fog and the HDR conversion. The glow-only mode (w of
+    // row 0) is applied by the PBR source to its glow term; a non-PBR draw takes nothing from it.
+    fragmentFn += "\n    // Colour matrix"
+                  "\n    if (ubuf.color_matrix[0].w < 0.5) {"
+                  "\n        prev = vec4f(dot(ubuf.color_matrix[0].xyz, prev.rgb), dot(ubuf.color_matrix[1].xyz, prev.rgb),"
+                  "\n                     dot(ubuf.color_matrix[2].xyz, prev.rgb), prev.a);"
+                  "\n    }";
+  }
   if (info.usesFog) {
     uniformPre +=
         "\n"
@@ -5157,6 +5214,9 @@ fn vf_apply_hdr(c: vec4f, fog: vec4f, w: f32) -> vec4f {
   }
   if (info.usesAlphaRef) {
     uniBufAttrs += "\n    alpha_ref: vec4u,"; // the alpha compare references (pipeline_alpha_ref)
+  }
+  if (info.usesColorMatrix) {
+    uniBufAttrs += "\n    color_matrix: array<vec4f, 3>,"; // GXSetColorMatrix's rows
   }
   // HDR PBR light above 1 is light, not a TEV byte overflow: only its alpha wraps.
   const bool hdrPbrColor = config.sceneHdr && pbrEmitted;

@@ -2,6 +2,7 @@
 #include "MetroidPrime/CStateManager.hpp"
 #include "port_actor_shadow.h"
 #include "port_apclient.h"
+#include "port_beam_colours.h"
 #include "port_beam_doors.h"
 #include "port_collision_view.h"
 #include "port_debug.h"
@@ -3694,6 +3695,11 @@ void CStateManager::DrawWorld() const {
   uint mask;
   bool thermal = visor == CPlayerState::kPV_Thermal;
   uint targetMask;
+#ifdef TARGET_PC
+  // The thermal visor draws beams in its own palette: no picked colours for the whole frame,
+  // the gun drawn after the world included.
+  PortBeamColours::SetSuppressed(thermal);
+#endif
   if (thermal) {
     xf34_thermalFlag = kTD_Cold;
     mask = 0x34;
@@ -3975,7 +3981,8 @@ void CStateManager::DrawWorld() const {
     // stash for pass B; its decals and simple shadows draw now, sorted among themselves.
     portDrawToken[i] = x8dc_objectDrawToken;
     gpRender->PortStashBuckets(i);
-    if (isVisArea && !thermal && !portCollisionOnly) {
+    // The HDR thermal cold scene draws its decals too (RenderDecalGeometry 0xf9d854).
+    if (isVisArea && (!thermal || portThermalScene) && !portCollisionOnly) {
       CDecalManager::AddToRenderer(frustum, *this);
     }
     gpRender->PortDrawSortedDrawables(area.GetId().Value());

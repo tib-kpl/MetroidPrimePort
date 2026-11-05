@@ -195,6 +195,8 @@ struct Header {
   int64_t savedAt = 0;
   std::string world;
   std::string room;
+  // The disc that made it (PortDisc::Name: "USA 1.00", "PAL", ...); empty before format 2.
+  std::string disc;
   RoomState roomState;  // optional section after the blob; empty when absent
 };
 std::string Encode(const Header& header, const std::vector< uint8_t >& blob);
@@ -439,6 +441,9 @@ std::string LastMessage();
 bool Tick(CStateManager& mgr);
 // CMainFlow, before the next game loads: swaps in the loaded game state.
 void InstallPending();
+// CMFGameLoader: whether the game it loads is a state being put back (a state or
+// resume load, a mod reload), which shows no new game's intro text.
+bool LoadPlacing();
 // CMainFlow: whether the front end (title screen, file select) is the flow.
 void SetInFrontEnd(bool inFrontEnd);
 // CFrontEndUI, each tick: true (once) when a reload was asked for in the

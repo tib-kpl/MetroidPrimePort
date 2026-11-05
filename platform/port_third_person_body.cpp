@@ -438,9 +438,10 @@ void TurnSeg(CHierarchyPoseBuilder& pb, const CCharLayoutInfo& layout, CSegId se
 // the cannon box's metres into it): its bore is GUN_LCTR toward the result. The cinematic beam,
 // drawn at GUN_LCTR, has its barrel along its own +X through its origin, the muzzle at the box's
 // far end; Charge_LCTR sits off that line, above the barrel, so its line would aim and fire from
-// beside the cannon. The dread-samus body's own cannon: Charge_LCTR.
+// beside the cannon. The dread-samus body's own cannon: Charge_LCTR. The echoes-suits bodies are
+// skinned to Prime's skeleton, their cannon where Prime's beam would be: the beam's reach.
 CVector3f BoreTip(const CTransform4f& gun, const CVector3f& charge, float scale) {
-  if (PortDreadSamus::Replaces(PortDreadSamus::CutsceneBody(s.loadedChar))) {
+  if (PortDreadSamus::ReplacesWithDread(PortDreadSamus::CutsceneBody(s.loadedChar))) {
     return charge;
   }
   // Until the beam's model loads, as far out as Charge_LCTR.
@@ -1844,8 +1845,8 @@ bool Render(const CStateManager& mgr, const CTransform4f& feet, const CActorLigh
   const CModelFlags flags = fade < 1.f ? CModelFlags(CModelFlags::kT_Blend, fade) : CModelFlags::Normal();
   s.body->Touch(mgr, 0);
   s.body->Render(mgr, xf, lights, flags);
-  // Prime's cannon at the hand locator, unless the dread-samus mod's body carries its own.
-  const bool drawGun = s.beamData && !PortDreadSamus::Replaces(PortDreadSamus::CutsceneBody(s.loadedChar));
+  // Prime's cannon at the hand locator, unless a mod's body carries its own.
+  const bool drawGun = s.beamData && !PortDreadSamus::HasOwnCannon(PortDreadSamus::CutsceneBody(s.loadedChar));
   const CTransform4f gun = drawGun ? xf * s.body->GetScaledLocatorTransform("GUN_LCTR") : xf;
   if (drawGun) {
     s.beamData->Touch(mgr, 0);

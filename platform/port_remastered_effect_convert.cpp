@@ -120,8 +120,27 @@ const PropertyTable& RetailProperties() {
   return table;
 }
 
+// Retail's decal properties (CDecalDataFactory::CreateDPSM).
+const PropertyTable& DecalProperties() {
+  static const PropertyTable table = [] {
+    PropertyTable t;
+    AddProperties(t, "1LFT 2LFT DLFT", Type::Int);
+    AddProperties(t, "1SZE 2SZE 1ROT 2ROT", Type::Real);
+    AddProperties(t, "1OFF 2OFF DMOP DMRT DMSC", Type::Vector);
+    AddProperties(t, "1CLR 2CLR DMCL", Type::Color);
+    AddProperties(t, "1TEX 2TEX", Type::Texture);
+    AddProperties(t, "1ADD 2ADD DMAB DMOO", Type::Bool);
+    AddProperties(t, "DMDL", Type::Asset, F("CMDL"));
+    return t;
+  }();
+  return table;
+}
+
 // The properties of a retail asset type, and the FourCC its file starts with.
 const PropertyTable& PropertiesOf(uint32_t type) {
+  if (type == F("DPSC")) {
+    return DecalProperties();
+  }
   if (type == F("SWHC")) {
     return SwooshProperties();
   }
@@ -132,6 +151,9 @@ const PropertyTable& PropertiesOf(uint32_t type) {
 }
 
 uint32_t HeaderOf(uint32_t type) {
+  if (type == F("DPSC")) {
+    return F("DPSM");
+  }
   if (type == F("SWHC")) {
     return F("SWSH");
   }
@@ -184,6 +206,8 @@ const Signatures& ElementsOf(Type type) {
       // Port-only: Remastered's CREAbsoluteValue, CRECosineWave (frequency, amplitude, phase)
       // and CRERandomSign. Its CREInitialRandomSign is the port-only PIRS (see Element).
       {F("ABS_"), "r"},   {F("COSE"), "rrr"}, {F("RSGN"), "r"},
+      // Port-only CREPortInverseExposure: a decal SMTR's IEXP (see Writer::Element).
+      {F("PIEX"), "r"},
   };
   static const Signatures vectorElements = {
       {F("NONE"), ""},      {F("CNST"), "rrr"}, {F("KEYE"), "k"},  {F("KEYP"), "k"},   {F("ANGC"), "rrrrr"},
@@ -224,6 +248,9 @@ const Signatures& ElementsOf(Type type) {
       {F("CHAN"), "cci"},  {F("PULS"), "iicc"}, {F("PCOL"), ""},    {F("NONE"), ""},
       // Port-only (CParticleDataFactory under TARGET_PC).
       {F("MULT"), "cc"},   {F("MDAO"), "cr"},
+      // Port-only CCEPortInverseExposure and CCEPortVectorAndRealToColor: a decal SMTR's IEXP
+      // and VRTC (see Writer::Element).
+      {F("PIEX"), "c"},    {F("PVRC"), "vr"},
   };
   // SETR is left out: Remastered writes SEMR, which retail reads too.
   static const Signatures emitterElements = {
@@ -1468,6 +1495,13 @@ class Writer {
 public:
   Writer(const uint8_t* data, const EffectConvertIO& io) : m_data(data), m_io(io) {}
 
+  // A decal's SMTR/TMTR (ConvertDecal): IEXP and VRTC read as the port-only PIEX and PVRC, and an
+  // ILPT/GRAD runs over the decal's MSTL lifetime (UpdateMaterialData's context).
+  void SetDecal(bool on) const {
+    m_decal = on;
+    m_lifetimeOffset = on ? 0 : -1;
+  }
+
   uint32_t AssetId(const EffectGuid& id, uint32_t type) const {
     if (m_io.assetId) {
       return m_io.assetId(id, type);
@@ -2165,6 +2199,19 @@ public:
       }
       AppendBE32(out, F("PGTC"));
       return true;
+    }
+    // In a decal's SMTR: IEXP (CREInverseExposure 0x299830, CCEInverseExposure 0x2c8f80) is the
+    // child times CParticleGen::GetInverseExposure(1), the auto inverse exposure, a colour's RGB
+    // only; VRTC (CCEVectorAndRealToColor 0x2c84fc) is (max(vector, 0), max(real, 0)). Written as
+    // the port-only PIEX and PVRC.
+    if (m_decal && value.fourcc == F("IEXP") && (type == Type::Real || type == Type::Color) &&
+        value.args.size() == 1) {
+      AppendBE32(out, F("PIEX"));
+      return Element(value.args[0], type, out, why);
+    }
+    if (m_decal && value.fourcc == F("VRTC") && type == Type::Color && value.args.size() == 2) {
+      AppendBE32(out, F("PVRC"));
+      return Element(value.args[0], Type::Vector, out, why) && Element(value.args[1], Type::Real, out, why);
     }
     const Signatures& elements = ElementsOf(type);
     const auto found = elements.find(value.fourcc);
@@ -7244,10 +7291,12 @@ public:
       AppendBE32(s.out, F("CNST"));
       AppendBE32(s.out, 0);
     }
-    // No ITPE: Remastered's default 1, where the system's translation change is decoded.
+    // No ITPE: Remastered's default 1 (desc ctor 0x290c10), exact where the system's translation
+    // change is decoded. The other shipped cases cannot spread in Remastered either: XFMD 4 with
+    // no EMVR gives vec 0x12 a zero, and every shipped PART under XFMD 1 or 4 with an EMVR emits
+    // at most one particle a tick (the spread needs two).
     if (s.part && m_io.spreadDefault && !s.itpe && (m_xfmd == 2 || m_xfmd == 5) && !(m_xfmd == 5 && m_pofs == 2)) {
       s.spreadMode = int(m_xfmd == 5 ? (m_pofs == 1 ? 2 : 1) : 0) | kSpreadDefault;
-      m_approximated.push_back("ITPE: absent, Remastered's default 1");
     }
     if (s.spreadMode >= 0) {
       AppendBE32(s.out, F("PITP"));
@@ -7510,6 +7559,7 @@ private:
   mutable uint32_t m_pofs = 0;                      // its POFS (and an INTT written as POFS): 0 none, 1 constant, 2 other
   mutable bool m_mp1Space = false;                  // inside MPCB(mod vector): its vectors are retail's
   mutable int m_lifetimeOffset = -1;                // LifetimeOffset of the property being written
+  mutable bool m_decal = false;                     // writing a decal's SMTR/TMTR (SetDecal)
 };
 
 
@@ -7784,6 +7834,33 @@ public:
     return Word(fourcc) && fourcc == F("CNST") && Skip(4);
   }
 
+  // The port-only PMTI property (a Remastered decal's material): CNST, slot, texture id, the
+  // MATI's 16-byte id, shader, blend, wrap s/t, linear, then DIFC, CCH0 and CCH1 (12 words).
+  bool PortDecalMaterial() {
+    uint32_t fourcc, slot;
+    return Word(fourcc) && fourcc == F("CNST") && Word(slot) && slot < 2 && Skip(4 + 16 + 5 * 4 + 12 * 4);
+  }
+
+  // The port-only PSMT/PTMT properties (a decal slot's SMTR and TMTR): CNST, slot, count, then
+  // per SMTR entry its row, component (4: a colour) and element; a TMTR's six reals.
+  bool PortDecalParams(bool tmtr) {
+    uint32_t fourcc, slot, count;
+    if (!Word(fourcc) || fourcc != F("CNST") || !Word(slot) || slot > 1 || !Word(count) || count > 64 ||
+        (tmtr && count != 6)) {
+      return false;
+    }
+    for (uint32_t i = 0; i < count; ++i) {
+      uint32_t row = 0, comp = 0;
+      if (!tmtr && (!Word(row) || row > 2 || !Word(comp) || comp > 4)) {
+        return false;
+      }
+      if (!Element(comp == 4 ? Type::Color : Type::Real)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   // The port-only PADO property: CNST, a count up to 8, then that many words.
   bool PortWords() {
     uint32_t fourcc, count;
@@ -8035,6 +8112,7 @@ bool SplitRetailEffect(uint32_t type, const uint8_t* data, size_t size, std::vec
   const auto& retail = PropertiesOf(type);
   const bool part = type == F("PART");
   const bool electric = type == F("ELSC");
+  const bool decal = type == F("DPSC");
   const bool vfx = part || type == F("SWHC") || electric; // swooshes and ELC2s take the VFX material too
   for (;;) {
     const size_t start = reader.At();
@@ -8134,6 +8212,17 @@ bool SplitRetailEffect(uint32_t type, const uint8_t* data, size_t size, std::vec
       ok = reader.PortWord() && reader.Element(Type::Real);
     } else if (electric && fourcc == F("PEL2")) {
       ok = reader.PortWord();
+    } else if (decal && fourcc == F("PRDC")) {
+      ok = reader.PortWord();
+    } else if (decal && fourcc == F("MSTL")) {
+      ok = reader.Element(Type::Int);
+    } else if (decal && (fourcc == F("MSTR") || fourcc == F("MSTW") || fourcc == F("MSTH") || fourcc == F("DUL1") ||
+                         fourcc == F("DUL2"))) {
+      ok = reader.Element(Type::Real);
+    } else if (decal && fourcc == F("PMTI")) {
+      ok = reader.PortDecalMaterial();
+    } else if (decal && (fourcc == F("PSMT") || fourcc == F("PTMT"))) {
+      ok = reader.PortDecalParams(fourcc == F("PTMT"));
     } else if (electric && Elc2Properties().count(fourcc) != 0) {
       const Type elcType = Elc2Properties().at(fourcc).type;
       ok = elcType == Type::Bool ? reader.Bool() : reader.Element(elcType);
@@ -8178,6 +8267,171 @@ std::vector<ConvertedPart> ConvertEffect(const EffectNode& effect, const uint8_t
   std::vector<ConvertedPart> out;
   Writer(data, io).Collect(effect, true, out);
   return out;
+}
+
+bool ConvertDecal(const EffectNode& dpsm, const uint8_t* data, const std::vector<uint8_t>& disc,
+                  const EffectConvertIO& io, std::vector<uint8_t>& out, std::vector<std::string>& dropped,
+                  std::string& error) {
+  out.clear();
+  dropped.clear();
+  if (dpsm.form != F("DPSM")) {
+    error = "not a DPSM";
+    return false;
+  }
+  std::vector<RetailPartProperty> retail;
+  if (!SplitRetailEffect(F("DPSC"), disc.data(), disc.size(), retail, error)) {
+    error = "the disc's DPSC does not read: " + error;
+    return false;
+  }
+  // The disc's quads stay as they are: the port draws them until it draws the projected decal.
+  AppendBE32(out, F("DPSM"));
+  for (const RetailPartProperty& property : retail) {
+    AppendBE32(out, property.fourcc);
+    out.insert(out.end(), property.value.begin(), property.value.end());
+  }
+  AppendBE32(out, F("PRDC"));
+  AppendBE32(out, F("CNST"));
+  AppendBE32(out, 1);
+  const Writer writer(data, io);
+  bool slots[2] = {};
+  for (const EffectProperty& property : dpsm.properties) {
+    const uint32_t fourcc = property.fourcc;
+    const std::string name = EffectFourCCString(fourcc);
+    if (fourcc == F("DMDL")) {
+      // No shipped DPSM has a model; CDecal's model path is not ported for Remastered decals.
+      error = "DMDL: a decal model";
+      return false;
+    }
+    if (fourcc == F("MSTL") || fourcc == F("MSTR") || fourcc == F("MSTW") || fourcc == F("MSTH") ||
+        fourcc == F("DUL1") || fourcc == F("DUL2")) {
+      std::vector<uint8_t> element;
+      std::string why;
+      if (property.value.size() != 1 ||
+          !writer.Element(property.value[0], fourcc == F("MSTL") ? Type::Int : Type::Real, element, why)) {
+        error = name + ": " + (why.empty() ? "not one element" : why);
+        return false;
+      }
+      AppendBE32(out, fourcc);
+      out.insert(out.end(), element.begin(), element.end());
+    } else if (fourcc == F("MTIN")) {
+      if (property.value.size() != 2 || property.value[0].kind != EffectValue::Kind::Byte ||
+          property.value[1].kind != EffectValue::Kind::Guid || property.value[0].word > 1 ||
+          slots[property.value[0].word]) {
+        error = "MTIN: not one slot byte (0 or 1, once each) and an id";
+        return false;
+      }
+      const uint32_t slot = property.value[0].word;
+      const EffectGuid& material = property.value[1].guid;
+      const std::vector<uint8_t> mati = io.materialData ? io.materialData(material) : std::vector<uint8_t>();
+      const uint32_t texture = io.materialTexture ? io.materialTexture(material) : 0;
+      if (mati.empty() || mati.size() > (1u << 20)) {
+        error = "MTIN " + std::to_string(slot) + ": no MATI " + EffectGuidString(material);
+        return false;
+      }
+      // RenderDecalGeometry 0xb386a8 draws the slot with the MATI's shader and header blend
+      // (-1 is 2), its one texture (BCLR or TCH0) and the DIFC/CCH0/CCH1 defaults the SMTR
+      // overrides (UpdateMaterialData 0xb7d07c seeds the slot's params from them).
+      Mati parsed;
+      if (!ParseMati(mati, parsed)) {
+        error = "MTIN " + std::to_string(slot) + ": the MATI does not parse";
+        return false;
+      }
+      const auto tex = parsed.textures.count("BCLR") ? parsed.textures.find("BCLR") : parsed.textures.find("TCH0");
+      const uint32_t shader = parsed.shader;
+      if (shader != 0xe37ab789u && shader != 0x05ae8d81u && shader != 0xa19fec01u) {
+        error = "MTIN " + std::to_string(slot) + ": a decal shader the port does not draw";
+        return false;
+      }
+      if (tex == parsed.textures.end() || texture == 0) {
+        error = "MTIN " + std::to_string(slot) + ": no colour texture";
+        return false;
+      }
+      const int32_t blend = parsed.headerBlend == kNoHeaderBlend ? 2 : int32_t(parsed.headerBlend);
+      slots[slot] = true;
+      AppendBE32(out, F("PMTI"));
+      AppendBE32(out, F("CNST"));
+      AppendBE32(out, slot);
+      AppendBE32(out, texture);
+      out.insert(out.end(), material.begin(), material.end());
+      AppendBE32(out, shader);
+      AppendBE32(out, uint32_t(blend));
+      AppendBE32(out, WrapOf(tex->second.wrapX));
+      AppendBE32(out, WrapOf(tex->second.wrapY));
+      AppendBE32(out, tex->second.filter != 0 ? 1 : 0);
+      for (const char* tag : {"DIFC", "CCH0", "CCH1"}) {
+        const auto found = parsed.vectors.find(tag);
+        for (int c = 0; c < 4; ++c) {
+          AppendBE32(out, FloatBits(found != parsed.vectors.end() ? found->second[size_t(c)] : 0.f));
+        }
+      }
+    } else if (fourcc == F("SMTR") || fourcc == F("TMTR")) {
+      // Each leads with its material slot (the byte after the tag). UpdateMaterialData evaluates
+      // them in the decal's context: its random, frame and MSTL lifetime (offset 0).
+      const uint32_t slot = data[property.offset + 5];
+      if (slot > 1) {
+        error = name + ": slot " + std::to_string(slot);
+        return false;
+      }
+      writer.SetDecal(true);
+      std::vector<uint8_t> items;
+      uint32_t count = 0;
+      std::string why;
+      if (fourcc == F("TMTR")) {
+        // One TRSS (the decal's one UV set): offset u/v, scale u/v, angle, layer.
+        if (property.value.size() != 1 || !IsElement(property.value[0], F("TRSS")) ||
+            property.value[0].args.size() != 6) {
+          why = "not one six-argument TRSS";
+        } else {
+          for (const EffectValue& arg : property.value[0].args) {
+            if (!writer.Element(arg, Type::Real, items, why)) {
+              break;
+            }
+          }
+          count = why.empty() ? 6 : 0;
+        }
+      } else {
+        // An entry per parameter: group 4 a colour (the whole row), group 1 a real (the trailer's
+        // component). Rows 0 DIFC, 1 CCH0, 2 CCH1, the only ones the three decal shaders read.
+        for (const EffectValue& item : property.value) {
+          const uint32_t row = item.word == F("DIFC") ? 0 : item.word == F("CCH0") ? 1
+                               : item.word == F("CCH1")  ? 2 : 3;
+          const uint32_t comp = item.args.size() == 2 ? item.args[1].word >> 8 & 0xff : 4;
+          if (row == 3 || item.args.size() != 2 || (item.fourcc != 1 && item.fourcc != 4) ||
+              (item.fourcc == 1 && comp >= 4)) {
+            why = "an entry the decal shaders do not read";
+            break;
+          }
+          AppendBE32(items, row);
+          AppendBE32(items, item.fourcc == 4 ? 4 : comp);
+          if (!writer.Element(item.args[0], item.fourcc == 4 ? Type::Color : Type::Real, items, why)) {
+            break;
+          }
+          ++count;
+        }
+      }
+      writer.SetDecal(false);
+      if (!why.empty()) {
+        error = name + ": " + why;
+        return false;
+      }
+      AppendBE32(out, fourcc == F("SMTR") ? F("PSMT") : F("PTMT"));
+      AppendBE32(out, F("CNST"));
+      AppendBE32(out, slot);
+      AppendBE32(out, count);
+      out.insert(out.end(), items.begin(), items.end());
+    } else if (fourcc != F("_END")) {
+      // The retail quads come from the disc; the model fields have no model to act on; DVVN is a
+      // model decal's.
+      dropped.push_back(name);
+    }
+  }
+  AppendBE32(out, F("_END"));
+  std::vector<RetailPartProperty> check;
+  if (!SplitRetailEffect(F("DPSC"), out.data(), out.size(), check, error)) {
+    error = "the converted decal does not read: " + error;
+    return false;
+  }
+  return true;
 }
 
 }  // namespace PortRemastered

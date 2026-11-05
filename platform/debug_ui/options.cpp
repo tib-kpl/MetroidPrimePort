@@ -710,13 +710,6 @@ void SetBeamSwitchSpeed(int percent) {
   MarkDirty();
 }
 
-bool BeamSwitchFire() {
-  EnsureInitialized();
-  return sBeamSwitchFire && !sOriginalExperience;
-}
-
-void SetBeamSwitchFire(bool enabled) { StoreSetting(sBeamSwitchFire, enabled); }
-
 bool SeamlessPickups() {
   EnsureInitialized();
   return sSeamlessPickups && !sOriginalExperience;
@@ -1310,6 +1303,13 @@ bool GrappleShoot() {
 }
 
 void SetGrappleShoot(bool enabled) { StoreSetting(sInput.grappleShoot, enabled); }
+
+bool ScanShoot() {
+  EnsureInitialized();
+  return sInput.scanShoot && !sOriginalExperience;
+}
+
+void SetScanShoot(bool enabled) { StoreSetting(sInput.scanShoot, enabled); }
 
 bool GrappleToggle() {
   EnsureInitialized();

@@ -21,6 +21,7 @@
 #include "port_third_person.h"
 #include "port_third_person_body.h"
 #include "port_dread_samus_mod.h"
+#include "port_echoes_suits_mod.h"
 #include "port_gci.h"
 #include "port_photo.h"
 #include "port_pointer.h"
@@ -2838,6 +2839,10 @@ void CmdGrappleShoot() {
   BoolSettingCmd("grappleshoot", PortDebug::GrappleShoot, PortDebug::SetGrappleShoot);
 }
 
+void CmdScanShoot() {
+  BoolSettingCmd("scanshoot", PortDebug::ScanShoot, PortDebug::SetScanShoot);
+}
+
 void CmdGrappleToggle() {
   BoolSettingCmd("grappletoggle", PortDebug::GrappleToggle, PortDebug::SetGrappleToggle);
 }
@@ -2897,10 +2902,6 @@ void CmdBeamSwitch() {
   }
   Out("beamswitch %d", PortDebug::BeamSwitchSpeed());
   Finish();
-}
-
-void CmdBeamSwitchFire() {
-  BoolSettingCmd("beamswitchfire", PortDebug::BeamSwitchFire, PortDebug::SetBeamSwitchFire);
 }
 
 // As a press of the Next/Previous target action: while locked on, the lock moves
@@ -3018,6 +3019,29 @@ void CmdDreadCannon() {
     return Finish("usage: dreadcannon [0|1]");
   }
   Out(PortDreadSamus::FirstPersonCannonShown() ? "dreadcannon 1" : "dreadcannon 0");
+  Finish();
+}
+
+void CmdEchoesCannon() {
+  const std::string value = sCmd.args.size() > 1 ? sCmd.args[1] : "";
+  if (value == "0" || value == "1") {
+    PortEchoesSuits::SetFirstPersonCannonShown(value == "1");
+  } else if (!value.empty()) {
+    return Finish("usage: echoescannon [0|1]");
+  }
+  Out(PortEchoesSuits::FirstPersonCannonShown() ? "echoescannon 1" : "echoescannon 0");
+  Finish();
+}
+
+void CmdDarkSamus() {
+  const std::string value = sCmd.args.size() > 1 ? sCmd.args[1] : "";
+  if (value == "0" || value == "1") {
+    PortEchoesSuits::SetPlayAsDarkSamus(value == "1");
+  } else if (!value.empty()) {
+    return Finish("usage: darksamus [0|1]");
+  }
+  Out("darksamus %d (served %d)", PortEchoesSuits::PlayAsDarkSamus() ? 1 : 0,
+      PortEchoesSuits::DarkSamusServed() ? 1 : 0);
   Finish();
 }
 
@@ -4571,6 +4595,12 @@ const CommandSpec kCommands[] = {
     {"visorfx", CmdHelmetVisorFx, nullptr, ""},
     {"dreadcannon", CmdDreadCannon, nullptr,
      "dreadcannon [0|1]   the Dread arm cannon in first person (dread_first_person_cannon); prints it"},
+    {"echoescannon", CmdEchoesCannon, nullptr,
+     "echoescannon [0|1]  the Echoes arm cannon in first person (echoes_first_person_cannon), from the "
+     "next beam selected; prints it"},
+    {"darksamus", CmdDarkSamus, nullptr,
+     "darksamus [0|1]     play as Echoes' Dark Samus (echoes_dark_samus), from the next mod reload; prints it "
+     "and whether this load serves her"},
     {"interp", CmdInterp, nullptr,
      "interp [actor|pose|particle|all <0|1>]   frame interpolation settings (F1 Video > Frame rate)"},
     {"present", CmdPresent, nullptr,
@@ -4587,8 +4617,6 @@ const CommandSpec kCommands[] = {
      "stackbeams [0|1]           every shot also fires the other owned beams' projectiles (stack_beams)"},
     {"beamswitch", CmdBeamSwitch, nullptr,
      "beamswitch [100..400]      beam change speed in percent (beam_switch_speed); no argument prints it"},
-    {"beamswitchfire", CmdBeamSwitchFire, nullptr,
-     "beamswitchfire [0|1]       the new beam fires once its wipe ends, before the cannon opens (beam_switch_fire)"},
     {"target", CmdTarget, nullptr,
      "target next|prev           while locked on, lock the next target right (next) or left (prev) on screen"},
     {"seamlesspickups", CmdSeamlessPickups, nullptr,
@@ -4603,6 +4631,8 @@ const CommandSpec kCommands[] = {
      "spidertoggle [0|1]         an R press holds the spider ball on its track until the next (spider_toggle)"},
     {"grappleshoot", CmdGrappleShoot, nullptr,
      "grappleshoot [0|1]         the arm cannon stays out and fires while grappling (grapple_shoot)"},
+    {"scanshoot", CmdScanShoot, nullptr,
+     "scanshoot [0|1]            the arm cannon stays out and fires in the Scan Visor (scan_shoot)"},
     {"grappletoggle", CmdGrappleToggle, nullptr,
      "grappletoggle [0|1]        an L press at a grapple point holds the grapple until the next (grapple_toggle)"},
     {"locktoggle", CmdLockToggle, nullptr,
