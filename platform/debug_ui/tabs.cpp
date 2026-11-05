@@ -35,6 +35,14 @@ void request_screenshot() noexcept;
 
 namespace PortDebug {
 
+// The same path as closing the window: the main loop sees AURORA_EXIT and shuts down cleanly.
+void RequestQuit() {
+  SaveSettings();
+  SDL_Event quit{};
+  quit.type = SDL_EVENT_QUIT;
+  SDL_PushEvent(&quit);
+}
+
 // Restart, screenshot and exit, plus the settings file; the top of the Game page (settings are on System).
 void DrawGameSection() {
   ImGui::SeparatorText("Game");
@@ -66,12 +74,7 @@ void DrawGameSection() {
   if (ImGui::BeginPopupModal("Exit game?", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
     ImGui::TextUnformatted("Progress since the last save station is lost.");
     if (ImGui::Button("Exit")) {
-      // The same path as closing the window: the main loop sees AURORA_EXIT
-      // and shuts down cleanly.
-      SaveSettings();
-      SDL_Event quit{};
-      quit.type = SDL_EVENT_QUIT;
-      SDL_PushEvent(&quit);
+      RequestQuit();
       ImGui::CloseCurrentPopup();
     }
     ImGui::SameLine();
