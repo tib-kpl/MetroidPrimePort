@@ -1551,6 +1551,63 @@ void CmdInfAmmo() {
   Finish();
 }
 
+// Appended to a cheat's state when the Original experience or Archipelago holds it off.
+const char* CheatRefused(bool set, bool applied) {
+  return set && !applied ? " (refused: Original experience or Archipelago)" : "";
+}
+
+void CmdMoonJump() {
+  if (sCmd.args.size() > 2) {
+    return Finish("usage: moonjump [0|1]");
+  }
+  if (sCmd.args.size() == 2) {
+    const std::string arg = Lower(sCmd.args[1]);
+    if (arg != "0" && arg != "1" && arg != "on" && arg != "off") {
+      return Finish("usage: moonjump [0|1]");
+    }
+    PortDebug::SetMoonJump(arg == "1" || arg == "on");
+  }
+  Out("moonjump %d%s", PortDebug::MoonJumpSet() ? 1 : 0,
+      CheatRefused(PortDebug::MoonJumpSet(), PortDebug::MoonJump()));
+  Finish();
+}
+
+void CmdBoost() {
+  static const char* const usage = "usage: boost [speed <1..10>] [time <1..10>] [air 0|1] [steer 0|1]";
+  float speed = PortDebug::BoostSpeedScaleSet();
+  float duration = PortDebug::BoostDurationScaleSet();
+  bool air = PortDebug::BoostAnywhereSet();
+  bool steer = PortDebug::BoostSteerSet();
+  if (sCmd.args.size() % 2 == 0) {
+    return Finish(usage);
+  }
+  for (size_t i = 1; i + 1 < sCmd.args.size(); i += 2) {
+    const std::string key = Lower(sCmd.args[i]);
+    const std::string value = Lower(sCmd.args[i + 1]);
+    float number = 0.f;
+    if (key == "air" || key == "steer") {
+      if (value != "0" && value != "1" && value != "on" && value != "off") {
+        return Finish(usage);
+      }
+      (key == "air" ? air : steer) = value == "1" || value == "on";
+    } else if ((key == "speed" || key == "time") && ParseFloat(value, number)) {
+      (key == "speed" ? speed : duration) = number;
+    } else {
+      return Finish(usage);
+    }
+  }
+  PortDebug::SetBoostScales(speed, duration);
+  PortDebug::SetBoostAnywhere(air);
+  PortDebug::SetBoostSteer(steer);
+  const bool set = PortDebug::BoostSpeedScaleSet() != 1.f || PortDebug::BoostDurationScaleSet() != 1.f || air ||
+                   steer;
+  const bool applied = PortDebug::BoostSpeedScale() != 1.f || PortDebug::BoostDurationScale() != 1.f ||
+                       PortDebug::BoostAnywhere() || PortDebug::BoostSteer();
+  Out("boost speed %.2f time %.2f air %d steer %d%s", PortDebug::BoostSpeedScaleSet(),
+      PortDebug::BoostDurationScaleSet(), air ? 1 : 0, steer ? 1 : 0, CheatRefused(set, applied));
+  Finish();
+}
+
 void CmdHint() {
   if (sCmd.args.size() < 2 || Lower(sCmd.args[1]) != "show") {
     return Finish("usage: hint show");
@@ -1567,9 +1624,13 @@ void CmdMemo(CStateManager& mgr) {
     mgr.ShowPausedHUDMemo(CAssetId(strg), 0.f);
     return Finish();
   }
+  // "memo hint <text>": the boxed hint memo with its pulsing continue button,
+  // as a scripted HUDMemo flagged as a hint shows it.
+  const bool hint = sCmd.args.size() > 2 && sCmd.args[1] == "hint";
+  const size_t first = hint ? 2 : 1;
   std::wstring wide;
-  for (size_t i = 1; i < sCmd.args.size(); ++i) {
-    if (i > 1) {
+  for (size_t i = first; i < sCmd.args.size(); ++i) {
+    if (i > first) {
       wide += L' ';
     }
     // UTF-8, so text with accents can be tried; a stray byte reads as Latin-1.
@@ -1592,9 +1653,9 @@ void CmdMemo(CStateManager& mgr) {
     }
   }
   if (wide.empty()) {
-    return Finish("usage: memo <text>");
+    return Finish("usage: memo [hint] <text>");
   }
-  CSamusHud::DisplayHudMemo(rstl::wstring(wide.c_str()), CHUDMemoParms(5.f, true, false, false));
+  CSamusHud::DisplayHudMemo(rstl::wstring(wide.c_str()), CHUDMemoParms(5.f, true, false, hint));
   Finish();
 }
 
@@ -2249,8 +2310,9 @@ void CmdThirdPerson() {
 // freecam [on|off|freeze on|off|player on|off|drive on|off|speed <n>|pos <x> <y> <z>|look <yaw> <pitch>]
 void CmdFreeCam() {
   static const char* const usage =
-      "usage: freecam [on|off|freeze on|off|player on|off|drive on|off|speed <n>|pos <x> <y> <z>|look <yaw> <pitch>]";
-  const CStateManager* mgr = PortDebug::StateManager();
+      "usage: freecam [on|off|here|freeze on|off|player on|off|drive on|off|speed <n>|pos <x> <y> <z>|"
+      "look <yaw> <pitch>]";
+  CStateManager* mgr = PortDebug::StateManager();
   if (sCmd.args.size() > 1) {
     const std::string arg = Lower(sCmd.args[1]);
     const std::string value = sCmd.args.size() > 2 ? Lower(sCmd.args[2]) : std::string();
@@ -2261,6 +2323,10 @@ void CmdFreeCam() {
         return Finish("not in a world");
       }
       PortFreeCam::SetActive(arg == "on", mgr);
+    } else if (arg == "here") {
+      if (mgr == nullptr || !PortFreeCam::MovePlayerHere(*mgr)) {
+        return Finish("the free camera is off");
+      }
     } else if (arg == "freeze" && (value == "on" || value == "off")) {
       PortFreeCam::SetFrozen(value == "on");
     } else if (arg == "player" && (value == "on" || value == "off")) {
@@ -2502,6 +2568,13 @@ void CmdFov() {
     Out("gun %s", PortDebug::GunFollowsFov() ? "follows fov" : "own fov");
     return Finish();
   }
+  if (sCmd.args.size() > 1 && sCmd.args[1] == "ball") {
+    if (sCmd.args.size() > 2) {
+      PortDebug::SetBallFollowsFov(sCmd.args[2] != "0");
+    }
+    Out("ball %s", PortDebug::BallFollowsFov() ? "follows fov" : "retail fov");
+    return Finish();
+  }
   if (sCmd.args.size() > 1 && sCmd.args[1] == "cannon") {
     if (sCmd.args.size() > 2) {
       const float fov = static_cast< float >(std::atof(sCmd.args[2].c_str()));
@@ -2516,8 +2589,9 @@ void CmdFov() {
   const float fov =
       sCmd.args.size() > 1 ? static_cast< float >(std::atof(sCmd.args[1].c_str())) : 0.f;
   if (!(fov >= PortDebug::kFovMin && fov <= PortDebug::kFovMax)) {
-    return Finish("usage: fov <45..120> | fov gun [0|1] | fov cannon [45..120]   first-person vertical\n"
-                  "FOV (retail 55); gun 1 draws the arm cannon at it too, cannon sets its own FOV");
+    return Finish("usage: fov <45..120> | fov gun [0|1] | fov ball [0|1] | fov cannon [45..120]\n"
+                  "first-person vertical FOV (retail 55); gun 1 draws the arm cannon at it too,\n"
+                  "ball 1 scales the morph ball's cameras with it, cannon sets the cannon's own FOV");
   }
   PortDebug::SetFirstPersonFov(fov);
   Finish();
@@ -4435,10 +4509,16 @@ const CommandSpec kCommands[] = {
      "god [on|off]               the player takes no damage (no argument: show)"},
     {"infammo", nullptr, [](CStateManager&) { CmdInfAmmo(); },
      "infammo [all|missile|powerbomb] [0|1]  firing uses no ammo, the HUD shows infinity (no state: show)"},
+    {"moonjump", nullptr, [](CStateManager&) { CmdMoonJump(); },
+     "moonjump [0|1]             Jump held in the air lifts Samus (no state: show)"},
+    {"boost", nullptr, [](CStateManager&) { CmdBoost(); },
+     "boost [speed <x>] [time <x>] [air 0|1] [steer 0|1]\n"
+     "                           Boost Ball speed and duration multipliers (1..10), boosting in the air,\n"
+     "                           steering while boosted (none: show)"},
     {"hint", nullptr, [](CStateManager&) { CmdHint(); },
      "hint show                  show the hint the game would show next"},
     {"memo", nullptr, [](CStateManager& mgr) { CmdMemo(mgr); },
-     "memo <text> | pause <strg> show text as a HUD message, or a string table as the boxed one"},
+     "memo [hint] <text> | pause <strg> show text as a HUD message (hint: the boxed hint memo), or a string table as the boxed one"},
     {"strg", nullptr, [](CStateManager&) { CmdStrg(); },
      "strg <id> [index]          a string table as the game loads it (mods included)"},
     {"language", nullptr, [](CStateManager&) { CmdLanguage(); },
@@ -4545,8 +4625,9 @@ const CommandSpec kCommands[] = {
     {"mappan", CmdMapPan, nullptr,
      "mappan <dx> <dy> [hold s]   drag the open map screen by dx,dy dp (view height 400 dp); finger down for hold s (0.25)"},
     {"freecam", CmdFreeCam, nullptr,
-     "freecam [on|off|freeze on|off|player on|off|drive on|off|speed <n>|pos <x> <y> <z>|look <yaw> <pitch>]\n"
-     "                           fly the view away from the player (HUD hidden; freeze holds the game still)"},
+     "freecam [on|off|here|freeze on|off|player on|off|drive on|off|speed <n>|pos <x> <y> <z>|look <yaw> <pitch>]\n"
+     "                           fly the view away from the player (HUD hidden; freeze holds the game still;\n"
+     "                           here moves Samus to the camera and turns it off)"},
     {"thirdperson", CmdThirdPerson, nullptr,
      "thirdperson [on|off] [distance <m>] [shoulder <m>] [height <m>] [clips] [feet] [clip <name>|off [phase [yaw]]] [backwalk procedural|struggle|reverse]\n"
      "                           third-person gameplay camera (also third_person* settings)"},
@@ -4561,8 +4642,9 @@ const CommandSpec kCommands[] = {
      "keypreset classic|mouse|<saved name>|save <name>   apply or save a keyboard preset (Controls > Remap)"},
     {"padpreset", CmdPadPreset, nullptr,
      "padpreset gamecube|remastered|modern|southpaw|<saved name>|save <name>   apply or save a controller preset"},
-    {"fov", CmdFov, nullptr, "fov <45..120>|gun [0|1]|cannon [45..120]  first-person vertical FOV, as the\n"
-                             "                           Options row does; gun 1: the arm cannon follows it;\n"
+    {"fov", CmdFov, nullptr, "fov <45..120>|gun [0|1]|ball [0|1]|cannon [45..120]  first-person vertical\n"
+                             "                           FOV, as the Options row does; gun 1: the arm cannon\n"
+                             "                           follows it; ball 1: the morph ball's cameras follow it;\n"
                              "                           cannon: the arm cannon's own FOV"},
     {"gunoffset", CmdGunOffset, nullptr,
      "gunoffset <r> <f> <u>      arm cannon offset in metres (+-1), as the Video row does"},

@@ -631,9 +631,9 @@
   primary, secondary and accent, the Phazon Suit glow and accent (its body is nearly black
   and stays as it is). The suit's own diffuse textures are recoloured from your disc (the
   slot texels' hues move to the picked one, keeping their shading), so cutscenes, the pause
-  screen's doll, the first-person arm and the morph ball (the generated balls above too)
-  all change; Samus's face and the glow, visor and reflection maps stay. Made on Apply and
-  kept in `generated/suit-colours/<suit>/` in the user folder (remade when the picks, the
+  screen's doll, the first-person arm, the morph ball (the generated balls above too) and
+  the in-game body (morphing, pickup cutscenes, the third-person camera) all change;
+  Samus's face and the glow, visor and reflection maps stay. Made on Apply and kept in `generated/suit-colours/<suit>/` in the user folder (remade when the picks, the
   generator or the disc change). A texture a mod brings (the Remastered import) is left as
   it is. With "Suit-coloured morph balls" off, a suit that borrows another's ball shows
   that suit's colours on it. While the Dread Samus import is on (DREAD_SAMUS.md), the list
@@ -678,8 +678,13 @@
   muzzle as retail's do. With it off, shots start where the cannon is drawn and are aimed at
   where retail's would arrive (the aim target at its depth when assist aimed
   the shot at it, else what lies on retail's line), so they hit what retail's
-  hit (#134). Morph ball, cutscene and other scripted cameras keep
-  their own FOVs; cutscenes that end in Samus's eyes ease to the setting.
+  hit (#134). With Morph ball follows FOV (persisted as `ball_follows_fov`, default
+  on, off in the original experience; console `fov ball [0|1]`) the morph ball's
+  cameras (its own, spline and spindle cameras, and
+  camera hints' FOVs) widen or narrow in step: each FOV is scaled by the ratio of the
+  setting's view tangent to retail's 55, so retail's 60 becomes about 86 at FOV 80
+  (#268). Cutscene and other scripted cameras keep their own FOVs; cutscenes that
+  end in Samus's eyes ease to the setting.
 - Arm cannon offset (Video > Display, persisted as `gun_offset=right,forward,up`,
   metres, each -1 to 1, default 0,0,0; like PrimeHack's): moves the arm
   cannon from its retail place along the camera's axes. It moves the real gun,
@@ -1171,6 +1176,17 @@
   (keeping "/capacity" where the HUD shows it) with full meters. The real count is kept and
   pickups still add to it; not saved. Refused in the Original experience and while connected to
   Archipelago. `MP_INFINITE_AMMO=1` turns it on for both for one run (see below).
+  Moon jump (console `moonjump`) makes Jump held in the air lift Samus at 12 m/s, on foot only
+  (in the ball Jump is the boost). Boost Ball speed and duration (console `boost speed|time`),
+  1x to 10x, multiply the boost's push, and the time the ball stays boosted together with how
+  slowly it loses speed meanwhile; the boost still ends where the game ends it (leaving the
+  ground, hitting a wall). Boost anywhere (console `boost air`) lets the boost fire in the air
+  (after a bomb or spring jump, along the ball's motion, so straight up when it rises straight
+  up), keeps a charge through a bomb jump, and keeps a boost going, undamped, when the ball
+  leaves the ground, so a boost into a spring jump no longer halves it. Steer while boosting
+  (console `boost steer`) turns a boosted ball's course toward the stick at up to 270°/s,
+  keeping its speed, where the game only lets the stick push it sideways (half-pipes keep
+  theirs). None of these is saved; all are refused like Infinite ammo.
 - F1 > System > Log, "Write the log to a file" (`logging`, on by default; the older `log_file` key is ignored):
   everything the game prints to stdout/stderr, including the
   line Aurora prints before it aborts, also goes to `metroid_prime_port.log` in
@@ -1481,7 +1497,8 @@ other `X:\Users\<name>`: `X:\Users\<user>`); the
   the C stick (or a captured mouse) turns, R is four times as fast, L and Z
   (or the d-pad's down and up) go down and up. `freeze` stops the game's simulation while it flies,
   which also makes two screenshots of one view comparable. Samus's body is
-  drawn where the player stands (`player off` or "Show Samus" hides it). The Debug page's Remastered section has the console's `view`, `probe`, `hdfont`, `roomgeo` and
+  drawn where the player stands (`player off` or "Show Samus" hides it). "Move Samus here"
+  (`freecam here`) puts her at the camera, facing its way, and turns the camera off. The Debug page's Remastered section has the console's `view`, `probe`, `hdfont`, `roomgeo` and
   `roomenv` switches.
 - `MP_PBR_PROBE=<off|on|mirror|window>` (or 0-3): the reflection probe PBR mod
   materials reflect, on by default. The console's `probe` changes it live.
@@ -1774,7 +1791,8 @@ headers, applies the same rule to its own on/off variables (`MP_LOG_COPY_TEX`,
   cache at startup. On by default on Android and on low-RAM devices (issue #162).
   In lazy mode, built pipelines are trimmed when memory runs short (issue #187):
   `MP_PIPELINE_TRIM_MIB=<n>` (default 1024) releases those a minute of frames didn't
-  draw when less than that is available, `MP_PIPELINE_TRIM_SEVERE_MIB=<n>` (default
+  draw when less than that is available (free RAM; on Windows also free commit and
+  the GPU's memory budget), `MP_PIPELINE_TRIM_SEVERE_MIB=<n>` (default
   512) all but what the last frames drew; 0 turns a level off.
   `MP_PIPELINE_EVICT=<frames>` adds a fixed sweep of pipelines idle that long.
 - `MP_PIPELINE_PBR=<0|1>`: compile the cached PBR pipelines at startup. By default

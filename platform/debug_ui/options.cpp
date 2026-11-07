@@ -795,6 +795,13 @@ bool GunFollowsFov() {
 
 void SetGunFollowsFov(bool enabled) { StoreSetting(sGunFollowsFov, enabled); }
 
+bool BallFollowsFov() {
+  EnsureInitialized();
+  return sBallFollowsFov && !sOriginalExperience;
+}
+
+void SetBallFollowsFov(bool enabled) { StoreSetting(sBallFollowsFov, enabled); }
+
 float GunFov() {
   EnsureInitialized();
   return sOriginalExperience ? kFovRetail : sGunFov;
@@ -1303,6 +1310,39 @@ void SetInfiniteAmmo(unsigned kinds, bool enabled) {
   EnsureInitialized();
   sInfiniteAmmo = enabled ? (sInfiniteAmmo | kinds) : (sInfiniteAmmo & ~kinds);
 }
+
+namespace {
+bool sMoonJump = false;
+float sBoostSpeedScale = 1.f;
+float sBoostDurationScale = 1.f;
+bool sBoostAnywhere = false;
+bool sBoostSteer = false;
+
+bool CheatsApply() { return !OriginalExperience() && !PortAp::Connected(); }
+
+float ClampBoostScale(float scale) {
+  return std::isfinite(scale) ? std::clamp(scale, 1.f, kBoostScaleMax) : 1.f;
+}
+} // namespace
+
+bool MoonJumpSet() { return sMoonJump; }
+bool MoonJump() { return sMoonJump && CheatsApply(); }
+void SetMoonJump(bool enabled) { sMoonJump = enabled; }
+
+float BoostSpeedScaleSet() { return sBoostSpeedScale; }
+float BoostDurationScaleSet() { return sBoostDurationScale; }
+float BoostSpeedScale() { return CheatsApply() ? sBoostSpeedScale : 1.f; }
+float BoostDurationScale() { return CheatsApply() ? sBoostDurationScale : 1.f; }
+void SetBoostScales(float speed, float duration) {
+  sBoostSpeedScale = ClampBoostScale(speed);
+  sBoostDurationScale = ClampBoostScale(duration);
+}
+bool BoostAnywhereSet() { return sBoostAnywhere; }
+bool BoostAnywhere() { return sBoostAnywhere && CheatsApply(); }
+void SetBoostAnywhere(bool enabled) { sBoostAnywhere = enabled; }
+bool BoostSteerSet() { return sBoostSteer; }
+bool BoostSteer() { return sBoostSteer && CheatsApply(); }
+void SetBoostSteer(bool enabled) { sBoostSteer = enabled; }
 
 bool LogFile() { return Loaded(sLogFile); }
 void SetLogFile(bool enabled) { StoreSetting(sLogFile, enabled); }

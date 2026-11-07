@@ -39,18 +39,21 @@ std::string FileName(uint32_t id) {
 
 // A texture to recolour: retail, or a generated ball's (port_ball_looks.h)
 // when `look` is set. `from` is a texture of `fromSuit` with the same UVs
-// whose slot split it takes.
+// whose slot split it takes. `islands` false: see Recolour.
 struct Source {
   uint32_t id;
   int look = -1;
   uint32_t from = 0;
   int fromSuit = 0;
+  bool islands = true;
 };
 
 constexpr int kPower = 0, kGravity = 1, kVaria = 2, kPhazon = 3;
 
 // Each suit's own diffuse textures: the body (cutscenes, the pause screen's
-// doll), the first-person arm, then the morph ball. See
+// doll), the first-person arm, the morph ball, then the in-game body
+// (BallTransitionsANCS: drawn while morphing and when the camera shows Samus
+// in play, as after a pickup), which has its own. See
 // build/s-suitcolour-20261022/suit_table.txt for where each is drawn.
 std::vector<Source> Sources(int suit) {
   using PortBallLooks::Look;
@@ -59,24 +62,28 @@ std::vector<Source> Sources(int suit) {
     return {{0x50BA2229}, {0xC0625536}, {0xE323D51D}, {0xEBD3C428}, {0xB2F8703C},
             {PortBallLooks::kBallPower},
             {PortModelVariant::Id(PortBallLooks::kSpiderVaria, kPower), int(Look::PowerSpider)},
-            {PortModelVariant::Id(PortBallLooks::kLowPolyVaria, kPower), int(Look::PowerSpider)}};
+            {PortModelVariant::Id(PortBallLooks::kLowPolyVaria, kPower), int(Look::PowerSpider)},
+            {0x5C02CF66}};
   case kGravity:
     return {{0x10E6A980}, {0x33A729AB}, {0xC901566D}, {0xFE5F7B41}, {0x7FD98F23}, {0x985C0EAA},
             {PortBallLooks::kSpiderGravity}, {PortBallLooks::kLowPolyGravity},
-            {PortModelVariant::Id(PortBallLooks::kBallVaria, kGravity), int(Look::Gravity)}};
+            {PortModelVariant::Id(PortBallLooks::kBallVaria, kGravity), int(Look::Gravity)},
+            {0x349AD971}};
   case kVaria:
     return {{0x18443363, -1, 0xC0625536, kPower}, {0x1C48ADEA, -1, 0x50BA2229, kPower}, {0x3B05B348},
             {0x8B774EA2, -1, 0xEBD3C428, kPower}, {0x309AA3D4, -1, 0xB2F8703C, kPower},
             {PortBallLooks::kBallVaria, -1, PortBallLooks::kBallPower, kPower},
-            {PortBallLooks::kSpiderVaria}, {PortBallLooks::kLowPolyVaria}};
+            {PortBallLooks::kSpiderVaria}, {PortBallLooks::kLowPolyVaria},
+            {0xD2149656, -1, 0, 0, false}};
   case kPhazon:
     return {{0x127E7854}, {0x287BD568}, {0x604DA35A}, {0x74C46891}, {0x32541D97}, {0xC94DD270},
             {PortBallLooks::kPhazonShell},
-            {PortModelVariant::Id(PortBallLooks::kBallVaria, kPhazon), int(Look::Phazon)}};
-  case 4: return {{0x83BF93AA}, {0x9733896D}, {0xC00F4EB6}, {0x917987E9}};
-  case 5: return {{0xD2DBEDB7}, {0xDE41AE5E}, {0x5629B84C}, {0x62D5C2D0}};
-  case 6: return {{0x0E483BE6}, {0x4445373A}, {0x3FAAF7A9}, {0x424EC5F7}};
-  case 7: return {{0x68EC596F}, {0xD033616E}, {0x9DF3B473}, {0xB1986E4B}};
+            {PortModelVariant::Id(PortBallLooks::kBallVaria, kPhazon), int(Look::Phazon)},
+            {0x08FA7447}};
+  case 4: return {{0x83BF93AA}, {0x9733896D}, {0xC00F4EB6}, {0x917987E9}, {0x100032C8}, {0x67C7C1EB}, {0x848EC21E}};
+  case 5: return {{0xD2DBEDB7}, {0xDE41AE5E}, {0x5629B84C}, {0x62D5C2D0}, {0xAA522481}, {0xF1E13711}, {0x06AE8EEA}};
+  case 6: return {{0x0E483BE6}, {0x4445373A}, {0x3FAAF7A9}, {0x424EC5F7}, {0xDE5D5172}, {0x986278F4}, {0xB809E769}};
+  case 7: return {{0x68EC596F}, {0xD033616E}, {0x9DF3B473}, {0xB1986E4B}, {0x6BE50A0D}, {0x3A3B3B2E}, {0xD09DA9D4}};
   default: return {};
   }
 }
@@ -218,7 +225,8 @@ std::vector<PortMods::LooseResource> Collect(
       haveFrom = decode({{job.source.from}, {}}, from);
     }
     const bool alpha = HasTransparency(image);
-    const size_t changed = Recolour(image, suit, picks, haveFrom ? &from : nullptr, job.source.fromSuit);
+    const size_t changed =
+        Recolour(image, suit, picks, haveFrom ? &from : nullptr, job.source.fromSuit, job.source.islands);
     PortLog::Write("suit colours: %s: %s: %zu of %d texels recoloured\n", info.name, FileName(job.source.id).c_str(),
                    changed, image.width * image.height);
     outputs.emplace_back(job.source.id, PortRemastered::EncodeTxtrCmpr(image, alpha, PortRemastered::MapKind::Colour));

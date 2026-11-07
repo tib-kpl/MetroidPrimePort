@@ -427,6 +427,9 @@ float FirstPersonFov();
 void SetFirstPersonFov(float degrees);
 bool GunFollowsFov();
 void SetGunFollowsFov(bool enabled);
+// Whether the morph ball's cameras widen or narrow with the FOV setting.
+bool BallFollowsFov();
+void SetBallFollowsFov(bool enabled);
 float GunFov();
 void SetGunFov(float degrees);
 // The FOV the arm cannon is drawn at, for a first-person camera whose FOV is cameraFov.
@@ -707,6 +710,31 @@ unsigned InfiniteAmmoSet();
 // Archipelago connected, like every cheat.
 bool InfiniteAmmo(unsigned kinds);
 void SetInfiniteAmmo(unsigned kinds, bool enabled);
+// Cheat: holding Jump in the air lifts Samus at a steady speed (F1 > Debug > Cheats, console
+// `moonjump`). Not saved; off in the Original experience and with Archipelago connected.
+bool MoonJumpSet();
+bool MoonJump();
+void SetMoonJump(bool enabled);
+// Cheat: Boost Ball speed and duration multipliers, 1 = retail (F1 > Debug > Cheats, console
+// `boost`). Speed scales the boost's push, duration both the time the ball stays boosted and,
+// over that time, how slowly it loses speed. Not saved; 1 in the Original experience and with
+// Archipelago connected. The Set getters return the values as set.
+constexpr float kBoostScaleMax = 10.f;
+float BoostSpeedScaleSet();
+float BoostDurationScaleSet();
+float BoostSpeedScale();
+float BoostDurationScale();
+void SetBoostScales(float speed, float duration);
+// Cheats (F1 > Debug > Cheats, console `boost air|steer`). BoostAnywhere: the Boost Ball also
+// fires in the air (after a bomb or spring jump) and a boost no longer ends, damped, when the ball
+// leaves the ground, so a boost into a spring jump keeps its height. BoostSteer: the stick turns
+// a boosted ball's course, keeping its speed. Not saved; off like the others above.
+bool BoostAnywhereSet();
+bool BoostAnywhere();
+void SetBoostAnywhere(bool enabled);
+bool BoostSteerSet();
+bool BoostSteer();
+void SetBoostSteer(bool enabled);
 // Write the log to <user folder>/metroid_prime_port.log (port_log_file.h). MP_LOG_FILE=1
 // turns it on for one run without changing the setting.
 bool LogFile();

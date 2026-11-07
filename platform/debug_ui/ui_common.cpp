@@ -401,7 +401,10 @@ void UpdateUiScale() {
   if (window == nullptr) {
     return;
   }
-  const float displayScale = SDL_GetWindowDisplayScale(window);
+  // The overlay works in window coordinates, which on iOS and macOS are points already scaled up by
+  // the pixel density (ImGui's framebuffer scale), so take only the remaining content scale.
+  const float pixelDensity = SDL_GetWindowPixelDensity(window);
+  const float displayScale = SDL_GetWindowDisplayScale(window) / (pixelDensity > 0.f ? pixelDensity : 1.f);
   const float uiScale = std::clamp(displayScale, 1.f, 4.f);
   if (uiScale == sUiAppliedScale) {
     return;
