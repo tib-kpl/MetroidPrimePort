@@ -628,6 +628,17 @@ bool CrosshairColor(float rgb[3]) {
   return true;
 }
 
+bool CrosshairTargetColor(float rgb[3]) {
+  EnsureInitialized();
+  if (!sCrosshairTargetCustomColor || sOriginalExperience) {
+    return false;
+  }
+  if (rgb != nullptr) {
+    std::copy_n(sCrosshairTargetColor, 3, rgb);
+  }
+  return true;
+}
+
 bool HideHelmet() {
   EnsureInitialized();
   return (sHideHelmet || PortPhoto::Active() || PortThirdPerson::Active()) && !sOriginalExperience;

@@ -14,6 +14,7 @@
 #include "port_paths.h"
 #include "port_remastered_txtr.h"
 #include "port_strings.h"
+#include "port_utf8_path.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -89,7 +90,7 @@ std::vector<Source> Sources(int suit) {
 }
 
 bool ReadFile(const std::string& path, std::vector<uint8_t>& out) {
-  std::ifstream in(PortPaths::detail::FromUtf8(path), std::ios::binary);
+  std::ifstream in(PortUtf8::FromUtf8(path), std::ios::binary);
   if (!in.is_open()) {
     return false;
   }
@@ -119,14 +120,14 @@ bool Put(const fs::path& dir, const std::string& name, const char* data, size_t 
     out.close();
     if (!out) {
       fs::remove(temporary, ec);
-      PortLog::Write("suit colours: cannot write %s\n", PortPaths::detail::ToUtf8(file).c_str());
+      PortLog::Write("suit colours: cannot write %s\n", PortUtf8::ToUtf8(file).c_str());
       return false;
     }
   }
   fs::rename(temporary, file, ec);
   if (ec) {
     fs::remove(temporary, ec);
-    PortLog::Write("suit colours: cannot write %s\n", PortPaths::detail::ToUtf8(file).c_str());
+    PortLog::Write("suit colours: cannot write %s\n", PortUtf8::ToUtf8(file).c_str());
     return false;
   }
   return true;
@@ -173,7 +174,7 @@ std::vector<PortMods::LooseResource> Collect(
     return {};
   }
 
-  const fs::path dir = PortPaths::detail::FromUtf8(user) / "generated" / "suit-colours" / info.key;
+  const fs::path dir = PortUtf8::FromUtf8(user) / "generated" / "suit-colours" / info.key;
   const std::string stamp = std::string("suit-colours ") + std::to_string(kVersion) + " " +
                             PortDisc::Name(PortDisc::Current()) + " " + info.key + " " + picksKey + inputs + "\n";
   std::error_code ec;
@@ -185,7 +186,7 @@ std::vector<PortMods::LooseResource> Collect(
       if (ec || size == 0) {
         continue;  // could not be made: logged when it was tried
       }
-      found.push_back({kTXTR, job.source.id, PortPaths::detail::ToUtf8(file), size, "generated"});
+      found.push_back({kTXTR, job.source.id, PortUtf8::ToUtf8(file), size, "generated"});
     }
     return found;
   };
@@ -194,7 +195,7 @@ std::vector<PortMods::LooseResource> Collect(
     if (in.is_open() && port::ReadAllText(in) == stamp) {
       std::vector<PortMods::LooseResource> found = cached();
       if (!found.empty()) {
-        PortLog::Write("suit colours: %s from the cache in %s\n", info.name, PortPaths::detail::ToUtf8(dir).c_str());
+        PortLog::Write("suit colours: %s from the cache in %s\n", info.name, PortUtf8::ToUtf8(dir).c_str());
         return found;
       }
     }
@@ -243,7 +244,7 @@ std::vector<PortMods::LooseResource> Collect(
   if (!Put(dir, kStampName, stamp.data(), stamp.size())) {
     return {};
   }
-  PortLog::Write("suit colours: %s made in %s\n", info.name, PortPaths::detail::ToUtf8(dir).c_str());
+  PortLog::Write("suit colours: %s made in %s\n", info.name, PortUtf8::ToUtf8(dir).c_str());
   return cached();
 }
 
@@ -255,7 +256,7 @@ std::vector<std::pair<uint32_t, std::string>> CollectDread(int suit, const Picks
     return {};
   }
   const Suit& info = SuitInfo(suit);
-  const fs::path mod = PortPaths::detail::FromUtf8(modDir);
+  const fs::path mod = PortUtf8::FromUtf8(modDir);
 
   // "<suit> <texture id>" lines, the suit as CPlayerState::EPlayerSuit.
   std::vector<std::pair<uint32_t, std::string>> jobs;  // (id, the .dds served now)
@@ -306,10 +307,10 @@ std::vector<std::pair<uint32_t, std::string>> CollectDread(int suit, const Picks
   }
   std::error_code ec;
   for (const auto& [id, path] : jobs) {
-    const uintmax_t size = fs::file_size(PortPaths::detail::FromUtf8(path), ec);
+    const uintmax_t size = fs::file_size(PortUtf8::FromUtf8(path), ec);
     sources += " " + ddsName(id) + "@" + std::to_string(ec ? 0 : size);
   }
-  const fs::path dir = PortPaths::detail::FromUtf8(user) / "generated" / "suit-colours" / info.key;
+  const fs::path dir = PortUtf8::FromUtf8(user) / "generated" / "suit-colours" / info.key;
   const PortRemastered::DdsFormat format = PortRemastered::ColourDdsFormat();
   const std::string stamp = std::string("suit-colours ") + std::to_string(kVersion) + " " +
                             PortRemastered::TextureFormatName() + " " + info.key + " " + picksKey + " " + sources +
@@ -322,7 +323,7 @@ std::vector<std::pair<uint32_t, std::string>> CollectDread(int suit, const Picks
       if (ec || size == 0) {
         continue;  // could not be made: logged when it was tried
       }
-      found.emplace_back(job.first, PortPaths::detail::ToUtf8(file));
+      found.emplace_back(job.first, PortUtf8::ToUtf8(file));
     }
     return found;
   };
@@ -331,7 +332,7 @@ std::vector<std::pair<uint32_t, std::string>> CollectDread(int suit, const Picks
     if (in.is_open() && port::ReadAllText(in) == stamp) {
       std::vector<std::pair<uint32_t, std::string>> found = cached();
       if (!found.empty()) {
-        PortLog::Write("suit colours: %s from the cache in %s\n", info.name, PortPaths::detail::ToUtf8(dir).c_str());
+        PortLog::Write("suit colours: %s from the cache in %s\n", info.name, PortUtf8::ToUtf8(dir).c_str());
         return found;
       }
     }
@@ -370,7 +371,7 @@ std::vector<std::pair<uint32_t, std::string>> CollectDread(int suit, const Picks
   if (made == 0 || !Put(dir, kStampName, stamp.data(), stamp.size())) {
     return {};
   }
-  PortLog::Write("suit colours: %s made in %s\n", info.name, PortPaths::detail::ToUtf8(dir).c_str());
+  PortLog::Write("suit colours: %s made in %s\n", info.name, PortUtf8::ToUtf8(dir).c_str());
   return cached();
 }
 

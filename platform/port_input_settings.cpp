@@ -1,6 +1,7 @@
 #include "port_input_settings.h"
 
 #include "port_env.h"
+#include "port_strings.h"
 
 #include <algorithm>
 #include <cmath>
@@ -13,15 +14,13 @@
 namespace PortInput {
 namespace {
 
+using port::ParseBool;
+
 // Settings::padPreset's values, as ApplyPadPresetNamed takes them.
 constexpr std::string_view kPadPresetNames[] = {"gamecube", "remastered", "modern", "southpaw"};
 
 std::mutex sLayoutMutex;
 std::string sLayout;
-
-bool ParseBool(const std::string& value) {
-  return value == "1" || value == "true" || value == "on" || value == "yes";
-}
 
 // The mouse button a settings key such as "mouse_left" names, or -1.
 int MouseButtonSetting(const std::string& key) {

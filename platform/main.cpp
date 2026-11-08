@@ -50,6 +50,7 @@
 #include <SDL3/SDL_platform_defines.h>
 #if defined(SDL_PLATFORM_IOS)
 #include "port_ios.h"
+#include "port_utf8_path.h"
 #endif
 #include <SDL3/SDL_iostream.h>
 #include <SDL3/SDL_messagebox.h>
@@ -183,7 +184,7 @@ DiscMatch MatchDiscImage(const std::filesystem::path& path) {
     }
     // Through SDL with a UTF-8 name: std::fopen on Windows takes the ANSI code
     // page, which cannot name every folder a user might unpack the game into.
-    SDL_IOStream* file = SDL_IOFromFile(PortPaths::detail::ToUtf8(path).c_str(), "rb");
+    SDL_IOStream* file = SDL_IOFromFile(PortUtf8::ToUtf8(path).c_str(), "rb");
     if (file == nullptr) {
         return DiscMatch::No;
     }
@@ -222,7 +223,7 @@ std::string FindDiscNextToExecutable() {
     // and this runs before anything that could report it, so nothing escapes.
     try {
         std::error_code ec;
-        const fs::path baseDir = PortPaths::detail::FromUtf8(base);
+        const fs::path baseDir = PortUtf8::FromUtf8(base);
         std::vector<fs::path> dirs{baseDir};
         for (fs::directory_iterator it(baseDir, ec), end; !ec && it != end; it.increment(ec)) {
             std::error_code entryEc;
@@ -246,10 +247,10 @@ std::string FindDiscNextToExecutable() {
             for (const fs::path& file : files) {
                 const DiscMatch match = MatchDiscImage(file);
                 if (match == DiscMatch::Yes) {
-                    return PortPaths::detail::ToUtf8(file);
+                    return PortUtf8::ToUtf8(file);
                 }
                 if (match == DiscMatch::Maybe && maybe.empty()) {
-                    maybe = PortPaths::detail::ToUtf8(file);
+                    maybe = PortUtf8::ToUtf8(file);
                 }
             }
         }
@@ -1069,7 +1070,8 @@ int main(int argc, char** argv) {
     // Built pipelines stay until memory runs short (issue #187), areas left long ago included, so
     // walking back is free. Lazy mode trims on the system's memory warnings (port_memory_log.cpp) and
     // on a headroom check every 5 s (MemAvailable; Windows: also commit and the GPU budget): under 1024 MiB available it releases what a minute of
-    // frames didn't draw, under 512 MiB all but what the last frames drew (GLOBAL pipelines stay).
+    // frames didn't draw, under 512 MiB what 30 s didn't (GLOBAL pipelines stay; a shorter window freed
+    // actors that left the view for a moment, then hid them while they rebuilt).
     // An 8 GB phone or tablet runs the game with 2-4 GB available; Android's own low-memory
     // threshold (logged with each memory warning) is a few hundred MiB, so 1024 trims well before
     // the system starts killing apps and 512 just above it. Android has no moderate level: a 3-4 GB

@@ -21,6 +21,7 @@
 #include "port_dread_samus_mod.h"
 #include "port_echoes_suits_mod.h"
 #include "port_textures.h"
+#include "port_utf8_path.h"
 
 #include <dolphin/gx/GXExtra.h>
 
@@ -66,6 +67,29 @@ void WriteBool(std::ostream& out, bool value) { out << (value ? 1 : 0); }
 // whole text (and its render_scale) is in: only on a fixed scale does it stay on.
 int sLegacyDynamicRes = -1; // -1: not in the text
 bool sDynamicResRead = false; // dynamic_resolution, the new key, was
+
+// crosshair_color, crosshair_target_color: RRGGBB, or empty for none.
+void ReadColour(const std::string& value, bool& set, float rgb[3]) {
+  unsigned packed = 0;
+  set = value.size() == 6 && std::sscanf(value.c_str(), "%6x", &packed) == 1;
+  if (set) {
+    for (int i = 0; i < 3; ++i) {
+      rgb[i] = static_cast< float >((packed >> (16 - 8 * i)) & 0xff) / 255.f;
+    }
+  }
+}
+
+void WriteColour(std::ostream& out, bool set, const float rgb[3]) {
+  char hex[8] = "";
+  if (set) {
+    unsigned packed = 0;
+    for (int i = 0; i < 3; ++i) {
+      packed = packed << 8 | static_cast< unsigned >(std::lround(std::clamp(rgb[i], 0.f, 1.f) * 255.f));
+    }
+    std::snprintf(hex, sizeof(hex), "%06x", packed);
+  }
+  out << hex;
+}
 
 // hud_opacity_*: a percent, or "visor" to follow the game's Visor Opacity.
 void ReadHudOpacity(PortDebug::HudOpacityPart part, const std::string& value) {
@@ -261,29 +285,12 @@ const SettingKey kSettingKeys[] = {
      [](std::ostream& out) { WriteHudOpacity(out, PortDebug::kHudOpacityScan); }, false, "visor", "40"},
     {"hud_opacity_energy", [](const std::string& value) { ReadHudOpacity(PortDebug::kHudOpacityEnergy, value); },
      [](std::ostream& out) { WriteHudOpacity(out, PortDebug::kHudOpacityEnergy); }, false, "visor", "40"},
-    {"crosshair_color",
-     [](const std::string& value) {
-       // RRGGBB, or empty for the game's own colour.
-       unsigned rgb = 0;
-       sCrosshairCustomColor = value.size() == 6 && std::sscanf(value.c_str(), "%6x", &rgb) == 1;
-       if (sCrosshairCustomColor) {
-         for (int i = 0; i < 3; ++i) {
-           sCrosshairColor[i] = static_cast< float >((rgb >> (16 - 8 * i)) & 0xff) / 255.f;
-         }
-       }
-     },
-     [](std::ostream& out) {
-       char hex[8] = "";
-       if (sCrosshairCustomColor) {
-         unsigned rgb = 0;
-         for (const float c : sCrosshairColor) {
-           rgb = rgb << 8 | static_cast< unsigned >(std::lround(std::clamp(c, 0.f, 1.f) * 255.f));
-         }
-         std::snprintf(hex, sizeof(hex), "%06x", rgb);
-       }
-       out << hex;
-     },
-     false, "ff8000", ""},
+    {"crosshair_color", [](const std::string& value) { ReadColour(value, sCrosshairCustomColor, sCrosshairColor); },
+     [](std::ostream& out) { WriteColour(out, sCrosshairCustomColor, sCrosshairColor); }, false, "ff8000", ""},
+    {"crosshair_target_color",
+     [](const std::string& value) { ReadColour(value, sCrosshairTargetCustomColor, sCrosshairTargetColor); },
+     [](std::ostream& out) { WriteColour(out, sCrosshairTargetCustomColor, sCrosshairTargetColor); }, false,
+     "ff0000", ""},
     BoolKey< &sHideHelmet >("hide_helmet"),
     {"third_person", [](const std::string& value) { PortThirdPerson::SetEnabled(ParseBool(value)); },
      [](std::ostream& out) { WriteBool(out, PortThirdPerson::Enabled()); }, false, "1", "0"},
@@ -726,7 +733,7 @@ std::string SettingsText() {
 
 void LoadSettings() {
   const std::string path = SettingsFilePath();
-  std::ifstream file(PortPaths::detail::FromUtf8(path));
+  std::ifstream file(PortUtf8::FromUtf8(path));
   if (!file.is_open()) {
     return;
   }
@@ -817,7 +824,7 @@ void SaveSettings() {
   // Write a temporary file and rename it over the settings, so a crash or kill
   // mid-write (this runs on every slider release and at exit) cannot leave a
   // truncated file that resets everything on the next start.
-  const std::filesystem::path target = PortPaths::detail::FromUtf8(path);
+  const std::filesystem::path target = PortUtf8::FromUtf8(path);
   std::filesystem::path partial = target;
   partial += ".tmp";
   std::ofstream file(partial, std::ios::trunc);

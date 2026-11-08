@@ -136,7 +136,7 @@ int main() {
               "repeat and out of range dropped");
 
   // --- the card key ----------------------------------------------------------
-  const std::string usaDir = PathToUtf8(root / "cards" / "usa");
+  const std::string usaDir = PortUtf8::ToUtf8(root / "cards" / "usa");
   const std::string usa = CardIdentity(usaDir, "GM8E01", 0);
   REQUIRE_MSG(CardKey(usa) == CardKey(CardIdentity(usaDir, "GM8E01", 0)), "the same card keys the same");
   // A PAL card in the USA card's directory is another card, and so is another
@@ -151,7 +151,7 @@ int main() {
   REQUIRE_MSG(CardIdentity(usaDir + "/./", "GM8E01", 0) == usa, "a dot step");
   REQUIRE_MSG(CardIdentity(usaDir + "/../usa", "GM8E01", 0) == usa, "a dot dot step");
   fs::create_directory_symlink(root / "cards" / "usa", root / "link", ec);
-  REQUIRE_MSG(CardIdentity(PathToUtf8(root / "link"), "GM8E01", 0) == usa, "a symlink resolves");
+  REQUIRE_MSG(CardIdentity(PortUtf8::ToUtf8(root / "link"), "GM8E01", 0) == usa, "a symlink resolves");
   {
     const fs::path here = fs::current_path(ec);
     fs::current_path(root, ec);

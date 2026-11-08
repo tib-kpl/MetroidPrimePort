@@ -259,6 +259,10 @@ enum ECrosshairStyle { kCrosshairStyle_Classic, kCrosshairStyle_Remastered, kCro
 ECrosshairStyle CrosshairStyle();
 void SetCrosshairStyle(ECrosshairStyle style);
 bool CrosshairColor(float rgb[3]);
+// The crosshair fades to this colour over an enemy the current beam hurts (crosshair_target_color=,
+// issue #277; Remastered style: in place of its red, and only where the beam hurts). False = off,
+// also under Original experience; rgb may be null to just ask.
+bool CrosshairTargetColor(float rgb[3]);
 // Auto-aim: without Lock-On the gun picks the target nearest the screen centre
 // (CPlayer::UpdateAimTarget). Off = aim only at a locked target. On under Original experience.
 bool AutoAim();
@@ -826,7 +830,6 @@ void CancelGyroRecalibration();
 float GyroRecalibrationCountdown(); // seconds left, or negative when none pending
 float GyroManualCalibrationProgress(); // 0..1 while Recalibrate samples, or negative
 bool GyroCalibrating();             // auto calibration is learning right now
-void ResetGyroCalibration();
 float GyroCalibrationConfidence();
 // Recentres the pointer-aim cursor and levels the camera pitch (the "Reset aim"
 // action; thread-safe, applied on the next aim tick).

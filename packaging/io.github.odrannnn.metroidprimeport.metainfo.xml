@@ -55,6 +55,12 @@
        android/app/build.gradle; tools/make_flatpak.sh refuses to build when the
        two differ, since Flatpak reports the newest entry as the app's version. -->
   <releases>
+    <release version="0.43.0" date="2026-11-08">
+      <description>
+        <p>Cameras: the morph ball, spline and spindle cameras follow the FOV setting, with a toggle to keep the ball camera at retail's. Suit colours recolour Samus's body while morphing and in pickup cutscenes. Remastered: map floors in Phendrana Shorelines and nearby rooms draw filled, and the GameCube Z button fits inside the hint memo's ring. Dark Samus has her own Morph Ball. The overlay draws non-Latin game text and no longer draws too large on iPhone and Mac. The Screenshot binding saves a PNG, also on Android. The Steam Deck's built-in pad yields Player 1 to a connected controller, and quitting from Steam no longer crashes. Savestates restore animations and script fields more reliably. Performance: fewer texture and vertex copies, and Samus's shader pipelines are never trimmed.</p>
+      </description>
+      <url type="details">https://github.com/Odrannnn/MetroidPrimePort/releases/tag/v0.43.0</url>
+    </release>
     <release version="0.42.0" date="2026-11-06">
       <description>
         <p>Remastered: the thermal and X-ray visors draw the arm cannon, the suit arm and the grapple arm with Remastered's own heat and X-ray models, the X-ray models of the Chozo Ghost, Oculus and others use Remastered's, the X-ray view no longer turns the sky pale, and more room models use Remastered's instead of retail's. Cheats: moon jump, Boost Ball speed and duration, boosting in the air and steering while boosting, and moving Samus to the free camera. Difficulty: damage taken and dealt sliders. Savestates: every script object keeps its state, so cutscenes and room scripts resume as saved. Menus: a hold-to-quit Exit Game prompt on the main menu, the disc's version in the disc image section, and on Android a button that copies the shader cache into the data folder. Performance: fewer shader pipelines to compile, and texture packs shrink their cache when memory runs low. A user_textures folder is made at startup.</p>

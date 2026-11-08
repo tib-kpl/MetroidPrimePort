@@ -33,6 +33,7 @@ struct SDL_Window;
 
 namespace DebugUi {
 
+using port::ParseBool;
 using port::Trim;
 
 // debug_ui.cpp: the settings, runtime switches and the state shared across threads.
@@ -100,6 +101,8 @@ extern bool sCrosshairCustomColor;
 extern bool sCrosshairXRay;
 extern bool sCrosshairThermal;
 extern float sCrosshairColor[3];
+extern bool sCrosshairTargetCustomColor;
+extern float sCrosshairTargetColor[3];
 extern bool sHideHelmet;
 extern bool sHideVisorEffects;
 extern bool sRevealMap;
@@ -278,7 +281,6 @@ extern std::string sRemasteredSkip;
 extern std::string sRemasteredHide;
 
 std::string SettingsFilePath();
-bool ParseBool(const std::string& value);
 void MarkDirty();
 PortRemastered::ImportParts RemasteredImportParts();
 void SetRemasteredImportParts(const PortRemastered::ImportParts& parts);

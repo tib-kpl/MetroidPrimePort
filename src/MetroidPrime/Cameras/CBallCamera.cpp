@@ -2409,8 +2409,17 @@ void CBallCamera::SetState(EBallCameraState state, CStateManager& mgr) {
 #endif
     SetTransform(xf);
     TeleportCamera(xf.GetTranslation(), mgr);
+#ifdef TARGET_PC
+    // The FOV blends over the morph's own duration, as retail's 1 s does, so a Fast Morph's
+    // 0.2 s pull-back doesn't leave the zoom running on for 0.8 s after it (#268).
+    const float morphDuration = mgr.GetPlayer()->GetMorphDuration();
+    InterpolateFOV(mgr.CameraManager()->GetFirstPersonCamera()->GetFov(),
+                   CCameraManager::GetDefaultThirdPersonVerticalFOV(),
+                   morphDuration > 0.f ? morphDuration : 1.f, 0.f);
+#else
     InterpolateFOV(mgr.CameraManager()->GetFirstPersonCamera()->GetFov(),
                    CCameraManager::GetDefaultThirdPersonVerticalFOV(), 1.f, 0.f);
+#endif
     x36c_splineState = kBSS_Invalid;
   }
   case kBCS_Default:

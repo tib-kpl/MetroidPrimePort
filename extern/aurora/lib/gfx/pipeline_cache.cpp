@@ -1941,6 +1941,8 @@ void end_pipeline_frame() {
 
 void note_skipped_draw() { g_skippedDraws.fetch_add(1, std::memory_order_relaxed); }
 
+uint64_t skipped_draw_count() { return g_skippedDraws.load(std::memory_order_relaxed); }
+
 bool get_pipeline(PipelineRef ref, wgpu::RenderPipeline& pipeline) {
   std::lock_guard guard{g_pipelineMutex};
   const auto it = g_pipelines.find(ref);

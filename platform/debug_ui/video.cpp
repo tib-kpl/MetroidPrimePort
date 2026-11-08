@@ -287,6 +287,19 @@ void DrawVideoDisplay() {
     MarkDirty();
   }
   ImGui::EndDisabled();
+  if (ImGui::Checkbox("Crosshair colour on enemies", &sCrosshairTargetCustomColor)) {
+    MarkDirty();
+  }
+  ImGui::SetItemTooltip("The crosshair fades to this colour while it is over an enemy your\n"
+                        "current beam can hurt (not one it is immune to). Remastered style: in\n"
+                        "place of its own red. Off: the game's look. Off under Original experience.");
+  ImGui::SameLine();
+  ImGui::BeginDisabled(!sCrosshairTargetCustomColor);
+  if (ImGui::ColorEdit3("##crosshair_target_color", sCrosshairTargetColor,
+                        ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel)) {
+    MarkDirty();
+  }
+  ImGui::EndDisabled();
   if (ImGui::Checkbox("Crosshair in X-Ray", &sCrosshairXRay)) {
     MarkDirty();
   }

@@ -251,8 +251,6 @@ float GyroManualCalibrationProgress() {
 
 bool GyroCalibrating() { return sGyroCalibrating || sGyroMotion.ManualCalibrating(); }
 
-void ResetGyroCalibration() { sGyroMotion.Reset(); }
-
 void RequestResetAim() { sResetAimRequested.store(true, std::memory_order_release); }
 
 float GyroCalibrationConfidence() {

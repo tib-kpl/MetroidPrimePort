@@ -10,6 +10,7 @@
 
 #include <SDL3/SDL_timer.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -35,6 +36,10 @@ namespace {
 constexpr int64_t kSecondNs = 1000000000;
 constexpr int64_t kReportsNs[] = {5 * kSecondNs, 15 * kSecondNs, 30 * kSecondNs, 60 * kSecondNs};
 constexpr int kReportCount = sizeof(kReportsNs) / sizeof(kReportsNs[0]);
+// Freezes too short for a stall report (issue #278): a frame of 1 s or more gets one line.
+constexpr int64_t kHitchSampleNs = kSecondNs / 2;
+constexpr int64_t kHitchNs = kSecondNs;
+constexpr int kHitchLogLimit = 200;
 
 std::atomic< unsigned > sFrame{0};
 std::atomic< int64_t > sBeatNs{0};
@@ -72,6 +77,14 @@ void Watch() {
   bool warningsDumped = false;
   int64_t firstFrameNs = 0;
   int64_t lastBeatNs = sBeatNs.load(std::memory_order_relaxed);
+  struct {
+    bool sampled = false;
+    const char* main = "";
+    long long mainMs = 0;
+    const char* render = "";
+    long long renderMs = 0;
+  } hitch;
+  int hitchesLogged = 0;
   for (;;) {
     std::this_thread::sleep_for(std::chrono::milliseconds(500));
     const int64_t now = NowNs();
@@ -83,14 +96,21 @@ void Watch() {
     if (beat != lastBeatNs) {
       if (stalled) {
         PortLog::Write("watchdog: frames resumed after %.1f s (frame %u)\n", Seconds(beat - lastBeatNs), frame);
+      } else if (hitch.sampled && beat - lastBeatNs >= kHitchNs && hitchesLogged < kHitchLogLimit) {
+        ++hitchesLogged;
+        PortLog::Write("watchdog: a frame took %.1f s (frame %u); main thread was in '%s' for %lld ms, render "
+                       "thread in '%s' for %lld ms\n",
+                       Seconds(beat - lastBeatNs), frame, hitch.main, hitch.mainMs, hitch.render, hitch.renderMs);
       }
       lastBeatNs = beat;
       stalled = false;
       reported = 0;
+      hitch.sampled = false;
     }
     // A backgrounded app has no frames to wait for; count from when it came back.
     if (aurora_is_suspended()) {
       lastBeatNs = now;
+      hitch.sampled = false;
       if (stalled) {
         stalled = false;
         reported = 0;
@@ -103,6 +123,16 @@ void Watch() {
       PortWatchdog::LogcatDump("10 s after the first frame", true);
     }
     const int64_t stalledNs = now - lastBeatNs;
+    // Where a shorter freeze sits, sampled half a second in and logged once frames resume.
+    if (!hitch.sampled && firstFrameNs != 0 && stalledNs >= kHitchSampleNs) {
+      const auto& main = aurora::phase::state(aurora::phase::Main);
+      const auto& render = aurora::phase::state(aurora::phase::Render);
+      hitch.sampled = true;
+      hitch.main = main.name.load(std::memory_order_relaxed);
+      hitch.mainMs = (now - main.sinceNs.load(std::memory_order_relaxed)) / 1000000;
+      hitch.render = render.name.load(std::memory_order_relaxed);
+      hitch.renderMs = (now - render.sinceNs.load(std::memory_order_relaxed)) / 1000000;
+    }
     if (reported < kReportCount && stalledNs >= kReportsNs[reported]) {
       ReportStall(reported, stalledNs, frame);
       stalled = true;
@@ -137,7 +167,7 @@ void Heartbeat(unsigned frame) {
   static const int sTestStall = port::EnvInt("MP_WATCHDOG_TEST_STALL", 0);
   if (sTestStall > 0 && frame == static_cast< unsigned >(sTestStall)) {
     aurora::phase::set(aurora::phase::Main, "test stall (MP_WATCHDOG_TEST_STALL)");
-    SDL_Delay(8000);
+    SDL_Delay(static_cast< Uint32 >(std::max(port::EnvInt("MP_WATCHDOG_TEST_STALL_MS", 8000), 0)));
   }
   static const int sTestThrow = port::EnvInt("MP_WATCHDOG_TEST_THROW", 0);
   if (sTestThrow > 0 && frame == static_cast< unsigned >(sTestThrow)) {

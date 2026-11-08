@@ -30,6 +30,7 @@
 
 #include "port_disc.h"
 #include "port_discord.h"
+#include "port_utf8_path.h"
 
 #include <SDL3/SDL_events.h>
 #include <SDL3/SDL_filesystem.h>
@@ -156,7 +157,7 @@ fs::path SlotPath(int slot) {
   const std::string folder = Folder();
   if (folder.empty())
     return {};
-  return PortGci::PathFromString(folder) / ("slot" + std::to_string(slot) + ".mpss");
+  return PortUtf8::FromUtf8(folder) / ("slot" + std::to_string(slot) + ".mpss");
 }
 
 // A state the running game can build: Capture always writes kBlobSize bytes
@@ -594,7 +595,7 @@ fs::path ResumePath() {
   const std::string folder = Folder();
   if (folder.empty())
     return {};
-  return PortGci::PathFromString(folder) / "resume.mpss";
+  return PortUtf8::FromUtf8(folder) / "resume.mpss";
 }
 
 // What ties a resume to one game: the randomizer seed, or the Archipelago
@@ -627,7 +628,7 @@ fs::path MarkerPath() {
   const std::string folder = Folder();
   if (folder.empty())
     return {};
-  return PortGci::PathFromString(folder) / "running";
+  return PortUtf8::FromUtf8(folder) / "running";
 }
 
 void WriteMarker() {
@@ -641,7 +642,7 @@ void WriteMarker() {
   if (!file) {
     // Without the marker a crash goes undetected, so the user is told once per
     // failure.
-    PortLog::Write("[savestate] cannot write the crash marker %s\n", PortGci::PathString(path).c_str());
+    PortLog::Write("[savestate] cannot write the crash marker %s\n", PortUtf8::ToUtf8(path).c_str());
   }
 }
 
@@ -728,7 +729,7 @@ std::string Folder() {
   }
   dir += "savestates";
   std::error_code ec;
-  fs::create_directories(PortGci::PathFromString(dir), ec);
+  fs::create_directories(PortUtf8::FromUtf8(dir), ec);
   return dir;
 }
 

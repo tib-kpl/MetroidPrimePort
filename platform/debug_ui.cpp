@@ -117,6 +117,8 @@ bool sCrosshairCustomColor = false;
 bool sCrosshairXRay = false;
 bool sCrosshairThermal = false;
 float sCrosshairColor[3] = {1.f, 1.f, 1.f};
+bool sCrosshairTargetCustomColor = false;
+float sCrosshairTargetColor[3] = {1.f, 0.f, 0.f};
 bool sHideHelmet = false;
 bool sHideVisorEffects = false;
 bool sRevealMap = false;
@@ -319,11 +321,6 @@ std::string SettingsFilePath() {
   const std::string& dir = PortPaths::UserFolder();
   return (dir.empty() ? std::string("./") : dir) + "port_settings.ini";
 }
-
-bool ParseBool(const std::string& value) {
-  return value == "1" || value == "true" || value == "on" || value == "yes";
-}
-
 
 void MarkDirty() { sSettingsDirty = true; }
 

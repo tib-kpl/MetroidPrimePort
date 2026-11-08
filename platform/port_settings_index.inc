@@ -173,6 +173,7 @@
 {"Video", "Display", "HUD and view", "Crosshair style", "crosshair reticle classic remastered look"},
 {"Video", "Display", "HUD and view", "Crosshair opacity", "crosshair transparency alpha"},
 {"Video", "Display", "HUD and view", "Custom crosshair colour", "crosshair color reticle tint"},
+{"Video", "Display", "HUD and view", "Crosshair colour on enemies", "crosshair color reticle red enemy target hostile damageable aim"},
 {"Video", "Display", "HUD and view", "Crosshair in X-Ray", "crosshair reticle visor xray x-ray hide per visor"},
 {"Video", "Display", "HUD and view", "Crosshair in Thermal", "crosshair reticle visor thermal hide per visor"},
 {"Video", "Display", "HUD and view", "Secondary crosshairs", "crosshair secondary extra"},

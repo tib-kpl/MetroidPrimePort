@@ -860,6 +860,12 @@
   scales their alpha (the defaults leave them as on the Wii), the size slider scales them under
   direct aim, and `remastered` draws the Remastered cursor where the aiming cursor is, without
   the old crosshair.
+- Crosshair colour on enemies (Video > Display, `crosshair_target_color`, `RRGGBB` or empty
+  for off, default off, issue #277): the crosshair fades to that colour in 0.25 s while the aim
+  ray (the pointer's under pointer aim) meets a living, active, targetable enemy that a shot of
+  the current beam would hurt (the vulnerability of the part hit, as damage asks it), and back
+  off it. Every style and Trilogy's aiming cursor; in the `remastered` style it replaces the
+  red, which then also skips enemies the beam does not hurt. Original experience ignores it.
 - Crosshair in X-Ray and Crosshair in Thermal (Video > Display, `crosshair_xray` and
   `crosshair_thermal`, default off, issue #241): off fades the aiming crosshair out in
   that visor as the game does in the Scan Visor, whatever the crosshair style (on a
@@ -959,10 +965,12 @@
   default; Tracker page: Off, Seen, Rooms, All; the pause row cycles Off, Seen
   and All, with Rooms shown as the third value when set elsewhere): All draws a
   plain white dot on the map and minimap for every pickup not yet collected, in
-  rooms the map shows; Seen draws the dot only once you have looked at that
+  rooms the map shows (a secret room that a map station doesn't show, such as
+  Quarantine Monitor, gets its dot once the map station has been used); Seen draws the dot only once you have looked at that
   pickup for half a second (within 40 units, in the middle half of the view,
   with a clear line from the eye; see-through surfaces such as gratings don't
-  block it; kept per save, `pickups seen`); Rooms draws no dots but tints the rooms that
+  block it; kept per save, `pickups seen`), and a collected pickup always counts
+  as seen, so its collected mark shows however fast it was grabbed; Rooms draws no dots but tints the rooms that
   still hold an uncollected pickup amber. An old saved `1` stays All. In Seen,
   Map stations show pickups (`map_station_pickups`, on by default) also marks
   every pickup in the rooms a map station has mapped (or a hint, or Reveal map,
@@ -1785,8 +1793,10 @@ headers, applies the same rule to its own on/off variables (`MP_LOG_COPY_TEX`,
 
 - `MP_WATCHDOG=0`: no stall watchdog. On by default: with no frame for 5, 15, 30
   and 60 s it logs where the main and render threads are, the main thread's stack
-  at 5 and 30 s, and on Android a logcat dump. `MP_WATCHDOG_TEST_STALL=<frame>`
-  sleeps 8 s on that frame and `MP_WATCHDOG_TEST_THROW=<frame>` throws an exception
+  at 5 and 30 s, and on Android a logcat dump. A shorter freeze, a frame of 1 to
+  5 s, gets one `watchdog: a frame took` line naming where both threads were half a
+  second in (up to 200 a run). `MP_WATCHDOG_TEST_STALL=<frame>`
+  sleeps 8 s on that frame (`MP_WATCHDOG_TEST_STALL_MS` sets the length) and `MP_WATCHDOG_TEST_THROW=<frame>` throws an exception
   there, to test it and the crash report.
 - `MP_HEAP_CHECK=1`: deep checks of the game
   heap's block links on every normal-heap free and of each frame's delayed deletions (queued
@@ -1799,7 +1809,7 @@ headers, applies the same rule to its own on/off variables (`MP_LOG_COPY_TEX`,
   `MP_PIPELINE_TRIM_MIB=<n>` (default 1024; 0, off, on Android) releases those a minute of frames didn't
   draw when less than that is available (free RAM; on Windows also free commit and
   the GPU's memory budget), `MP_PIPELINE_TRIM_SEVERE_MIB=<n>` (default
-  512) all but what the last frames drew; 0 turns a level off. GLOBAL pipelines (Samus and
+  512) those 30 s of frames didn't draw, as do Android's memory warnings in play; 0 turns a level off. GLOBAL pipelines (Samus and
   her morph ball, gun, HUD, visors) are never trimmed.
   `MP_PIPELINE_EVICT=<frames>` adds a fixed sweep of pipelines idle that long.
 - `MP_PIPELINE_PBR=<0|1>`: compile the cached PBR pipelines at startup. By default
