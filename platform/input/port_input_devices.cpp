@@ -34,10 +34,6 @@
 #include <memory>
 #include <mutex>
 
-namespace aurora {
-void request_screenshot() noexcept;
-}
-
 namespace PortInputDevices {
 namespace {
 
@@ -1383,7 +1379,7 @@ void PollPortActions() {
   if (out.Pressed(Action::PortMenu)) PortDebug::RequestToggle();
   if (out.Pressed(Action::SaveState)) PortDebug::RequestSaveStateHotkey(1);
   if (out.Pressed(Action::LoadState)) PortDebug::RequestSaveStateHotkey(2);
-  if (out.Pressed(Action::Screenshot)) aurora::request_screenshot();
+  if (out.Pressed(Action::Screenshot)) PortPhoto::RequestScreenshot();
   if (out.Pressed(Action::PhotoMode)) PortPhoto::RequestToggle();
   if (out.Pressed(Action::ToggleOriginal)) PortDebug::SetOriginalExperience(!PortDebug::OriginalExperience());
   if (out.Pressed(Action::ToggleRemastered)) PortDebug::ToggleRemastered();

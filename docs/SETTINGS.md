@@ -373,6 +373,12 @@
   later with its type's default mappings gets the preset then, and with no
   controller connected the Remap page shows the preset's mappings. Applying a
   preset of your own clears it.
+- Player 1 on a Steam Deck: the Deck's built-in controller ranks below any other controller for
+  Player 1. A connected controller takes Player 1 from it whatever Steam's order, and the Deck
+  gets it back when that controller leaves. Choosing Player 1's controller on the Remap page saves
+  it (`controller_ports.dat`), and that choice overrides this. When Steam reports a controller by
+  its untranslated name key (`#SettingsController_...`), its mapping file is the one of the same
+  vid/pid under its real name, so one controller keeps one mapping.
 - Swap the Scan and X-Ray visor buttons (Controls > Options, persisted as
   `swap_scan_xray`, off by default): each visor takes the other's D-pad
   direction, as in Remastered (D-pad right Scan, left X-Ray).
@@ -1790,10 +1796,11 @@ headers, applies the same rule to its own on/off variables (`MP_LOG_COPY_TEX`,
 - `MP_PIPELINE_LAZY=<0|1>`: build pipelines on first use instead of compiling the
   cache at startup. On by default on Android and on low-RAM devices (issue #162).
   In lazy mode, built pipelines are trimmed when memory runs short (issue #187):
-  `MP_PIPELINE_TRIM_MIB=<n>` (default 1024) releases those a minute of frames didn't
+  `MP_PIPELINE_TRIM_MIB=<n>` (default 1024; 0, off, on Android) releases those a minute of frames didn't
   draw when less than that is available (free RAM; on Windows also free commit and
   the GPU's memory budget), `MP_PIPELINE_TRIM_SEVERE_MIB=<n>` (default
-  512) all but what the last frames drew; 0 turns a level off.
+  512) all but what the last frames drew; 0 turns a level off. GLOBAL pipelines (Samus and
+  her morph ball, gun, HUD, visors) are never trimmed.
   `MP_PIPELINE_EVICT=<frames>` adds a fixed sweep of pipelines idle that long.
 - `MP_PIPELINE_PBR=<0|1>`: compile the cached PBR pipelines at startup. By default
   only when a mod is enabled, since only converted materials draw with them.

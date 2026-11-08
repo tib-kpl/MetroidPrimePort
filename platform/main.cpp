@@ -1072,11 +1072,18 @@ int main(int argc, char** argv) {
     // frames didn't draw, under 512 MiB all but what the last frames drew (GLOBAL pipelines stay).
     // An 8 GB phone or tablet runs the game with 2-4 GB available; Android's own low-memory
     // threshold (logged with each memory warning) is a few hundred MiB, so 1024 trims well before
-    // the system starts killing apps and 512 just above it. Overrides: MP_PIPELINE_TRIM_MIB and
-    // MP_PIPELINE_TRIM_SEVERE_MIB (0 turns a level off), MP_PIPELINE_EVICT (a fixed idle sweep).
+    // the system starts killing apps and 512 just above it. Android has no moderate level: a 3-4 GB
+    // phone sits under 1024 MiB available all the time, and rebuilding a pipeline costs up to 2 s on
+    // a Mali (MP2 issue #98). Overrides: MP_PIPELINE_TRIM_MIB and MP_PIPELINE_TRIM_SEVERE_MIB (0
+    // turns a level off), MP_PIPELINE_EVICT (a fixed idle sweep).
     uint32_t pipelineEvictFrames = 0;
     if (pipelineLazy) {
-        const int trimMib = port::EnvInt("MP_PIPELINE_TRIM_MIB", 1024);
+#ifdef __ANDROID__
+        constexpr int kDefaultTrimMib = 0;
+#else
+        constexpr int kDefaultTrimMib = 1024;
+#endif
+        const int trimMib = port::EnvInt("MP_PIPELINE_TRIM_MIB", kDefaultTrimMib);
         const int severeMib = port::EnvInt("MP_PIPELINE_TRIM_SEVERE_MIB", 512);
         PortMemoryLog::SetPipelinePressure(trimMib, severeMib);
         if (port::EnvString("MP_PIPELINE_TRIM_MIB") != nullptr ||

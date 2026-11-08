@@ -416,8 +416,11 @@ struct PortStateCodec {
     // Counted only when it changes (GetField): an idle actor's animation usually still matches.
     bool changed = ad.x220_25_loop != ((bits & 1) != 0) || ad.x220_24_animating != ((bits & 2) != 0) ||
                    ad.x200_speedScale != speed;
+    // Without a transition (noTrans): the rebuilt actor's own animation must not blend into the saved
+    // one, as a transition tree that is not animating (a finished one-shot) stays at its start, near
+    // the old pose, and its phase is not the saved animation's.
     if (anim >= 0 && anim != ad.x208_currentAnim) {
-      ad.SetAnimation(CAnimPlaybackParms(anim, -1, 1.f, (bits & 2) != 0), false);
+      ad.SetAnimation(CAnimPlaybackParms(anim, -1, 1.f, (bits & 2) != 0), true);
       changed = true;
     }
     ad.x220_25_loop = (bits & 1) != 0;
