@@ -1793,9 +1793,9 @@ headers, applies the same rule to its own on/off variables (`MP_LOG_COPY_TEX`,
 
 - `MP_WATCHDOG=0`: no stall watchdog. On by default: with no frame for 5, 15, 30
   and 60 s it logs where the main and render threads are, the main thread's stack
-  at 5 and 30 s, and on Android a logcat dump. A shorter freeze, a frame of 1 to
-  5 s, gets one `watchdog: a frame took` line naming where both threads were half a
-  second in (up to 200 a run). `MP_WATCHDOG_TEST_STALL=<frame>`
+  at 5 and 30 s, and on Android a logcat dump. Shorter freezes, frames over 250 ms,
+  get an `MP stall` line instead (the event pump's share, with the joystick update
+  in it, then input, tick and draw; `MP_NO_STALL_LOG=1` turns it off). `MP_WATCHDOG_TEST_STALL=<frame>`
   sleeps 8 s on that frame (`MP_WATCHDOG_TEST_STALL_MS` sets the length) and `MP_WATCHDOG_TEST_THROW=<frame>` throws an exception
   there, to test it and the crash report.
 - `MP_HEAP_CHECK=1`: deep checks of the game

@@ -966,6 +966,19 @@ void ResumeNote(const std::string& reason) {
   PortLog::Write("[resume] snapshots: %s\n", reason.c_str());
 }
 
+ResumeMeta CurrentMeta();
+
+// Why the game's card file can't own a snapshot, or empty when it can.
+std::string CardReason(const ResumeMeta& meta) {
+  if (meta.fileIdx > 2)
+    return "no card file selected (file " + std::to_string(meta.fileIdx) + ")";
+  // No card serial: a save state loaded from the title, or "continue without
+  // saving". No card file can take such a state at the title, so it isn't kept.
+  if (meta.cardSerial == 0)
+    return "the game has no memory card";
+  return {};
+}
+
 // The reason a snapshot can't be taken now, or empty when it can.
 std::string UnsafeReason(CStateManager& mgr) {
   const ResumeContext ctx = GatherResumeContext();
@@ -974,7 +987,9 @@ std::string UnsafeReason(CStateManager& mgr) {
   std::string why;
   if (!PlayerCanSave(mgr, why))
     return why;
-  return {};
+  // Checked here too, not only in TakeSnapshot: otherwise the poll logs "safe"
+  // and the refusal in turn, two lines a frame.
+  return CardReason(CurrentMeta());
 }
 
 bool SafeNow(CStateManager& mgr) { return UnsafeReason(mgr).empty(); }
@@ -997,14 +1012,8 @@ bool TakeSnapshot(CStateManager& mgr) {
   const auto start = Clock::now();
   ResumeSnapshot snap;
   snap.meta = CurrentMeta();
-  if (snap.meta.fileIdx > 2) {
-    ResumeNote("blocked: no card file selected (file " + std::to_string(snap.meta.fileIdx) + ")");
-    return false;
-  }
-  // No card serial: a save state loaded from the title, or "continue without
-  // saving". No card file can take such a state at the title, so it isn't kept.
-  if (snap.meta.cardSerial == 0) {
-    ResumeNote("blocked: the game has no memory card");
+  if (const std::string card = CardReason(snap.meta); !card.empty()) {
+    ResumeNote("blocked: " + card);
     return false;
   }
   Header header;

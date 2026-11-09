@@ -507,13 +507,15 @@ bool SavedField(const PortSchemaClass& cls, const PortSchemaField& f) {
   if (std::strcmp(cls.name, "CAi") == 0)
     return std::strcmp(f.name, "x258_healthInfo") != 0;
   // Script objects' state tied to something the save does not keep: a trigger's player
-  // inside (its inhabitants list) and the phazon damage it pushed on the player, a
-  // special function's area damage. A timer is kTagTimer's, which holds a running one
-  // stopped until every saved area is in.
+  // inside (its inhabitants list), its camera inside (the camera manager's fluid counter,
+  // which a water raises only when the camera goes in: restored, the loaded game never
+  // goes underwater, #279) and the phazon damage it pushed on the player, a special
+  // function's area damage. A timer is kTagTimer's, which holds a running one stopped
+  // until every saved area is in.
   if (std::strcmp(cls.name, "CScriptTimer") == 0)
     return false;
   if (std::strcmp(cls.name, "CScriptTrigger") == 0)
-    return !Named(f.name, {"x148_28_playerTriggerProc", "x148_29_didPhazonDamage"});
+    return !Named(f.name, {"x148_25_camSubmerged", "x148_28_playerTriggerProc", "x148_29_didPhazonDamage"});
   if (std::strcmp(cls.name, "CScriptSpecialFunction") == 0)
     return std::strcmp(f.name, "x1e4_31_inAreaDamage") != 0;
   // Music, reverb, player actors' model loads and world teleports act on the engine or
