@@ -1236,7 +1236,8 @@ other `X:\Users\<name>`: `X:\Users\<user>`); the
   Studio). `MP_CRASH_TEST=segv|abort` crashes on purpose at startup to check it.
 - Save states (F1 > Save states): eight slots in `savestates/` under the pref
   folder (`slot<N>.mpss`). F5 saves to the selected slot and F9 loads it
-  (`savestate_hotkeys`, on by default). A state holds the whole game save
+  (`savestate_hotkeys`, on by default). The selected slot is kept between
+  launches (`state_slot`, 1-8). A state holds the whole game save
   (items, ammo, doors, pickups, map, scans, world layers) plus Samus's room,
   position, facing and morph ball state; loading reloads that world and puts
   her back. The room marks and the seen pickups come with it, whatever the

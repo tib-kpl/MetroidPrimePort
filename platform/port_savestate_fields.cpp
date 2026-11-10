@@ -682,10 +682,15 @@ void PutField(const CStateManager& mgr, CEntity& ent, const PortSchemaField& f, 
       // A script generator's copy carries its template's editor id: not a name for it.
       const CEntity* target = mgr.GetObjectById(uid);
       const TEditorId eid = mgr.GetEditorIdForUniqueId(uid);
+      // An editor id several live objects share names none of them: on load it would
+      // resolve to the first for every owner. The rebuilt owner made its own again.
+      const CStateManager::TIdListResult copies = mgr.GetIdListForScript(eid);
+      CStateManager::TIdList::const_iterator second = copies.first;
+      const bool shared = second != copies.second && ++second != copies.second;
       if (target != nullptr && target == mgr.GetPlayer())
         id = kUidPlayer;
       else
-        id = target != nullptr && eid != kInvalidEditorId &&
+        id = target != nullptr && eid != kInvalidEditorId && !shared &&
                      !IsScriptGeneratedCopy(mgr, const_cast< CEntity& >(*target))
                  ? eid.Value()
                  : kUidDynamic;

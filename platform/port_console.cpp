@@ -764,6 +764,9 @@ void CmdStatus(CStateManager& mgr) {
   }
   Out("probe %s weight %.0f, pbr draws %u", ProbeModeName(), CCubeMaterial::sPortPBRProbeWeight,
       CCubeMaterial::sPortPBRDraws);
+  const PortDebug::FrameWorkStats work = PortDebug::LastFrameWork();
+  Out("work last second: %d frames, %.2f ms mean, %.2f ms worst, %d over 16.7 ms", work.frames, work.avgMs,
+      work.maxMs, work.slow);
 }
 
 void CmdAreas(CStateManager& mgr) {

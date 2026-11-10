@@ -11,6 +11,7 @@
 #include "port_third_person.h"
 #include "port_pointer.h"
 #include "port_room_geo.h"
+#include "port_savestate.h"
 #include "port_log.h"
 #include "port_paths.h"
 #include "port_input_devices.h"
@@ -387,6 +388,12 @@ const SettingKey kSettingKeys[] = {
      [](std::ostream& out) { out << sBootLogos; }, false, "0", "2"},
     BoolKey< &sSaveStateHotkeys >("savestate_hotkeys"),
     BoolKey< &sQuickResume >("quick_resume"),
+    // The save state slot F5 / F9 act on (PortSaveState::SelectedSlot), kept between launches.
+    {"state_slot",
+     [](const std::string& value) {
+       PortSaveState::SetSelectedSlot(std::atoi(value.c_str())); // out of range is ignored there
+     },
+     [](std::ostream& out) { out << PortSaveState::SelectedSlot(); }, false, "3", "7"},
     BoolKey< &sSaveStateRoomState >("savestate_room_state"),
     {"fov",
      [](const std::string& value) {

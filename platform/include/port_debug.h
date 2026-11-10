@@ -149,6 +149,16 @@ bool FrameLimitEnabled();
 int FrameRateCap();
 void SetFrameLimitEnabled(bool enabled);
 void RecordFrame(uint64_t durationNs, unsigned ticks, bool presented);
+// The last full second of main-loop work (RecordFrame's durations, pacing left out):
+// iterations, mean and slowest in ms, and how many took longer than a 60 Hz period
+// (console `status`). MP_SLOW_FRAME_MS=<ms> logs each slower iteration.
+struct FrameWorkStats {
+  int frames = 0;
+  float avgMs = 0.f;
+  float maxMs = 0.f;
+  int slow = 0;
+};
+FrameWorkStats LastFrameWork();
 bool VsyncEnabled();
 void SetVsyncEnabled(bool enabled);
 // Setting `fullscreen`: a borderless fullscreen window on desktop (F11 toggles

@@ -153,6 +153,7 @@ list(APPEND MP_GAME_SOURCES
     platform/port_raster_font.cpp
     platform/port_morph_ball.cpp
     platform/port_automapper.cpp
+    platform/port_text.cpp
     platform/port_particle_vfx_read.cpp
     platform/port_element_gen.cpp
     platform/port_entity_schema.cpp
@@ -188,7 +189,11 @@ if(MSVC)
         target_compile_options(mp_game PRIVATE $<$<COMPILE_LANGUAGE:CXX>:/Zc:strictStrings->)
     endif()
 else()
+    # The game was written for Metrowerks, which neither assumes strict aliasing
+    # nor that signed overflow can't happen; the decomp reads floats through int
+    # pointers (__HI in CVector3f.cpp). MSVC and clang-cl don't alias-optimise.
     target_compile_options(mp_game PRIVATE
+        -fno-strict-aliasing -fwrapv
         -Wformat -Werror=return-type -Wno-narrowing -Wno-multichar -Wno-write-strings
         -include ${CMAKE_CURRENT_SOURCE_DIR}/platform/compat.h)
 endif()

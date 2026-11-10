@@ -55,6 +55,12 @@
        android/app/build.gradle; tools/make_flatpak.sh refuses to build when the
        two differ, since Flatpak reports the newest entry as the app's version. -->
   <releases>
+    <release version="0.44.0" date="2026-11-09">
+      <description>
+        <p>Crosshair: an optional colour while aiming at an enemy the current beam hurts. Translation mods can now translate the port's own in-game text. Remastered: Hive Totem's and other rooms' water shows at the right level and type, the auto exposure no longer flashes white or black between rooms, Flaahgra's mirror beams point the right way, the Chozo Ghost's visor tint clears, and pickups bob as in Remastered. Map: collected pickups count as seen, and secret rooms show their pickups once the map station is used. The left hand stays drawn when looking straight up or down, and Fast Morph's zoom ends with the morph. Savestates loaded under water keep the underwater view, and the F5/F9 slot is kept between launches. On Android, enemies no longer go invisible after a moment off screen. Logs now record short freezes and where they happen.</p>
+      </description>
+      <url type="details">https://github.com/Odrannnn/MetroidPrimePort/releases/tag/v0.44.0</url>
+    </release>
     <release version="0.43.0" date="2026-11-08">
       <description>
         <p>Cameras: the morph ball, spline and spindle cameras follow the FOV setting, with a toggle to keep the ball camera at retail's. Suit colours recolour Samus's body while morphing and in pickup cutscenes. Remastered: map floors in Phendrana Shorelines and nearby rooms draw filled, and the GameCube Z button fits inside the hint memo's ring. Dark Samus has her own Morph Ball. The overlay draws non-Latin game text and no longer draws too large on iPhone and Mac. The Screenshot binding saves a PNG, also on Android. The Steam Deck's built-in pad yields Player 1 to a connected controller, and quitting from Steam no longer crashes. Savestates restore animations and script fields more reliably. Performance: fewer texture and vertex copies, and Samus's shader pipelines are never trimmed.</p>

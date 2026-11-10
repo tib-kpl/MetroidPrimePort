@@ -757,9 +757,12 @@ Info SlotInfo(int slot) {
 
 int SelectedSlot() { return sSelected; }
 
+// The slot is a setting (state_slot): a change is written with the settings.
 void SetSelectedSlot(int slot) {
-  if (slot >= 1 && slot <= kSlotCount)
+  if (slot >= 1 && slot <= kSlotCount && slot != sSelected) {
     sSelected = slot;
+    PortDebug::MarkSettingsDirty();
+  }
 }
 
 bool RequestSave(int slot) {

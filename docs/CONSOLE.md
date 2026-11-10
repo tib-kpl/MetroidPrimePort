@@ -8,7 +8,9 @@ the window has no keyboard focus. `tools/mpcon.py` is the client: one-shot
 (`tools/mpcon.py 'warp chozo 492CBF4A' 'objs eyeball' shot`), a script
 (`-f file`) or an interactive prompt with no arguments. Commands: `status [--json]`
 (world, area, position, whether the camera is first person or a cinematic
-has it, the sky, and the probe mode, weight and PBR draw count; `--json` is one
+has it, the sky, the probe mode, weight and PBR draw count, and the last second's
+frame work: mean, worst and frames over 16.7 ms, pacing sleeps left out;
+`MP_SLOW_FRAME_MS=<ms>` also logs each slower frame; `--json` is one
 line for scripts: frame, game_state, world, area, mrea, pos, yaw, hp, hp_max,
 morph, visor, beam, first_person, cinematic, freecam, `physics` (see below) and
 `fade`, true while the in-game fade-in filter after a cinematic skip or world

@@ -133,7 +133,7 @@ bool CGuiModel::GetIsFinishedLoadingWidgetSpecific() const {
   if (const CModel* model = xb8_model->GetObject()) {
     model->Touch(0);
     const bool loaded = model->IsLoaded(0);
-    if (!loaded && port::EnvFlag("MP_LOG_HUD")) {
+    if (!loaded && port::LogHud()) {
       static int sLogCount = 0;
       if (sLogCount < 80) {
         ++sLogCount;
@@ -143,7 +143,7 @@ bool CGuiModel::GetIsFinishedLoadingWidgetSpecific() const {
     return loaded;
   }
 
-  if (port::EnvFlag("MP_LOG_HUD")) {
+  if (port::LogHud()) {
     static int sLogCount = 0;
     if (sLogCount < 80) {
       ++sLogCount;
