@@ -408,7 +408,7 @@ may hold subfolders `xbox`, `playstation`, `switch`, `gamecube`, `standard` and 
 - Only deliberate input switches it: a key press, a mouse move or click, a pad button, or a stick
   or trigger pushed past half way. The touch overlay's virtual pad does not count.
 - F1 Controls > Options "Button glyphs" (`prompt_glyphs=`) pins one set (Xbox, PlayStation,
-  Nintendo Switch, GameCube or keyboard & mouse), and `MP_TEXTURE_DEVICE` forces any name.
+  Nintendo Switch, GameCube, keyboard & mouse or Steam Deck), and `MP_TEXTURE_DEVICE` forces any name.
 - A folder with no subfolders is a single device-agnostic pack. A folder that has device
   subfolders but not the one selected loads nothing rather than mixing packs.
 - Prompts follow your bindings: rebinding a key, mouse or pad button changes the prompt.

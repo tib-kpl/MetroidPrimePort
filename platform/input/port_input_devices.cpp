@@ -4,6 +4,7 @@
 #include "port_debug.h"
 #include "port_custom_actions.h"
 #include "port_input_map.h"
+#include "port_steam_triton.h"
 #include "port_input_remap_ui.h"
 #include "port_log.h"
 #include "port_paths.h"
@@ -494,6 +495,8 @@ void FillRawState(PortInput::RawState& raw, unsigned mouseHeld, bool focused) {
       raw.padAxes[SDL_GAMEPAD_AXIS_RIGHTY] = inside ? 0.f : StickValue(pad.axes[SDL_GAMEPAD_AXIS_RIGHTY], 0, false);
     }
   }
+  // The back buttons of the controller behind Steam Input's virtual pad, which has none (Player 1).
+  raw.padButtons |= PortSteamTriton::Paddles();
 
   uint32_t mouse = 0;
   // Aurora reads a key slot's mouse button with SDL_GetMouseState.
@@ -925,6 +928,8 @@ void ReadRaw(PortInput::RawState& raw) {
       raw.padAxes[a] = std::clamp(static_cast< float >(pad.axes[a]) / 32767.f, -1.f, 1.f);
     }
   }
+  // The back buttons of the controller behind Steam Input's virtual pad, which has none.
+  raw.padButtons |= PortSteamTriton::Paddles();
   raw.mouseButtons = (SDL_GetMouseState(nullptr, nullptr) & PortInputMap::kMouseButtonMask) << kMouseKeySlot;
   raw.touch = TouchBits(sTouchControls);
 }

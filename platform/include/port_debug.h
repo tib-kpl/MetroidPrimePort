@@ -801,6 +801,10 @@ void SetRemasteredMovement(bool enabled);
 // must pass. The gyro source is the aim's.
 void SetSpringBallFlick(bool enabled);
 void SetSpringBallFlickRate(float radiansPerSecond);
+// Under Steam Input, read the back buttons (SDL's paddles) of the physical controller behind
+// Player 1's virtual pad, which has none (steam_input_back_buttons, default on,
+// `MP_STEAM_INPUT_BACK_BUTTONS`; Linux only; port_steam_triton.h).
+void SetSteamInputBackButtons(bool enabled);
 // True for a short while after a flick, so one just before landing still counts.
 bool SpringBallFlickPending();
 void ClearSpringBallFlick();

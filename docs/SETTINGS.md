@@ -390,9 +390,24 @@
   layout editor: slide the finger from where it pressed toward an entry (about
   72 dp reaches one) and lift to pick; a look drag points the menu too.
 - Button glyphs (Controls > Options, persisted as `prompt_glyphs`: `auto`, the
-  default, `xbox`, `playstation`, `switch`, `gamecube` or `keyboard`): which
+  default, `xbox`, `playstation`, `switch`, `gamecube`, `keyboard` or `steamdeck`): which
   buttons the game's prompts and tutorials show. Auto follows the keyboard,
   controller or touch layout last used; `gamecube` shows the game's own art.
+  A Steam Deck's own pad or a Steam Controller (also behind Steam Input) gets
+  the Steam Deck set under Auto, with L4/R4/L5/R5 for the back buttons.
+- Steam Input back buttons (Controls > Touch & gyro, persisted as
+  `steam_input_back_buttons`, default on, env `MP_STEAM_INPUT_BACK_BUTTONS`;
+  Linux only). Under Steam Input, Player 1 also gets the back buttons (SDL's
+  paddles) of the physical controller behind its virtual pad, which Steam Input
+  doesn't pass to the game: L4, R4, L5, R5 on a 2026 Steam Controller or a Steam
+  Deck (shown on the Remap page as Paddle 1 (R4) and so on), the DualSense
+  Edge's back and Fn buttons, SL and SR of a Joy-Con pair (a single sideways
+  Joy-Con's are its shoulders, which Steam passes on). Bind Gyro aim to one on
+  the Remap page, say. If the game's Steam layout also maps them, one press does
+  both, so bind each in one place. The row shows which controller is behind
+  Steam Input. On its own (gyro off) this setting leaves a controller's motion
+  sensor as Steam set it. The gyro (source Auto or Controller) reads that same
+  controller directly too, since Steam's virtual pad has no motion sensor.
 - Fast Morph (Controls > Options and pause Options > Controller, persisted as
   `fast_morph`, off by default): morph ball transitions in the style of Metroid
   Prime 4. Morphing and unmorphing each take 0.2 s instead of 1 s; both
@@ -474,6 +489,9 @@
   crosshair) and "Controller settings" (stick aim and dead
   zones). **Remap > Active controller** selects any detected gamepad, including
   one assigned to player 2 or later; the choice is saved and restored on reconnect.
+  Every connected controller plays without choosing it: the one used last, the touch controls
+  included, takes over (not saved). While the saved controller is away another one, or the touch
+  controls, stands in, and picking the touch controls (or the Steam Deck's own pad) saves no choice.
   Select it here before recording its bindings in Remap. Remap's "Controller bindings for" selects
   binding profiles, not the controller used to play. Every binding is on **Controls > Remap**, below.
 - **Controls > Remap** lists all devices' bindings together, with keyboard, mouse, controller

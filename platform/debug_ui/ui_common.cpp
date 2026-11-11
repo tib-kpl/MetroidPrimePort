@@ -6,6 +6,7 @@
 
 #include "port_env.h"
 #include "port_debug.h"
+#include "port_steam_triton.h"
 #include "port_graphics_backend.h"
 #include "port_gyro_motion.h"
 #include "port_pointer.h"
@@ -480,6 +481,10 @@ void UpdateControllerNav() {
   }
   UpdateUiScale();
   ApplyThemeIfChanged();
+  TakePadPortForLastUsed();
+  // The Steam Controller's and Deck's own reports (gyro and back buttons) first, so the polls
+  // after this read this frame's.
+  PortSteamTriton::Update();
   PortInputDevices::PollPortActions();
   if (sToggleRequested.exchange(false, std::memory_order_acq_rel)) {
     Toggle();

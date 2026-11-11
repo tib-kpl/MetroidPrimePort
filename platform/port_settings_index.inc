@@ -120,6 +120,7 @@
 {"Controls", "Touch & gyro", "Gyro aim", "Smoothing", "gyro smoothing jitter noise average"},
 {"Controls", "Touch & gyro", "Gyro aim", "Tightening", "gyro tightening deadzone threshold still wobble"},
 {"Controls", "Touch & gyro", "Gyro aim", "Spring Ball on gyro flick", "spring ball flick tilt jump"},
+{"Controls", "Touch & gyro", "Back buttons", "Steam Input back buttons", "steam deck controller paddles l4 r4 l5 r5 dualsense edge joy-con"},
 {"Controls", "Touch & gyro", "Gyro aim", "Flick strength", "flick jump threshold tilt"},
 {"Controls", "Remap", "", "Only bound", "bound inputs filter show"},
 {"Controls", "Remap", "", "Active controller", "controller pad device assign"},

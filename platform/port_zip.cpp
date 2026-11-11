@@ -167,6 +167,12 @@ bool ExtractEntry(std::ifstream& in, const Entry& e, const fs::path& out, std::s
   uint64_t written = 0;
   uint64_t remaining = e.compressed;
   const auto emit = [&](const uint8_t* data, size_t length) {
+    // Checked before the write: an entry that inflates past its declared size (a zip bomb) must not
+    // fill the disk first.
+    if (length > e.size - written) {
+      error = e.name + ": size mismatch";
+      return false;
+    }
     crc = static_cast< uint32_t >(crc32(crc, data, static_cast< uInt >(length)));
     written += length;
     file.write(reinterpret_cast< const char* >(data), static_cast< std::streamsize >(length));
@@ -191,7 +197,7 @@ bool ExtractEntry(std::ifstream& in, const Entry& e, const fs::path& out, std::s
     remaining -= want;
     if (!deflated) {
       ok = emit(inBuf.data(), want);
-      if (!ok) {
+      if (!ok && error.empty()) {
         error = e.name + ": write failed";
       }
       continue;
@@ -208,7 +214,9 @@ bool ExtractEntry(std::ifstream& in, const Entry& e, const fs::path& out, std::s
         break;
       }
       if (!emit(outBuf.data(), outBuf.size() - zs.avail_out)) {
-        error = e.name + ": write failed";
+        if (error.empty()) {
+          error = e.name + ": write failed";
+        }
         ok = false;
       }
       streamEnd = rc == Z_STREAM_END;

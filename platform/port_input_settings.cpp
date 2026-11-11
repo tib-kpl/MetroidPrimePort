@@ -315,6 +315,8 @@ bool ApplySetting(std::string_view keyView, std::string_view valueView) {
     if (std::isfinite(f) && f >= 2.f && f <= 20.f) {
       s.springFlickRate = f;
     }
+  } else if (key == "steam_input_back_buttons") {
+    s.steamInputBackButtons = ParseBool(value);
   } else if (key == "spring_ball_swipe") {
     s.springSwipe = ParseBool(value);
   } else {
@@ -390,6 +392,7 @@ void WriteAimSettings(std::ostream& out) {
   out << "flick_stick_outer_deadzone=" << s.flickOuterDeadZone << '\n';
   out << "gyro_mode=" << s.gyroMode << '\n';
   out << "gyro_source=" << s.gyroSource << '\n';
+  out << "steam_input_back_buttons=" << (s.steamInputBackButtons ? 1 : 0) << '\n';
   out << "gyro_sensitivity=" << s.gyroSensitivity << '\n';
   out << "gyro_split=" << (s.gyroSplit ? 1 : 0) << '\n';
   out << "gyro_sensitivity_y=" << s.gyroSensitivityY << '\n';

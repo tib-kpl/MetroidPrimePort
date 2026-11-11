@@ -286,6 +286,11 @@ const char* SuffixForSdlButton(int button) {
   case SDL_GAMEPAD_BUTTON_DPAD_RIGHT: return "dpad_right";
   case PAD_NATIVE_BUTTON_TRIGGER_LEFT: return "lt";
   case PAD_NATIVE_BUTTON_TRIGGER_RIGHT: return "rt";
+  // The back buttons: only the Steam Deck set has art for them.
+  case SDL_GAMEPAD_BUTTON_LEFT_PADDLE1: return "leftpaddle1";
+  case SDL_GAMEPAD_BUTTON_RIGHT_PADDLE1: return "rightpaddle1";
+  case SDL_GAMEPAD_BUTTON_LEFT_PADDLE2: return "leftpaddle2";
+  case SDL_GAMEPAD_BUTTON_RIGHT_PADDLE2: return "rightpaddle2";
   default: return nullptr;
   }
 }

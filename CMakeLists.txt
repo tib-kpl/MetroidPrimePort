@@ -195,6 +195,9 @@ else()
     target_compile_options(mp_game PRIVATE
         -fno-strict-aliasing -fwrapv
         -Wformat -Werror=return-type -Wno-narrowing -Wno-multichar -Wno-write-strings
+        # rstl's smart pointers delete in headers: on an incomplete type that silently skips
+        # the destructor, and which unit's copy survives the link is arbitrary.
+        $<$<COMPILE_LANGUAGE:CXX>:-Werror=delete-incomplete>
         -include ${CMAKE_CURRENT_SOURCE_DIR}/platform/compat.h)
 endif()
 
@@ -231,6 +234,7 @@ set(MP_PORT_SOURCES
     platform/debug_ui/window.cpp
     platform/port_input_settings.cpp
     platform/port_gyro_motion.cpp
+    platform/port_steam_triton.cpp
     platform/disc.cpp
     platform/shims.cpp
     platform/sdk_stubs.cpp
@@ -240,6 +244,7 @@ set(MP_PORT_SOURCES
     platform/port_prompts.cpp
     platform/port_controls.cpp
     platform/input/port_input_devices.cpp
+    platform/input/port_steam_triton_hid.cpp
     platform/input/port_input_engine.cpp
     platform/input/port_input_bindings.cpp
     platform/input/port_input_remap_ui.cpp
@@ -1434,6 +1439,12 @@ if(MP_BUILD_TESTS)
         INCLUDES platform/include)
     mp_port_test(port_gyro_motion_tests
         SOURCES tests/port_gyro_motion.cpp platform/port_gyro_motion.cpp
+        INCLUDES platform/include)
+    # The Steam Controller (2026), Steam Deck, Sony and Nintendo reports
+    # (platform/port_steam_triton.cpp): state reports captured from a controller, their axes and
+    # scaling, the back buttons and the IMU enable request.
+    mp_port_test(port_steam_triton_tests
+        SOURCES tests/port_steam_triton.cpp platform/port_steam_triton.cpp platform/port_gyro_motion.cpp
         INCLUDES platform/include)
     # The Windows renderer choice (issue #135): the names the settings file and
     # MP_GRAPHICS_BACKEND carry, the per-run override that outranks the file, and the

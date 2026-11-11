@@ -951,6 +951,13 @@ int main(int argc, char** argv) {
         PortLog::Write("port: portable data: %s\n", line.c_str());
     }
     PortRandomizer::EnsureLoaded();
+#if defined(__ANDROID__)
+    // A room the connect intent brought (MetroidPrimeActivity.takeArchipelagoRoom):
+    // saved before the client starts, so it starts with that room.
+    if (const char* dir = SDL_GetAndroidInternalStoragePath(); dir != nullptr) {
+        PortAp::OpenHandOff((std::filesystem::path(dir) / "pending_ap_connect.json").string());
+    }
+#endif
     PortAp::EnsureLoaded();
     // A 16:9 window when widescreen is requested; the game's render mode is
     // widened to match. Values are the default window size only.

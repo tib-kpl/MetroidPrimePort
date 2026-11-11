@@ -1462,6 +1462,8 @@ void SetRemasteredMovement(bool enabled) { StoreSetting(sInput.remasteredMovemen
 
 void SetSpringBallFlick(bool enabled) { StoreSetting(sInput.springFlick, enabled); }
 
+void SetSteamInputBackButtons(bool enabled) { StoreSetting(sInput.steamInputBackButtons, enabled); }
+
 void SetSpringBallFlickRate(float radiansPerSecond) {
   EnsureInitialized();
   if (std::isfinite(radiansPerSecond) && radiansPerSecond >= 2.f && radiansPerSecond <= 20.f) {
