@@ -82,11 +82,12 @@
   touch controls, bindings, cheats, save states, the randomizer and Archipelago,
   rich presence and the timer stay available; the settings it forces are greyed
   out in F1.
-- Resolution scale (F1 > Video > Quality, persisted as `render_scale`): 1x-4x of the GameCube's
+- Resolution scale (F1 > Video > Quality, persisted as `render_scale`): 1x-8x of the GameCube's
   640x528 EFB, shown with the lines it draws (1x is 480p in NTSC), or the window's own size with
   "Auto render scale". Above 2x it
   supersamples (4x at 16:9 is 3755x2112; with MSAA 4 the targets take
-  several hundred MB). "Dynamic
+  several hundred MB, at 8x about 2 GB). The frame buffer is shrunk to fit the GPU's
+  texture size limit (usually 8192 or 16384). "Dynamic
   resolution" (`dynamic_resolution`) lowers the scale while the GPU cannot hold the
   "Frame rate target" (`dynamic_res_target`, 30-500 fps, 0 = "Display", the
   display's rate, however high; never above the frame rate cap), down to "Minimum resolution
@@ -395,6 +396,13 @@
   controller or touch layout last used; `gamecube` shows the game's own art.
   A Steam Deck's own pad or a Steam Controller (also behind Steam Input) gets
   the Steam Deck set under Auto, with L4/R4/L5/R5 for the back buttons.
+- Precise stick deadzones (Controls > Controller settings, under the deadzone
+  sliders, persisted as `precise_stick_deadzones`, off by default, env
+  `MP_PRECISE_STICK_DEADZONES=1`): the Stick and C-stick deadzone sliders become
+  the only deadzone. Tilt past a slider runs from zero instead of jumping in at
+  its edge, and each stick axis reaches the game from 17 of 127 up, past the 15
+  PADClamp drops (retail's ~12% dead tilt, left even with a slider at 0).
+  Twin-stick aim and flick stick follow it; off, the pad status is unchanged.
 - Steam Input back buttons (Controls > Touch & gyro, persisted as
   `steam_input_back_buttons`, default on, env `MP_STEAM_INPUT_BACK_BUTTONS`;
   Linux only). Under Steam Input, Player 1 also gets the back buttons (SDL's

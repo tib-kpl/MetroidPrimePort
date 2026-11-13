@@ -1156,6 +1156,10 @@ bool FlickStick() {
 
 void SetFlickStick(bool enabled) { StoreSetting(sInput.flickStick, enabled); }
 
+bool PreciseStickDeadZones() { return Loaded(sInput.preciseStickDeadZones); }
+
+void SetPreciseStickDeadZones(bool enabled) { StoreSetting(sInput.preciseStickDeadZones, enabled); }
+
 float FlickOuterDeadZone() { return Loaded(sInput.flickOuterDeadZone) / 100.f; }
 
 void SetTouchFlickStick(bool enabled) { StoreSetting(sInput.touchFlickStick, enabled); }

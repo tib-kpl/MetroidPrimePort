@@ -556,7 +556,7 @@ const SettingKey kSettingKeys[] = {
     {"render_scale",
      [](const std::string& value) {
        const float f = static_cast< float >(std::atof(value.c_str()));
-       if (std::isfinite(f) && f >= 0.f && f <= 4.f) {
+       if (std::isfinite(f) && f >= 0.f && f <= PortDebug::kRenderScaleMax) {
          sRenderScale = f;
        }
      },

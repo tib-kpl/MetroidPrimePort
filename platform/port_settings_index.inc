@@ -83,6 +83,7 @@
 {"Controls", "Controller settings", "Stick aim", "Invert stick aim Y (the game's Reverse Y Axis)", "reverse y axis invert stick flip"},
 {"Controls", "Controller settings", "Sticks and triggers", "Stick deadzone", "deadzone dead zone left stick drift"},
 {"Controls", "Controller settings", "Sticks and triggers", "C-stick deadzone", "deadzone dead zone c-stick substick drift"},
+{"Controls", "Controller settings", "Sticks and triggers", "Precise stick deadzones", "deadzone dead zone small tight responsive analog stick padclamp"},
 {"Controls", "Controller settings", "Sticks and triggers", "L click point", "trigger left l activation point"},
 {"Controls", "Controller settings", "Sticks and triggers", "R click point", "trigger right r activation point"},
 {"Controls", "Controller settings", "Sticks and triggers", "Reset sticks and triggers", "default deadzone reset"},

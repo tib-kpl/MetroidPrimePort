@@ -169,6 +169,9 @@ void SetFullscreen(bool enabled);
 // 0 = auto (native, driven by the display scale), otherwise a fixed multiplier.
 float RenderScale();
 void SetRenderScale(float scale);
+// The highest fixed scale (3840 lines: a 4K display supersampled ~1.8x). Aurora fits the
+// EFB inside the device's texture size limit, so a wide window can draw a little less.
+constexpr float kRenderScaleMax = 8.f;
 // Photo mode captures: the configured scale (auto: the scale the window's own size
 // is, as a multiple of what 1x draws), and a temporary override
 // (0 = none) that also holds dynamic resolution still.
@@ -818,6 +821,12 @@ void SetStickAimRate(float pixelsPerSecond);
 // overlay's own while touch is active.
 bool FlickStick();
 void SetFlickStick(bool enabled);
+// Controller settings > Precise stick deadzones (precise_stick_deadzones, env
+// MP_PRECISE_STICK_DEADZONES, default off): the Stick / C-stick deadzone sliders are the only
+// deadzone. Tilt past a slider runs from zero, and the game's own PADClamp cut (15 of 127 per
+// axis) is offset away, so a stick moves Samus and the aim from its first step past the slider.
+bool PreciseStickDeadZones();
+void SetPreciseStickDeadZones(bool enabled);
 void SetTouchFlickStick(bool enabled);
 // Flick stick's outer deadzone as a fraction of travel (flick_stick_outer_deadzone).
 float FlickOuterDeadZone();

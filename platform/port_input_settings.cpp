@@ -317,6 +317,8 @@ bool ApplySetting(std::string_view keyView, std::string_view valueView) {
     }
   } else if (key == "steam_input_back_buttons") {
     s.steamInputBackButtons = ParseBool(value);
+  } else if (key == "precise_stick_deadzones") {
+    s.preciseStickDeadZones = ParseBool(value);
   } else if (key == "spring_ball_swipe") {
     s.springSwipe = ParseBool(value);
   } else {
@@ -393,6 +395,7 @@ void WriteAimSettings(std::ostream& out) {
   out << "gyro_mode=" << s.gyroMode << '\n';
   out << "gyro_source=" << s.gyroSource << '\n';
   out << "steam_input_back_buttons=" << (s.steamInputBackButtons ? 1 : 0) << '\n';
+  out << "precise_stick_deadzones=" << (s.preciseStickDeadZones ? 1 : 0) << '\n';
   out << "gyro_sensitivity=" << s.gyroSensitivity << '\n';
   out << "gyro_split=" << (s.gyroSplit ? 1 : 0) << '\n';
   out << "gyro_sensitivity_y=" << s.gyroSensitivityY << '\n';
@@ -461,6 +464,9 @@ void ApplyEnvOverrides() {
   }
   if (port::EnvFlag("MP_FLICK_STICK")) {
     s.flickStick = true;
+  }
+  if (port::EnvFlag("MP_PRECISE_STICK_DEADZONES")) {
+    s.preciseStickDeadZones = true;
   }
   if (port::EnvFlag("MP_TOUCH_FLICK_STICK")) {
     s.touchFlickStick = true;
