@@ -3,7 +3,9 @@
 // Android's data folder: moving the settings, memory card, mods, save states and
 // texture pack out of the app's private storage into a folder the player can
 // reach with a file manager or a USB cable, and back (F1 > System > Data
-// folder). The copy engine is platform-neutral so it can be tested on the
+// folder). The folder is on any storage volume: the shared internal storage or
+// an SD card. The Remastered import (port_remastered_storage.h), the biggest
+// part, has its own location in the same panel. The copy engine is platform-neutral so it can be tested on the
 // desktop; the panel is Android only.
 //
 // The choice is a marker file in private storage (port_paths.h), read once at
@@ -29,8 +31,9 @@ struct Totals {
   uint64_t files = 0;
 };
 
-// What a move of `from` would copy.
-Totals Measure(const std::string& from);
+// What a move of `from` would copy. `everything` counts every file, IsSkipped or not: the Remastered
+// import is moved as a whole.
+Totals Measure(const std::string& from, bool everything = false);
 
 // Whether `dir` holds anything a move would copy.
 bool HasData(const std::string& dir);
@@ -49,10 +52,12 @@ struct Progress {
 // there. Each file is written under a temporary name and renamed when complete,
 // so a copy cut short leaves no truncated file, and `to` reads as incomplete
 // until the last file is in. `changedOnly` skips files whose copy has the same
-// size and is not older (a second pass for what changed since the first).
+// size and is not older (a second pass for what changed since the first, or the
+// resumption of a copy that was cut short). `everything` copies every file,
+// IsSkipped or not.
 // False with `error` set on failure or cancel.
 bool CopyTree(const std::string& from, const std::string& to, Progress& progress, std::string& error,
-              bool changedOnly = false);
+              bool changedOnly = false, bool everything = false);
 
 // Deletes what a move would copy from `dir`, except the files `keep` (given
 // the relative path) holds on to; the rest stays.

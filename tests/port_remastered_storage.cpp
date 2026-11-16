@@ -91,6 +91,27 @@ int main(int argc, char** argv) {
               "the staging folder is not a mod");
   }
 
+  // Android, import moved by the player (an SD card): the root is under that folder, not the app's storage,
+  // and an unavailable internal storage does not matter then.
+  {
+    const RootChoice chosen = PortRemasteredStorage::ResolveRoot(true, internal, mods, "/storage/ABCD-1234/MetroidPrime");
+    CHECK_MSG(chosen.kind == Root::kChosenFolder, "a chosen folder is its own kind of root");
+    CHECK_MSG(chosen.folder == "/storage/ABCD-1234/MetroidPrime/remastered-imports/", "the root is under the chosen folder");
+    CHECK_MSG(chosen.error.empty(), "a chosen root has no error");
+    const RootChoice noInternal = PortRemasteredStorage::ResolveRoot(true, "", mods, "/storage/ABCD-1234/MetroidPrime/");
+    CHECK_MSG(noInternal.folder == chosen.folder, "a trailing separator changes nothing, nor does a missing internal storage");
+    CHECK_MSG(PortRemasteredStorage::ResolveRoot(false, internal, mods, "/storage/ABCD-1234/x").kind == Root::kModsFolder,
+              "desktop ignores a chosen folder");
+    const fs::path marker = root / "remastered_folder.txt";
+    fs::create_directories(root);
+    std::ofstream(marker, std::ios::binary) << "/storage/ABCD-1234/MetroidPrime  \r\nignored\n";
+    CHECK_MSG(PortRemasteredStorage::ReadChosenFolder(marker.string()) == "/storage/ABCD-1234/MetroidPrime",
+              "the marker names the folder on its first line");
+    std::ofstream(marker, std::ios::binary | std::ios::trunc) << "relative/folder\n";
+    CHECK_MSG(PortRemasteredStorage::ReadChosenFolder(marker.string()).empty(), "a relative path is not a choice");
+    CHECK_MSG(PortRemasteredStorage::ReadChosenFolder((root / "missing.txt").string()).empty(), "no marker is no choice");
+  }
+
   // No internal storage: refused, and never worked around through the shared folder.
   {
     const RootChoice nowhere = Resolve(true, "", mods);

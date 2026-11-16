@@ -67,6 +67,29 @@ int main(int argc, char** argv) {
   CHECK_MSG(Read(to / "mods" / "remastered-models" / "1234.CMDL") == "model", "nested file copied");
   CHECK_MSG(fs::file_size(to / "MemoryCardA.USA.raw") == (3u << 20), "large file copied whole");
   CHECK_MSG(!fs::exists(to / "textures"), "built-in textures not copied");
+  {
+    // The Remastered import is moved as a whole: "everything" copies what a data folder move leaves out,
+    // such as a textures folder inside the import's mod.
+    const fs::path importFrom = fs::path(from) / "remastered-model-import";
+    const fs::path importTo = fs::path(to) / "remastered-model-import";
+    Write(importFrom / "textures" / "a.dds", "texture");
+    Write(importFrom / "1234.CMDL", "model");
+    CHECK_MSG(PortDataFolder::Measure(importFrom.string()).files == 1, "a move leaves the textures folder out");
+    CHECK_MSG(PortDataFolder::Measure(importFrom.string(), true).files == 2, "everything counts it");
+    PortDataFolder::Progress all;
+    std::string allError;
+    CHECK_MSG(PortDataFolder::CopyTree(importFrom.string(), importTo.string(), all, allError, false, true),
+              "an everything copy succeeds");
+    CHECK_MSG(Read(importTo / "textures" / "a.dds") == "texture" && Read(importTo / "1234.CMDL") == "model",
+              "and carries the textures folder");
+    CHECK_MSG(all.filesDone == 2, "its progress counts both");
+    PortDataFolder::Progress again;
+    CHECK_MSG(PortDataFolder::CopyTree(importFrom.string(), importTo.string(), again, allError, true, true) &&
+                  again.bytesDone == 0 && again.filesDone == 2,
+              "a second pass writes nothing that is already there");
+    fs::remove_all(importFrom);
+    fs::remove_all(importTo);
+  }
   CHECK_MSG(!fs::exists(to / "initial_pipeline_cache.db"), "pipeline cache not copied");
 
   const fs::path cancelled = root / "cancelled";

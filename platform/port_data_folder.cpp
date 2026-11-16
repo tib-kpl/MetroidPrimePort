@@ -13,6 +13,7 @@
 #if defined(__ANDROID__)
 #include "port_debug.h"
 #include "port_log.h"
+#include "port_remastered_import.h"
 #include "port_utf8_path.h"
 
 #include <imgui.h>
@@ -20,6 +21,7 @@
 #include <SDL3/SDL_system.h>
 #include <SDL3/SDL_timer.h>
 
+#include <algorithm>
 #include <cinttypes>
 #include <cstdio>
 #include <mutex>
@@ -46,7 +48,7 @@ using port::EndsWith;
 // Every file a move copies, relative to `root` with '/' separators.
 // `failed`, when given, is set if the walk stopped on an error: the list is then
 // incomplete, which a copy must not take for the whole folder.
-std::vector< std::string > ListFiles(const std::string& root, bool* failed = nullptr) {
+std::vector< std::string > ListFiles(const std::string& root, bool* failed = nullptr, bool everything = false) {
   std::vector< std::string > files;
   std::error_code ec;
   const fs::path base = FromUtf8(root);
@@ -59,7 +61,7 @@ std::vector< std::string > ListFiles(const std::string& root, bool* failed = nul
   fs::recursive_directory_iterator it(base, fs::directory_options::skip_permission_denied, ec);
   for (; !ec && it != fs::recursive_directory_iterator(); it.increment(ec)) {
     const std::string relative = Relative(it->path(), base);
-    if (IsSkipped(relative)) {
+    if (!everything && IsSkipped(relative)) {
       if (it->is_directory(ec)) {
         it.disable_recursion_pending();
       }
@@ -127,10 +129,10 @@ bool IsSkipped(const std::string& relative) {
          EndsWith(name, kTempSuffix);
 }
 
-Totals Measure(const std::string& from) {
+Totals Measure(const std::string& from, bool everything) {
   Totals totals;
   const fs::path base = FromUtf8(from);
-  for (const std::string& relative : ListFiles(from)) {
+  for (const std::string& relative : ListFiles(from, nullptr, everything)) {
     std::error_code ec;
     const uintmax_t size = fs::file_size(base / FromUtf8(relative), ec);
     if (!ec) {
@@ -151,7 +153,7 @@ bool IsComplete(const std::string& dir) {
 }
 
 bool CopyTree(const std::string& from, const std::string& to, Progress& progress, std::string& error,
-              bool changedOnly) {
+              bool changedOnly, bool everything) {
   const fs::path source = FromUtf8(from);
   const fs::path target = FromUtf8(to);
   const fs::path incomplete = target / kIncomplete;
@@ -166,7 +168,7 @@ bool CopyTree(const std::string& from, const std::string& to, Progress& progress
   }
   std::vector< char > buffer(1 << 20);
   bool listFailed = false;
-  const std::vector< std::string > files = ListFiles(from, &listFailed);
+  const std::vector< std::string > files = ListFiles(from, &listFailed, everything);
   if (listFailed) {
     // The old data is left alone, and the incomplete flag stays in the target.
     error = "Could not read all of " + from + " (a folder could not be listed).";
@@ -294,6 +296,72 @@ bool CallActivity(const char* method, bool boolResult) {
   env->DeleteLocalRef(cls);
   env->DeleteLocalRef(activity);
   return result;
+}
+
+// Calls a no-argument method of MetroidPrimeActivity that returns a String[].
+std::vector< std::string > CallActivityStrings(const char* method) {
+  std::vector< std::string > out;
+  JNIEnv* env = static_cast< JNIEnv* >(SDL_GetAndroidJNIEnv());
+  jobject activity = static_cast< jobject >(SDL_GetAndroidActivity());
+  if (env == nullptr || activity == nullptr) {
+    return out;
+  }
+  jclass cls = env->GetObjectClass(activity);
+  jmethodID id = env->GetMethodID(cls, method, "()[Ljava/lang/String;");
+  if (env->ExceptionCheck()) {
+    env->ExceptionClear();
+    id = nullptr;
+  }
+  if (id != nullptr) {
+    jobjectArray array = static_cast< jobjectArray >(env->CallObjectMethod(activity, id));
+    if (env->ExceptionCheck()) {
+      env->ExceptionClear();
+    } else if (array != nullptr) {
+      const jsize count = env->GetArrayLength(array);
+      for (jsize i = 0; i < count; ++i) {
+        jstring item = static_cast< jstring >(env->GetObjectArrayElement(array, i));
+        if (item == nullptr) {
+          continue;
+        }
+        if (const char* text = env->GetStringUTFChars(item, nullptr); text != nullptr) {
+          out.emplace_back(text);
+          env->ReleaseStringUTFChars(item, text);
+        }
+        env->DeleteLocalRef(item);
+      }
+      env->DeleteLocalRef(array);
+    }
+  }
+  env->DeleteLocalRef(cls);
+  env->DeleteLocalRef(activity);
+  return out;
+}
+
+// The folders the data can go to, one per mounted storage volume (the shared internal storage, each SD
+// card or USB drive): <volume>/MetroidPrime/, with a trailing separator. Asked at most every two seconds.
+const std::vector< std::string >& MoveTargets() {
+  static std::vector< std::string > sTargets;
+  static uint64_t sLast = 0;
+  const uint64_t now = SDL_GetTicks();
+  if (sLast == 0 || now - sLast > 2000) {
+    sLast = now;
+    sTargets.clear();
+    for (const std::string& root : CallActivityStrings("storageRoots")) {
+      std::error_code ec;
+      std::string resolved = root;
+      if (const fs::path canonical = fs::canonical(FromUtf8(root), ec); !ec) {
+        resolved = ToUtf8(canonical);
+      }
+      const std::string target = PortPaths::detail::WithSeparator(resolved) + "MetroidPrime/";
+      if (std::find(sTargets.begin(), sTargets.end(), target) == sTargets.end()) {
+        sTargets.push_back(target);
+      }
+    }
+    if (sTargets.empty()) {
+      sTargets.push_back(SharedFolder());
+    }
+  }
+  return sTargets;
 }
 
 enum class EState { Idle, ConfirmOverwrite, Copying, Ready, Failed };
@@ -497,6 +565,285 @@ std::string ExportShaderCache(const std::string& appFolder, const std::string& d
   return "Copied the shader cache (" + Size(bytes) + ") to " + ToUtf8(to) + ".";
 }
 
+
+// ---- the Remastered import's own location ----
+//
+// The import (port_remastered_storage.h) is the biggest part of the data, and it stays in the app's storage
+// unless the player moves it: the marker file in private storage names the folder it is in, and
+// ImportRootFolder reads it. A move copies the installed import to <folder>/remastered-imports/, then
+// records the folder and restarts.
+
+enum class IState { Idle, Copying, Ready, Failed };
+
+struct ImportMove {
+  std::mutex mutex;
+  IState state = IState::Idle;
+  std::string target;   // the folder the marker will name (<volume>/MetroidPrime/), empty for app storage
+  std::string message;
+  std::atomic< uint64_t > totalBytes{0};
+  std::atomic< uint64_t > totalFiles{0};
+  uint64_t generation = 0;
+  Progress progress;
+};
+
+ImportMove& ImportState() {
+  static ImportMove sImport;
+  return sImport;
+}
+
+std::string ImportMarker() {
+  return PortPaths::detail::PrivateFolder() + PortRemasteredStorage::kChosenMarkerName;
+}
+
+// The folder the import is moved to, "" while it is in app storage.
+std::string ChosenImport() {
+  return PortRemasteredStorage::ReadChosenFolder(ImportMarker());
+}
+
+// The import's root for a chosen folder ("" = app storage), as ImportRootFolder works it out.
+std::string ImportRoot(const std::string& chosen) {
+  return PortRemasteredStorage::ResolveRoot(true, PortPaths::detail::PrivateFolder(), std::string(), chosen).folder;
+}
+
+// The installed import's size, measured once on a thread: walking it every frame would stutter.
+bool ImportSize(const std::string& root, uint64_t& bytes) {
+  static std::mutex sMutex;
+  static std::string sRoot;
+  static bool sDone = false, sMeasuring = false;
+  static uint64_t sBytes = 0;
+  std::lock_guard lock(sMutex);
+  if (sRoot != root) {
+    sRoot = root;
+    sDone = false;
+  }
+  if (!sDone && !sMeasuring) {
+    sMeasuring = true;
+    const std::string measured = sRoot;
+    std::thread([measured] {
+      const uint64_t size = Measure(measured + PortRemasteredStorage::kInstalledModName + "/", true).bytes;
+      std::lock_guard inner(sMutex);
+      if (sRoot == measured) {
+        sBytes = size;
+        sDone = true;
+      }
+      sMeasuring = false;
+    }).detach();
+  }
+  bytes = sBytes;
+  return sDone;
+}
+
+void StartImportCopy(const std::string& fromRoot, const std::string& toRoot, const std::string& chosen) {
+  ImportMove& move = ImportState();
+  uint64_t generation = 0;
+  {
+    std::lock_guard lock(move.mutex);
+    move.target = chosen;
+    move.state = IState::Copying;
+    move.message.clear();
+    move.totalBytes = 0;
+    move.totalFiles = 0;
+    move.progress.bytesDone = 0;
+    move.progress.filesDone = 0;
+    move.progress.cancel = false;
+    generation = ++move.generation;
+  }
+  std::thread([fromRoot, toRoot, generation] {
+    ImportMove& move = ImportState();
+    const std::string from = fromRoot + PortRemasteredStorage::kInstalledModName + "/";
+    const std::string to = toRoot + PortRemasteredStorage::kInstalledModName + "/";
+    const Totals totals = Measure(from, true);
+    move.totalBytes = totals.bytes;
+    move.totalFiles = totals.files;
+    std::error_code ec;
+    fs::create_directories(FromUtf8(toRoot), ec);
+    const fs::space_info space = fs::space(FromUtf8(toRoot), ec);
+    std::string error;
+    bool ok = false;
+    if (ec) {
+      error = "Cannot use " + toRoot + ": " + ec.message() + ".";
+    } else if (space.available < totals.bytes + (64ull << 20)) {
+      error = "Not enough free space: the import needs " + Size(totals.bytes) + ", " + Size(space.available) +
+              " is free.";
+    } else {
+      PortLog::Write("remastered import: copying %" PRIu64 " files (%" PRIu64 " bytes) from %s to %s\n", totals.files,
+                     totals.bytes, from.c_str(), to.c_str());
+      // changedOnly: a copy cut short resumes, and an identical file already there is not written again.
+      ok = CopyTree(from, to, move.progress, error, true, true);
+      PortLog::Write("remastered import: copy %s%s\n", ok ? "done" : "failed: ", ok ? "" : error.c_str());
+    }
+    std::lock_guard lock(move.mutex);
+    if (move.generation != generation) {
+      return;
+    }
+    move.state = ok ? IState::Ready : IState::Failed;
+    move.message = ok ? std::string() : error;
+  }).detach();
+}
+
+// Records where the import is and restarts into it.
+void SwitchImport() {
+  ImportMove& move = ImportState();
+  std::string chosen;
+  {
+    std::lock_guard lock(move.mutex);
+    chosen = move.target;
+  }
+  std::error_code ec;
+  const std::string marker = ImportMarker();
+  bool written = false;
+  if (chosen.empty()) {
+    fs::remove(FromUtf8(marker), ec);
+    written = !fs::exists(FromUtf8(marker), ec);
+  } else {
+    const std::string temp = marker + ".new";
+    std::ofstream file(FromUtf8(temp), std::ios::binary | std::ios::trunc);
+    file << chosen << '\n';
+    file.close();
+    written = !file.fail();
+    if (written) {
+      fs::rename(FromUtf8(temp), FromUtf8(marker), ec);
+      written = !ec;
+    }
+  }
+  std::lock_guard lock(move.mutex);
+  if (!written) {
+    move.state = IState::Failed;
+    move.message = "Could not record the new folder in " + marker;
+    return;
+  }
+  PortLog::Write("remastered import: next launch uses %s\n", chosen.empty() ? "app storage" : chosen.c_str());
+  if (!CallActivity("restartApp", false)) {
+    move.message = "Close the game and open it again to finish the move.";
+  }
+}
+
+void RequestImportMove(const std::string& chosen) {
+  ImportMove& move = ImportState();
+  if (PortRemastered::ImportStatus().running) {
+    std::lock_guard lock(move.mutex);
+    move.message = "Wait for the import in progress to finish (or cancel it) before moving it.";
+    return;
+  }
+  if (!chosen.empty() && !CallActivity("hasStorageAccess", true)) {
+    CallActivity("requestStorageAccess", false);
+    std::lock_guard lock(move.mutex);
+    move.message = "Allow \"All files access\" for Metroid Prime, then come back and press the button again.";
+    return;
+  }
+  StartImportCopy(ImportRoot(ChosenImport()), ImportRoot(chosen), chosen);
+}
+
+void DrawImportPanel() {
+  ImGui::SeparatorText("Remastered import");
+  ImportMove& move = ImportState();
+  const std::string chosen = ChosenImport();
+  const std::string root = ImportRoot(chosen);
+  const std::string appRoot = ImportRoot(std::string());
+  ImGui::TextWrapped("The Remastered models are in %s%s.", root.c_str(), chosen.empty() ? " (app storage)" : "");
+  uint64_t bytes = 0;
+  if (ImportSize(root, bytes) && bytes > 0) {
+    ImGui::TextWrapped("The import takes %s.", Size(bytes).c_str());
+  }
+
+  std::unique_lock lock(move.mutex);
+  const IState state = move.state;
+  const std::string message = move.message;
+  const std::string target = move.target;
+  lock.unlock();
+  const std::string targetName = target.empty() ? "app storage" : target;
+
+  switch (state) {
+  case IState::Idle:
+  case IState::Failed:
+    if (!message.empty()) {
+      ImGui::TextWrapped("%s", message.c_str());
+    }
+    if (!chosen.empty() && ImGui::Button("Move the import back to app storage")) {
+      RequestImportMove(std::string());
+    }
+    for (const std::string& volume : MoveTargets()) {
+      if (volume == chosen) {
+        continue;
+      }
+      const std::string label = "Move the import to " + volume + "##import";
+      if (ImGui::Button(label.c_str())) {
+        RequestImportMove(volume);
+      }
+    }
+    ImGui::TextWrapped(
+        "Copies the import there and restarts. Making or updating an import on an SD card is slower than in app "
+        "storage. It needs the \"All files access\" permission.");
+    if (!chosen.empty()) {
+      // What the move left behind in app storage.
+      static bool sConfirmDelete = false;
+      static std::atomic< bool > sDeleting{false};
+      ImGui::TextWrapped("The import is on %s, so app storage is free of it.", chosen.c_str());
+      std::error_code ec;
+      const bool oldCopy = fs::is_directory(FromUtf8(appRoot), ec) && !fs::is_empty(FromUtf8(appRoot), ec);
+      if (oldCopy && !sDeleting.load()) {
+        ImGui::TextWrapped("App storage still holds the earlier import.");
+        if (!sConfirmDelete) {
+          if (ImGui::Button("Delete the earlier import")) {
+            sConfirmDelete = true;
+          }
+        } else {
+          if (ImGui::Button("Delete it for good")) {
+            sConfirmDelete = false;
+            sDeleting = true;
+            std::thread([appRoot] {
+              std::error_code removeEc;
+              fs::remove_all(FromUtf8(appRoot), removeEc);
+              sDeleting = false;
+            }).detach();
+          }
+          ImGui::SameLine();
+          if (ImGui::Button("Keep it")) {
+            sConfirmDelete = false;
+          }
+        }
+      } else if (sDeleting.load()) {
+        ImGui::TextWrapped("Deleting the earlier import...");
+      }
+    }
+    break;
+  case IState::Copying: {
+    const uint64_t totalBytes = move.totalBytes.load();
+    const uint64_t totalFiles = move.totalFiles.load();
+    if (totalFiles == 0) {
+      ImGui::TextWrapped("Counting files...");
+    } else {
+      const uint64_t done = move.progress.bytesDone.load(std::memory_order_relaxed);
+      const float fraction = totalBytes > 0 ? static_cast< float >(done) / totalBytes : 0.f;
+      const std::string overlay = Size(done) + " / " + Size(totalBytes);
+      ImGui::TextWrapped("Copying the import to %s... (%" PRIu64 " of %" PRIu64 " files)", targetName.c_str(),
+                         move.progress.filesDone.load(std::memory_order_relaxed), totalFiles);
+      ImGui::ProgressBar(fraction, ImVec2(-1.f, 0.f), overlay.c_str());
+    }
+    if (ImGui::Button("Cancel##importmove")) {
+      move.progress.cancel = true;
+    }
+    break;
+  }
+  case IState::Ready:
+    ImGui::TextWrapped("The import is in %s. The game restarts to switch to it; the original stays until deleted.",
+                       targetName.c_str());
+    if (!message.empty()) {
+      ImGui::TextWrapped("%s", message.c_str());
+    }
+    if (ImGui::Button("Restart now##import")) {
+      SwitchImport();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Not now##import")) {
+      lock.lock();
+      move.state = IState::Idle;
+      lock.unlock();
+    }
+    break;
+  }
+}
+
 } // namespace
 
 void DrawPanel() {
@@ -504,7 +851,6 @@ void DrawPanel() {
   Move& move = State();
   const std::string& current = PortPaths::UserFolder();
   const std::string priv = PortPaths::detail::PrivateFolder();
-  const std::string shared = SharedFolder();
   const bool inPrivate = current == priv;
   ImGui::TextWrapped("Settings, memory card, mods, save states and the texture pack are in %s%s.",
                      current.c_str(), inPrivate ? " (app storage, hidden from file managers)" : "");
@@ -536,13 +882,16 @@ void DrawPanel() {
       ImGui::TextWrapped("%s", message.c_str());
     }
     if (inPrivate) {
-      const std::string label = "Move to " + shared;
-      if (ImGui::Button(label.c_str())) {
-        RequestMove(shared, true);
+      // One button per storage volume: the internal storage, and the SD card when there is one.
+      for (const std::string& volume : MoveTargets()) {
+        const std::string label = "Move to " + volume;
+        if (ImGui::Button(label.c_str())) {
+          RequestMove(volume, true);
+        }
       }
       ImGui::TextWrapped(
-          "Copies the data there and restarts. It stays there after an uninstall, and needs the "
-          "\"All files access\" permission.");
+          "Copies the data to the storage you pick (an SD card keeps it off the main memory) and restarts. It "
+          "stays there after an uninstall, and needs the \"All files access\" permission.");
     } else {
       if (ImGui::Button("Move back to app storage")) {
         RequestMove(priv, false);
@@ -553,6 +902,16 @@ void DrawPanel() {
         lock.lock();
         move.message = result;
         lock.unlock();
+      }
+      // Another storage volume than the one the data is on.
+      for (const std::string& volume : MoveTargets()) {
+        if (volume == current) {
+          continue;
+        }
+        const std::string label = "Move to " + volume;
+        if (ImGui::Button(label.c_str())) {
+          RequestMove(volume, true);
+        }
       }
       // Measured once: walking a big mods folder every frame would stutter,
       // and nothing else writes to app storage while the data is elsewhere.
@@ -656,6 +1015,7 @@ void DrawPanel() {
     }
     break;
   }
+  DrawImportPanel();
 }
 #endif
 

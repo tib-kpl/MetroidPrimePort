@@ -562,6 +562,17 @@ std::string InternalStoragePath() {
   const char* storage = SDL_GetAndroidInternalStoragePath();
   return storage != nullptr ? storage : std::string();
 }
+
+// The folder the player moved the import to (F1 > System > Data folder), empty while it is in the app's
+// storage. The marker is in the app's private storage, beside the data folder's own.
+std::string ChosenImportFolder() {
+  const std::string internal = InternalStoragePath();
+  if (internal.empty()) {
+    return {};
+  }
+  return PortRemasteredStorage::ReadChosenFolder(PortRemasteredStorage::WithSeparator(internal) +
+                                                 PortRemasteredStorage::kChosenMarkerName);
+}
 #endif
 
 // The shared mods folder's own import from before Android moved the import into the app, or from a
@@ -4316,7 +4327,7 @@ using namespace ImportDetail;
 std::string ImportRootFolder(std::string* error) {
 #if defined(__ANDROID__)
   const PortRemasteredStorage::RootChoice choice =
-      PortRemasteredStorage::ResolveRoot(true, InternalStoragePath(), std::string());
+      PortRemasteredStorage::ResolveRoot(true, InternalStoragePath(), std::string(), ChosenImportFolder());
 #else
   const PortRemasteredStorage::RootChoice choice =
       PortRemasteredStorage::ResolveRoot(false, std::string(), PortMods::Folder());
@@ -4334,6 +4345,11 @@ std::string ImportRootFolder(std::string* error) {
   if (!fs::is_directory(FromUtf8(choice.folder), ec)) {
     if (error != nullptr) {
       *error = "Cannot use the import folder " + choice.folder + (ec ? ": " + ec.message() : "");
+      if (choice.kind == PortRemasteredStorage::Root::kChosenFolder) {
+        // Never a fallback to the app's storage: say what to do instead.
+        *error += ". The import was moved there: put the card back and allow \"All files access\", or move it back "
+                  "to app storage (F1 > System > Data folder).";
+      }
     }
     return {};
   }
@@ -4342,8 +4358,9 @@ std::string ImportRootFolder(std::string* error) {
 
 bool UsesPrivateImportRoot() {
 #if defined(__ANDROID__)
-  return PortRemasteredStorage::ResolveRoot(true, InternalStoragePath(), std::string()).kind ==
-         PortRemasteredStorage::Root::kPrivateStorage;
+  // Outside the mods folder: the app's storage, or the folder the player moved the import to.
+  return PortRemasteredStorage::ResolveRoot(true, InternalStoragePath(), std::string(), ChosenImportFolder()).kind !=
+         PortRemasteredStorage::Root::kModsFolder;
 #else
   return false;
 #endif

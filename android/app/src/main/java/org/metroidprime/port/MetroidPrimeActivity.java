@@ -419,6 +419,29 @@ public final class MetroidPrimeActivity extends SDLActivity {
             .show();
     }
 
+    // The roots of the storage volumes the data can be moved to: the shared
+    // internal storage first, then every SD card or USB drive that is mounted.
+    // Called from port_data_folder.cpp.
+    public String[] storageRoots() {
+        java.util.LinkedHashSet<String> roots = new java.util.LinkedHashSet<>();
+        roots.add(Environment.getExternalStorageDirectory().getAbsolutePath());
+        File[] dirs = getExternalFilesDirs(null);
+        if (dirs != null) {
+            for (File dir : dirs) {
+                if (dir == null) {
+                    continue;
+                }
+                // <root>/Android/data/<package>/files
+                String path = dir.getAbsolutePath();
+                int android = path.indexOf("/Android/");
+                if (android > 0) {
+                    roots.add(path.substring(0, android));
+                }
+            }
+        }
+        return roots.toArray(new String[0]);
+    }
+
     // Whether native code may read and write shared storage with plain file
     // calls. Called from port_data_folder.cpp.
     public boolean hasStorageAccess() {

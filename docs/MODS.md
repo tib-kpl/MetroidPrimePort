@@ -296,9 +296,12 @@ Console `roomgeo perf [mask]` turns on single shortcuts for comparison.
 
 - **Desktop:** `mods/remastered-models`, a mod folder like any other; `MP_MODS` and
   `MP_USER_PATH` move it with the rest.
-- **Android:** the app's own internal storage, `<internal storage>/remastered-imports`. It is not
-  the mods folder and is not moved by `MP_MODS`, `MP_USER_PATH` or the F1 data folder setting
-  (System > Data folder). An APK update keeps the import; an uninstall or Android's "clear data"
+- **Android:** the app's own internal storage, `<internal storage>/remastered-imports`, unless it was
+  moved to another storage volume with F1 > System > Data folder > Remastered import (then
+  `<volume>/MetroidPrime/remastered-imports`, named by `remastered_folder.txt` in app storage; if that
+  folder cannot be reached the import is refused with the reason, never written to the mods folder or
+  to app storage instead). It is not the mods folder and is not moved by `MP_MODS`, `MP_USER_PATH` or
+  the data folder move above (System > Data folder). An APK update keeps the import; an uninstall or Android's "clear data"
   removes it (the uninstall dialog's "keep app data" keeps it), so it has to be imported again.
   When the app's internal storage cannot be reached at all the import is refused with a message:
   it is never written to the shared mods folder instead.

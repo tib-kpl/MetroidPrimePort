@@ -31,12 +31,19 @@
 // at startup (ShouldDeleteLegacy); only a real folder is removed, never a symlink, and never the
 // private import itself. Desktop never deletes: there the import is <mods>/remastered-models.
 //
+// The player may move the import off the app's storage, e.g. to the SD card (F1 > System > Data folder >
+// Remastered import, port_data_folder.h). The choice is a marker file in the app's private storage
+// (kChosenMarkerName) naming a folder; the import then sits in <folder>/remastered-imports/ and the root
+// is a Root::kChosenFolder. It is never a silent fallback: when that folder cannot be reached the import
+// is refused with the reason, exactly as when the internal storage cannot.
+//
 // Header-only and free of platform calls, so the policy is tested on the host
 // (tests/port_remastered_storage.cpp).
 
 #include <algorithm>
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -50,6 +57,9 @@ namespace PortRemasteredStorage {
 
 // The folder inside Android's internal storage holding the import's own folders.
 inline constexpr const char* kRootFolderName = "remastered-imports";
+// The marker file, in the app's private storage, whose first line is the folder the player moved the
+// import to; absent while the import is in the app's storage.
+inline constexpr const char* kChosenMarkerName = "remastered_folder.txt";
 // The mod a finished import is installed as.
 inline constexpr const char* kInstalledModName = "remastered-models";
 // Where an import is made; the mod loader skips it (a leading dot), and the marker inside says
@@ -76,6 +86,8 @@ enum class Root {
   kModsFolder,
   // The app's internal storage, under kRootFolderName (Android).
   kPrivateStorage,
+  // A folder the player chose (an SD card, say), under kRootFolderName (Android).
+  kChosenFolder,
 };
 
 struct RootChoice {
@@ -90,11 +102,17 @@ struct RootChoice {
 // internal storage (SDL_GetAndroidInternalStoragePath), and the mods folder shared mods live in.
 // Desktop keeps the mods folder whatever the strings say. Android always answers with the app's
 // storage: with no internal storage the result is empty and `error` says so, never the mods folder.
-inline RootChoice ResolveRoot(bool android, const std::string& internalStorage, const std::string& modsFolder) {
+inline RootChoice ResolveRoot(bool android, const std::string& internalStorage, const std::string& modsFolder,
+                              const std::string& chosenFolder = std::string()) {
   RootChoice choice;
   if (!android) {
     choice.kind = Root::kModsFolder;
     choice.folder = WithSeparator(modsFolder);
+    return choice;
+  }
+  if (!chosenFolder.empty()) {
+    choice.kind = Root::kChosenFolder;
+    choice.folder = WithSeparator(chosenFolder) + kRootFolderName + "/";
     return choice;
   }
   choice.kind = Root::kPrivateStorage;
@@ -106,6 +124,18 @@ inline RootChoice ResolveRoot(bool android, const std::string& internalStorage, 
   }
   choice.folder = WithSeparator(internalStorage) + kRootFolderName + "/";
   return choice;
+}
+
+// The folder a marker file names: its first line, without trailing blanks, when it is an absolute path;
+// empty for a missing marker or anything else (a relative path would land in the working directory).
+inline std::string ReadChosenFolder(const std::string& markerPath) {
+  std::ifstream file(PortUtf8::FromUtf8(markerPath), std::ios::binary);
+  std::string dir;
+  std::getline(file, dir);
+  while (!dir.empty() && (dir.back() == '\r' || dir.back() == '\n' || dir.back() == ' ')) {
+    dir.pop_back();
+  }
+  return dir.empty() || dir[0] != '/' ? std::string() : dir;
 }
 
 // --- The folders inside a root ----------------------------------------------

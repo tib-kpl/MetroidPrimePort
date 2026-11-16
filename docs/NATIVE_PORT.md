@@ -161,13 +161,18 @@ is used only when:
   portable.
 
 On Android the folder starts in the app's own storage, which other apps and file
-managers cannot reach. F1 > System > Data folder moves it to
-`/storage/emulated/0/MetroidPrime/` (the shared storage root): it asks for "All
-files access" (Android 11+; storage permission on 9/10), copies saves, settings,
+managers cannot reach. F1 > System > Data folder moves it to `MetroidPrime/` on the
+storage volume you pick, one button per volume: the shared internal storage
+(`/storage/emulated/0/`) or an SD card or USB drive (`/storage/XXXX-XXXX/`). It
+asks for "All files access" (Android 11+; storage permission on 9/10), copies saves, settings,
 mods, save states, the texture pack and the copied disc there with a progress
 bar (built-in textures, the pipeline cache and the app's own Remastered import
 stay behind; docs/MODS.md), then restarts the
-game. If the shared folder already holds data, it offers to use that data or to
+game. The Remastered import, usually the biggest part, has its own "Remastered
+import" section in the same panel: it can be moved to `MetroidPrime/remastered-imports/`
+on any volume too (copied, resumable, then recorded in `remastered_folder.txt` in app
+storage), and moved back or deleted from app storage afterwards. Making or updating
+an import on an SD card is slower than in app storage. If the shared folder already holds data, it offers to use that data or to
 copy over it. The choice is kept in `data_folder.txt` in app storage; "Move
 back to app storage" reverses it, and "Delete the old copy" frees the space the
 old folder still takes. If access is revoked later, the game starts from app
